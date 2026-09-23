@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore, importFile } from '../src/store.js'
@@ -13,6 +13,8 @@ import { createInterface } from 'node:readline'
 import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
+import { codexTranscript, codexSessionKey } from '../src/codex.js'
 const fixture = fn => async t => {
   const dir=mkdtempSync(join(tmpdir(),'superlcm-claude-'))
   const store=new ClaudeStore(join(dir,'private'))
@@ -65,7 +67,7 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_sessions',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
-  assert.equal(tools.length,10)
+  assert.equal(tools.length,12)
   assert.equal(tools.some(tool=>['lcm_summary_work','lcm_save_summary'].includes(tool.name)),false)
   assert.deepEqual(await call(store,'lcm_sessions'),{sessions:[],total:0,next_offset:null})
   input.end();await new Promise(r=>server.once('close',r));lines.close()
@@ -110,6 +112,95 @@ test('portable JSONL is searchable and unsupported exports are rejected before i
   assert.throws(()=>importFile(store,unsupported,'bad-session','other-harness'),/No visible/)
   assert.equal(store.source('bad-session'),undefined)
   assert.throws(()=>importFile(store,portable,'bad/session','other-harness'),/Invalid session ID/)
+}))
+test('Claude custom title outranks AI title and user-derived text',fixture(async ({dir,store})=>{
+  const file=join(dir,'native-titles.jsonl')
+  writeFileSync(file,[JSON.stringify({type:'user',message:{content:'original prompt'}}),JSON.stringify({type:'ai-title',aiTitle:'Generated name',sessionId:'claude-9'}),JSON.stringify({type:'custom-title',customTitle:'My named discussion',sessionId:'claude-9'})].join('\n')+'\n')
+  store.ingest('claude-9',file)
+  assert.equal(store.nativeClaudeTitle('claude-9'),'My named discussion')
+  store.setMetadata('claude-9',{harness:'claude-code',externalId:'claude-9',name:store.nativeClaudeTitle('claude-9'),nameSource:'native'})
+  assert.equal((await call(store,'lcm_resolve_session',{name_or_id:'My named discussion'})).matches[0].session,'claude-9')
+  store.nameSession('claude-9','Manual override')
+  store.setMetadata('claude-9',{harness:'claude-code',externalId:'claude-9',name:store.nativeClaudeTitle('claude-9'),nameSource:'native'})
+  assert.equal(store.metadata('claude-9').name,'Manual override')
+}))
+test('Codex Stop hook indexes local rollout with native title and exact source ID',fixture(async ({dir})=>{
+  const config=join(dir,'codex-home'),sessions=join(config,'sessions'),dbPath=join(dir,'private-codex'),file=join(sessions,'rollout.jsonl')
+  mkdirSync(sessions,{recursive:true})
+  writeFileSync(file,Array.from({length:8},(_,i)=>JSON.stringify(i%2?{type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'answer '+i}]}}:{type:'event_msg',payload:{type:'user_message',message:'Codex plan '+i}})+'\n').join(''))
+  const state=new DatabaseSync(join(config,'state_5.sqlite'))
+  state.exec('CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,name TEXT,rollout_path TEXT)')
+  state.prepare('INSERT INTO threads VALUES(?,?,?,?)').run('thr_42','Generated title','Named research thread',file);state.close()
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
+  const env={...process.env,CODEX_HOME:config,SUPERLCM_HOME:dbPath,SUPERLCM_SUMMARY_MODE:'off'}
+  const run=(event,path=file)=>spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({hook_event_name:event,session_id:'thr_42',transcript_path:path,cwd:dir,source:event==='SessionStart'?'compact':undefined}),encoding:'utf8',env,timeout:15000})
+  assert.equal(codexSessionKey('thr_42'),'codex-thr_42')
+  assert.equal(codexTranscript(file,{env,cwd:dir}),realpathSync(file))
+  const result=run('Stop')
+  assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,'{}\n')
+  const store=new ClaudeStore(dbPath)
+  try {
+    const meta=store.metadata('codex-thr_42')
+    assert.deepEqual({harness:meta.harness,conversation_id:meta.conversation_id,name:meta.name,name_source:meta.name_source},{harness:'codex',conversation_id:'thr_42',name:'Named research thread',name_source:'native'})
+    assert.equal(store.eventRows('codex-thr_42').length,8)
+    assert.equal((await call(store,'lcm_resolve_session',{name_or_id:'Named research thread',harness:'codex'})).matches[0].session,'codex-thr_42')
+    assert.equal((await call(store,'lcm_resolve_session',{name_or_id:'thr_42'})).matches[0].session,'codex-thr_42')
+    assert.equal(store.nameSession('codex-thr_42','My renamed thread').name_source,'manual')
+  } finally {store.close()}
+  const again=run('PostCompact');assert.equal(again.status,0,again.stderr)
+  const compact=run('SessionStart');assert.equal(compact.status,0,compact.stderr);assert.match(compact.stdout,/SuperLcm session codex-thr_42/)
+  const final=new ClaudeStore(dbPath);assert.equal(final.metadata('codex-thr_42').name,'My renamed thread');final.close()
+  const outside=join(dir,'outside.jsonl');writeFileSync(outside,'{"role":"user","content":"private"}\n')
+  assert.notEqual(run('Stop',outside).status,0)
+}))
+test('Codex Stop schedules an isolated fake CLI summary worker', {skip:process.platform==='win32'},fixture(async ({dir,store})=>{
+  const codexHome=join(dir,'codex-home'),sessions=join(codexHome,'sessions'),file=join(sessions,'run.jsonl')
+  mkdirSync(sessions,{recursive:true})
+  writeFileSync(file,Array.from({length:8},(_,i)=>JSON.stringify({role:i%2?'assistant':'user',content:'isolated detail '+i})+'\n').join(''))
+  const fake=join(dir,'fake-summary-cli')
+  writeFileSync(fake,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({type:'result',is_error:false,result:'Isolated Codex summary from background worker.'})));\n`)
+  chmodSync(fake,0o700)
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
+  const env={...process.env,CODEX_HOME:codexHome,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CLAUDE_CLI_BIN:fake}
+  delete env.SUPERLCM_ANTHROPIC_API_KEY
+  const result=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_worker',transcript_path:file,cwd:dir,hook_event_name:'Stop'}),encoding:'utf8',env,timeout:15000})
+  assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,'{}\n')
+  let page
+  for(let i=0;i<240;i++){page=store.summaries('codex-thr_worker');if(page.total)break;await new Promise(r=>setTimeout(r,50))}
+  assert.equal(page.total,1);assert.match(page.nodes[0].summary,/Isolated Codex summary/)
+  assert.equal(page.source.conversation_id,'thr_worker');assert.equal(page.source.harness,'codex')
+}))
+test('existing alpha.5 origins migrate without losing provenance',fixture(async ({dir})=>{
+  const legacy=join(dir,'legacy-index');mkdirSync(legacy)
+  const db=new DatabaseSync(join(legacy,'lcm.sqlite'))
+  db.exec('CREATE TABLE sources(session TEXT PRIMARY KEY,path TEXT,kind TEXT,offset INTEGER,status TEXT);CREATE TABLE session_origins(session TEXT PRIMARY KEY,harness TEXT)')
+  db.prepare('INSERT INTO sources VALUES(?,?,?,?,?)').run('old-conversation',join(dir,'old.txt'),'text',0,'ok')
+  db.prepare('INSERT INTO session_origins VALUES(?,?)').run('old-conversation','claude-code');db.close()
+  const upgraded=new ClaudeStore(legacy)
+  try{assert.equal(upgraded.metadata('old-conversation').harness,'claude-code');assert.equal(upgraded.nameSession('old-conversation','Legacy title').name,'Legacy title')}
+  finally{upgraded.close()}
+}))
+test('duplicate names remain ambiguous; source identity is returned with summary pages',fixture(async ({dir,store})=>{
+  for(const session of ['one','two']) {
+    const path=join(dir,session+'.txt');writeFileSync(path,Array.from({length:8},(_,i)=>'decision '+session+' '+i+'\n').join(''))
+    importFile(store,path,session,'other','Shared title')
+    await buildHierarchy(store,session,{model:'test',summarize:async()=> 'A deliberately separate summary'})
+  }
+  const found=await call(store,'lcm_resolve_session',{name_or_id:'Shared title'})
+  assert.equal(found.ambiguous,true);assert.equal(found.matches.length,2)
+  const page=await call(store,'lcm_summaries',{session:'one'})
+  assert.equal(page.source.name,'Shared title');assert.equal(page.source.harness,'other');assert.equal(page.nodes.length,1)
+  assert.equal(page.nodes[0].summary,'A deliberately separate summary')
+  assert.equal((await call(store,'lcm_summaries',{session:'two'})).source.conversation_id,'two')
+}))
+test('metadata-only Codex batches never invoke a summary model',fixture(async ({dir,store})=>{
+  const path=join(dir,'metadata.jsonl')
+  writeFileSync(path,Array.from({length:8},(_,i)=>JSON.stringify(i===0?{type:'custom-title',customTitle:'Title without messages'}:{type:'event_msg',payload:{type:'token_count',info:{i}}})+'\n').join(''))
+  store.ingest('metadata-session',path)
+  let called=0
+  const result=await buildHierarchy(store,'metadata-session',{model:'mock',summarize:async()=>{called++;return 'incorrect'}})
+  assert.equal(result.created,0);assert.equal(called,0)
+  assert.equal(store.summaries('metadata-session').total,0)
 }))
 test('subscription adapter isolates credentials, tools and model choice',fixture(async ({dir})=>{
   let invoked

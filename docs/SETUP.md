@@ -1,6 +1,6 @@
 # SuperLcm — cross-harness conversation recall (preview)
 
-This is an **independent cross-harness MCP package (not a DSH plugin)**. It does not replace any harness's native compaction. It builds an external layered summary DAG and retrieves the original conversation on demand. Summary modes are exclusive: default `auto` uses a separate `claude --print` subprocess (`cli` mode) with selectable model, and a dedicated `SUPERLCM_ANTHROPIC_API_KEY` selects the separate paid `api` backend. Explicit `off` disables summaries. The active Claude agent never writes summaries. Claude Code hooks are only one automatic ingestion adapter; other harnesses need an explicit export/import or their own adapter. No harness configuration is modified by the package.
+This is an **independent cross-harness MCP package (not a DSH plugin)**. It does not replace any harness's native compaction. It builds an external layered summary DAG and retrieves the original conversation on demand. Summary modes are exclusive: default `auto` uses a separate `claude --print` subprocess (`cli` mode) with selectable model, and a dedicated `SUPERLCM_ANTHROPIC_API_KEY` selects the separate paid `api` backend. Explicit `off` disables summaries. The active Claude agent never writes summaries. Claude Code and Codex CLI each have an opt-in automatic hook adapter; other harnesses need an explicit export/import or their own adapter. No harness configuration is modified by the package.
 
 ## Requirements and data ownership
 
@@ -12,7 +12,7 @@ This is an **independent cross-harness MCP package (not a DSH plugin)**. It does
 
 ## Shared conversations across harnesses
 
-The storage and read-only MCP tools are **harness-independent**. Each session ID has its own raw source, origin label, summary nodes, search hits and exact source offsets. `lcm_sessions` lists conversations across harnesses (including `harness`, `first_message`, `summary_count`, `total` and `next_offset`). Choose a specific ID, page `lcm_summaries` with its `next_offset` to read **all** of that conversation’s nodes, then verify important claims with `lcm_describe` and `lcm_expand`. The short overview is not a complete summary list.
+The storage and read-only MCP tools are **harness-independent**. Each session ID has its own raw source, origin label, summary nodes, search hits and exact source offsets. `lcm_sessions` lists conversations across harnesses (including `harness`, `conversation_id`, `name`, `name_source`, `summary_count`, `total` and `next_offset`). Call `lcm_resolve_session` with an exact name or original/internal ID and optional harness. Duplicate names return multiple candidates: choose the ID rather than guessing. Existing alpha.5 indexes retain their nodes and IDs; older title fields become durable on the next hook/index event, or can be assigned with the explicit `name <session> "title"` CLI command. Page `lcm_summaries` with its `next_offset` to read **all** of that conversation’s nodes, then verify important claims with `lcm_describe` and `lcm_expand`. The short overview is not a complete summary list.
 
 For Codex on the **same machine and user index**, register the same stdio server once (example command; the package does not run it for you):
 
@@ -20,14 +20,35 @@ For Codex on the **same machine and user index**, register the same stdio server
 codex mcp add superlcm -- node /ABSOLUTE_PATH_TO_REPO/src/cli.js mcp
 ```
 
-Then ask Codex: “List SuperLcm sessions from claude-code, select conversation <ID>, page all its summaries, and verify decision X against source events.” MCP registration alone does not auto-ingest Codex’s own history. To import a user-exported UTF-8 `.txt` or portable `.jsonl` of `{"role":"user|assistant","content":"..."}` messages (Codex rollout `response_item` / `event_msg` messages are also recognized):
+Then ask Codex: “Resolve the Claude Code conversation named X, page its summaries, and verify decision Y against source events.” **MCP registration alone does not auto-ingest Codex history**: to capture Codex conversations automatically, configure the Codex lifecycle hooks below. For unsupported harnesses, import a user-exported UTF-8 `.txt` or portable `.jsonl` of `{"role":"user|assistant","content":"..."}` messages (Codex rollout `response_item` / `event_msg` messages are also recognized):
 
 ```bash
 node /ABSOLUTE_PATH_TO_REPO/src/cli.js import /path/to/export.jsonl codex-my-session codex
 node /ABSOLUTE_PATH_TO_REPO/src/cli.js summarize codex-my-session   # optional; invokes the configured model
 ```
 
-If JSONL contains no visible user/assistant text, import rejects it; use a readable `.txt` export instead. Imports copy the original into the private index, preserving exact expansion if the exported file moves. The source harness, reading harness, and summarizer backend (`cli` or `api`) are independent.
+If JSONL contains no visible user/assistant text, import rejects it; use a readable `.txt` export instead. Imports copy the original into the private index, preserving exact expansion if the exported file moves. For manual imports, harness and session ID are user-supplied provenance labels, not independently verified native IDs. The source harness, reading harness, and summarizer backend (`cli` or `api`) are independent.
+
+## Codex CLI automatic conversation capture (opt-in)
+
+Codex CLI 0.155.1 exposes command hooks with `session_id` and `transcript_path` ([official hook contract](https://learn.chatgpt.com/docs/hooks.md)); the local rollout format is **not a stable hook API**, so upgrades can require parser changes. Merge the following into your **own** `~/.codex/hooks.json` on the machine running Codex; this package never writes that file:
+
+```json
+{
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js codex-hook", "timeout": 15}]}],
+    "PostCompact": [{"hooks": [{"type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js codex-hook", "timeout": 15}]}],
+    "SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js codex-hook", "timeout": 15}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js codex-hook", "timeout": 3}]}]
+  }
+}
+```
+
+Codex requires a user to review and trust new/changed non-managed hooks with `/hooks`; do **not** bypass trust. `Stop`/`PostCompact` index only complete local JSONL records and spawn a separate summary worker if a meaningful batch is ready; `SessionEnd` catches the final tail. `SessionStart(compact)` injects only short navigation **after Codex native compaction**. Transcript path must be under `$CODEX_HOME/sessions/` (default `~/.codex/sessions/`) or the session working directory’s `.codex/` folder. A null transcript path is skipped, and changed source hashes fail closed. The source key `codex-<session_id>` and the original `session_id` are both recorded.
+
+Claude Code captures its `custom-title`/`ai-title` transcript records when present (custom title takes precedence); otherwise it derives a title from the first visible user message. Titles use Codex’s native name/title from its local state SQLite **when its optional read-only schema and exact rollout path match**; otherwise they derive from the first visible user message. Since that internal SQLite schema is not a stable API, you can override any title without changing the source transcript: `node /ABSOLUTE_PATH_TO_REPO/src/cli.js name <session_key> "Human title"`. A manual title wins over later hook updates. The `lcm_name_session` MCP write is disabled unless you explicitly enable `SUPERLCM_ALLOW_MCP_RENAME=1`; lookup through `lcm_resolve_session` is read-only.
+
+Codex hooks use the same summary setting as Claude hooks: default `cli` means an independently logged-in **Claude** CLI subscription (not Codex subscription), `api` means explicit Anthropic API billing, and `off` indexes/searches originals without generating summaries. Configure that environment where Codex launches the hook, and set `SUPERLCM_HOME` identically for both harnesses if overriding the legacy default.
 
 **Privacy boundary:** every process configured to use this local MCP and the same index can read *all* indexed sessions; there is no per-client authorization. Configure only trusted clients. Local stdio does not bridge separate computers: a Windows Claude Code session and a Mac Codex client do not share an index unless you arrange a secure common deployment and source access. No such sync/remote server is provided.
 
@@ -110,10 +131,10 @@ The second command uses the configured backend: the locally logged-in Claude CLI
 
 ## Tool contract and current limitations
 
-- `lcm_sessions` returns paginated session origins and brief hints. All other read tools require an explicit `session` (MCP has no implicit access to any host's current conversation ID).
-- `lcm_summaries`: paginated **full per-session summary list**; `lcm_overview`: small top-layer navigation; `lcm_search`: original event text and summary search; `lcm_read_event`: exact raw record by event ordinal, including unsummarized tail; `lcm_describe`: node relationships and source range; `lcm_expand`: **exact original record bytes decoded as UTF-8**, paginated by returned `next.ordinal` and `next.charOffset`; `lcm_doctor`: verify source pointers and SQLite integrity, read-only.
+- `lcm_sessions` returns paginated source harness, original ID, name and summary counts; `lcm_resolve_session` finds exact name or ID with ambiguity reporting. All other read tools require an explicit `session` (MCP has no implicit access to any host's current conversation ID).
+- `lcm_summaries`: paginated **full per-session summary list** with source provenance; `lcm_overview`: small top-layer navigation; `lcm_search`: original event text and summary search; `lcm_read_event`: exact raw record by event ordinal, including unsummarized tail; `lcm_describe`: node relationships and source range; `lcm_expand`: **exact original record bytes decoded as UTF-8**, paginated by returned `next.ordinal` and `next.charOffset`; `lcm_doctor`: verify source pointers and SQLite integrity, read-only.
 - Import/index are side-effecting, explicit, local operations. They do not replace native context compaction. There is no claim that original JSONL contains model-internal hidden state; "exact" means the retained on-disk source record. Search indexes visible user/assistant text (not every tool-result field), while expansion returns the full retained record.
-- A modified/truncated source is not silently reindexed. Expansion verifies the raw SHA-256 and fails closed if changed. The per-source cap is 256 MiB, per-JSONL-line cap 4 MiB, and manual import cap 32 MiB. Session IDs isolate records. The implementation accepts both legacy MCP `initialize` and current `2026-07-28` `server/discover` request formats; actual Claude Desktop/Code interoperability still needs testing on the target installations.
+- A modified/truncated source is not silently reindexed. Expansion verifies the raw SHA-256 and fails closed if changed. The per-source cap is 256 MiB, per-JSONL-line cap 4 MiB, and manual import cap 32 MiB. Session IDs isolate records. The implementation accepts both legacy MCP `initialize` and current `2026-07-28` `server/discover` request formats; actual Claude/Codex client interoperability still needs testing on target installations.
 
 ## Documentation consulted
 

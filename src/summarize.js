@@ -19,6 +19,7 @@ export function summaryWork(store, session, { batchSize = 8, fanout = 4 } = {}) 
   const events = store.eventRows(session)
   for (let start=0; start+batchSize<=events.length; start+=batchSize) {
     const batch=events.slice(start,start+batchSize)
+    if (!batch.some(e=>e.preview.trim() && !/^(custom-title|ai-title):/.test(e.preview))) continue // metadata-only records are still exact, but never billed as summaries
     const digest=hash(batch.map(e=>e.digest).join(':'))
     const id=nodeId(session,0,batch[0].ordinal,batch.at(-1).ordinal,digest)
     if (store.node(session,id)) continue
@@ -46,6 +47,7 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, b
     const events = store.eventRows(session)
     for (let start=0; start+batchSize<=events.length; start+=batchSize) {
       const batch = events.slice(start,start+batchSize)
+      if (!batch.some(e=>e.preview.trim() && !/^(custom-title|ai-title):/.test(e.preview))) continue
       const digest = hash(batch.map(e=>e.digest).join(':'))
       const id = nodeId(session,0,batch[0].ordinal,batch.at(-1).ordinal,digest)
       if (store.node(session,id)) continue

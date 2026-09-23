@@ -26,6 +26,8 @@ function extract(raw, kind) {
   if (kind === 'text') return raw.toString('utf8')
   try {
     const record = JSON.parse(raw.toString('utf8'))
+    if (record?.type==='custom-title' && typeof record.customTitle==='string') return `custom-title: ${record.customTitle}`.slice(0,16000)
+    if (record?.type==='ai-title' && typeof record.aiTitle==='string') return `ai-title: ${record.aiTitle}`.slice(0,16000)
     // Portable JSONL: {role:'user'|'assistant',content:'...'}; Claude Code;
     // and visible Codex rollout messages. Every raw record remains exact on disk.
     let role = record?.role ?? record?.type, item = record
@@ -40,6 +42,7 @@ function extract(raw, kind) {
     return text ? `${role}: ${text}`.slice(0, 16000) : ''
   } catch { return '' }
 }
+function derivedName(preview) { return typeof preview==='string' ? preview.replace(/^(user|assistant):\s*/,'').replace(/\s+/g,' ').trim().slice(0,90) : '' }
 function bounded(value, fallback, max) { return Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback }
 export class ClaudeStore {
   constructor(dir = home()) {
@@ -56,8 +59,11 @@ export class ClaudeStore {
       CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(session UNINDEXED, id UNINDEXED, summary);
       CREATE TABLE IF NOT EXISTS leases(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS summary_policies(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('off','cli','api')));
-      CREATE TABLE IF NOT EXISTS session_origins(session TEXT PRIMARY KEY REFERENCES sources(session), harness TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_origins(session TEXT PRIMARY KEY REFERENCES sources(session), harness TEXT NOT NULL, external_id TEXT, display_name TEXT, name_source TEXT);
     `)
+    // Existing alpha.5 indexes have only (session,harness); preserve every row.
+    const columns=new Set(this.db.prepare('PRAGMA table_info(session_origins)').all().map(c=>c.name))
+    for (const [column,type] of [['external_id','TEXT'],['display_name','TEXT'],['name_source','TEXT']]) if (!columns.has(column)) this.db.exec(`ALTER TABLE session_origins ADD COLUMN ${column} ${type}`)
   }
   close() { this.db.close() }
   setStatus(session,status) { this.db.prepare('UPDATE sources SET status=? WHERE session=?').run(status,session) }
@@ -72,21 +78,55 @@ export class ClaudeStore {
     if (prior && prior!==harness) throw new Error('Session already belongs to a different harness; choose a new session ID')
     this.db.prepare('INSERT OR IGNORE INTO session_origins(session,harness) VALUES(?,?)').run(session,harness)
   }
-  sources() { return this.db.prepare("SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode,COALESCE(o.harness,'legacy') AS harness,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN session_origins o ON s.session=o.session ORDER BY s.session").all() }
+  setMetadata(session,{harness,externalId,name,nameSource='derived'}) {
+    if (typeof externalId!=='string' || !externalId || externalId.length>200) throw new Error('Invalid source conversation ID')
+    this.setOrigin(session,harness)
+    const old=this.db.prepare('SELECT external_id,display_name,name_source FROM session_origins WHERE session=?').get(session)
+    if (old.external_id && old.external_id!==externalId) throw new Error('Source conversation ID changed; use a distinct session ID')
+    const rawName=typeof name==='string' ? name : this.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview.replace(/^user:\s*/,'')
+    const title=typeof rawName==='string' ? rawName.replace(/\s+/g,' ').trim().slice(0,160) : ''
+    if (title && !['derived','native','manual'].includes(nameSource)) throw new Error('Invalid name provenance')
+    const priority={derived:1,native:2,manual:3}
+    const replace=title && (!old.display_name || priority[nameSource]>=priority[old.name_source||'derived'])
+    this.db.prepare('UPDATE session_origins SET external_id=COALESCE(external_id,?),display_name=?,name_source=? WHERE session=?').run(externalId,replace ? title : old.display_name,replace ? nameSource : old.name_source,session)
+  }
+  nativeClaudeTitle(session) {
+    const rows=this.eventRows(session)
+    return (rows.filter(e=>e.preview.startsWith('custom-title: ')).at(-1) || rows.filter(e=>e.preview.startsWith('ai-title: ')).at(-1))?.preview.replace(/^(custom-title|ai-title):\s*/,'') || null
+  }
+  nameSession(session,name) {
+    const origin=this.metadata(session)
+    if (typeof name!=='string' || !name.trim() || name.length>160) throw new Error('Name must be 1–160 characters')
+    this.setMetadata(session,{harness:origin.harness,externalId:origin.conversation_id,name,nameSource:'manual'})
+    return this.metadata(session)
+  }
+  metadata(session) {
+    if (!this.source(session)) throw new Error('Unknown session')
+    const row=this.db.prepare('SELECT harness,external_id,display_name,name_source FROM session_origins WHERE session=?').get(session)
+    const first=this.db.prepare("SELECT preview FROM events WHERE session=? AND preview<>'' ORDER BY ordinal LIMIT 1").get(session)?.preview
+    return {session,harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
+  }
+  sources() { return this.listSessions(2147483647,0).sessions }
   listSessions(limit=20,offset=0,harness) {
     const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
-    const select="SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode,COALESCE(o.harness,'legacy') AS harness,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN session_origins o ON s.session=o.session"
-    const sessions=this.db.prepare(select+where+' ORDER BY s.session LIMIT ? OFFSET ?').all(...params,limit,offset)
+    const select="SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN session_origins o ON s.session=o.session"
+    const sessions=this.db.prepare(select+where+' ORDER BY s.session LIMIT ? OFFSET ?').all(...params,limit,offset).map(row=>({...row,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}))
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}
   }
+  resolveSession(query,harness) {
+    if (typeof query!=='string' || !query.trim() || query.length>200) throw new Error('Provide a conversation name or ID of 1–200 characters')
+    if (harness!==undefined && (typeof harness!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(harness))) throw new Error('Invalid harness filter')
+    const ids=this.db.prepare("SELECT s.session FROM sources s LEFT JOIN session_origins o ON s.session=o.session WHERE (s.session=? OR o.external_id=? OR o.display_name=? COLLATE NOCASE)"+(harness ? " AND COALESCE(o.harness,'legacy')=?" : '')+' ORDER BY s.session LIMIT 21').all(query,query,query,...(harness?[harness]:[]))
+    return {query,matches:ids.slice(0,20).map(row=>this.metadata(row.session)),ambiguous:ids.length>1,truncated:ids.length>20}
+  }
   summaries(session, limit=10, offset=0) {
-    if (!this.source(session)) throw new Error('Unknown session')
+    const source=this.metadata(session)
     if (!Number.isSafeInteger(limit) || limit<1 || limit>50 || !Number.isSafeInteger(offset) || offset<0) throw new Error('Invalid summary page; limit must be 1–50 and offset nonnegative')
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE session=?').get(session).n
     const rows=this.db.prepare('SELECT id,level,first,last,children,summary,model FROM nodes WHERE session=? ORDER BY level DESC,first ASC,id ASC LIMIT ? OFFSET ?').all(session,limit,offset).map(row=>({...row,children:JSON.parse(row.children)}))
-    return {session,total,nodes:rows,next_offset:offset+rows.length<total ? offset+rows.length : null}
+    return {session,source,total,nodes:rows,next_offset:offset+rows.length<total ? offset+rows.length : null}
   }
   source(session) { return this.db.prepare('SELECT * FROM sources WHERE session=?').get(session) }
   #verifySource(session, path, kind) {
@@ -165,7 +205,7 @@ export class ClaudeStore {
     const raw = this.exact(session,ordinal), cap = bounded(maxChars,12000,50000)
     if (charOffset > raw.length) throw new Error('Offset past end of event')
     const content = raw.slice(charOffset,charOffset+cap)
-    return {session,ordinal,charOffset,content,next:charOffset+content.length < raw.length ? {ordinal,charOffset:charOffset+content.length} : null}
+    return {session,source:this.metadata(session),ordinal,charOffset,content,next:charOffset+content.length < raw.length ? {ordinal,charOffset:charOffset+content.length} : null}
   }
   eventRows(session) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? ORDER BY ordinal').all(session) }
   nodeRows(session, level) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND level=? ORDER BY first').all(session, level) }
@@ -187,10 +227,11 @@ export class ClaudeStore {
   search(session, query, limit = 10) {
     if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new Error('Provide a query of 1–200 characters')
     const tokens = query.normalize('NFKC').match(/[\p{L}\p{N}_]+/gu)?.slice(0, 8) || []
-    if (!tokens.length) return { events: [], nodes: [] }
+    if (!tokens.length) return { source:this.metadata(session),events: [], nodes: [] }
     const q = tokens.map(t => `"${t.replaceAll('"','""')}"`).join(' OR ')
     const cap = bounded(limit, 10, 50)
     return {
+      source:this.metadata(session),
       events: this.db.prepare('SELECT e.session,e.ordinal,substr(e.preview,1,500) AS snippet FROM event_fts f JOIN events e ON e.session=f.session AND e.ordinal=f.ordinal WHERE event_fts MATCH ? AND f.session=? ORDER BY e.ordinal DESC LIMIT ?').all(q,session,cap),
       nodes: this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.summary FROM node_fts f JOIN nodes n ON n.session=f.session AND n.id=f.id WHERE node_fts MATCH ? AND f.session=? ORDER BY n.level DESC,n.first DESC LIMIT ?').all(q,session,cap)
     }
@@ -199,7 +240,7 @@ export class ClaudeStore {
     const node = this.node(session,id)
     if (!node) throw new Error('Unknown node')
     const parents = this.db.prepare('SELECT id FROM nodes WHERE session=? AND level>? AND first<=? AND last>=? ORDER BY level LIMIT 20').all(session,node.level,node.first,node.last).map(r=>r.id)
-    return { ...node, children: JSON.parse(node.children), parents }
+    return { ...node, source:this.metadata(session), children: JSON.parse(node.children), parents }
   }
   expand(session, id, ordinal, charOffset = 0, maxChars = 12000) {
     const node = this.node(session,id)
@@ -216,13 +257,13 @@ export class ClaudeStore {
       const slice = raw.slice(from, from+left)
       chunks.push({ ordinal:i, charOffset:from, content:slice })
       left -= slice.length
-      if (from+slice.length < raw.length) return { chunks, next:{ ordinal:i, charOffset:from+slice.length } }
+      if (from+slice.length < raw.length) return { source:this.metadata(session),chunks, next:{ ordinal:i, charOffset:from+slice.length } }
     }
-    return { chunks, next: chunks.at(-1)?.ordinal < node.last ? { ordinal:chunks.at(-1).ordinal+1,charOffset:0 } : null }
+    return { source:this.metadata(session),chunks, next: chunks.at(-1)?.ordinal < node.last ? { ordinal:chunks.at(-1).ordinal+1,charOffset:0 } : null }
   }
   overview(session) {
     const nodes = this.db.prepare('SELECT id,level,first,last,substr(summary,1,320) AS summary FROM nodes WHERE session=? ORDER BY level DESC,last DESC LIMIT 5').all(session)
-    return { session, nodes, source: this.source(session)?.kind || null }
+    return { session, nodes, source:this.metadata(session),kind:this.source(session)?.kind || null }
   }
   doctor(session) {
     const src = this.source(session)
@@ -242,7 +283,7 @@ export class ClaudeStore {
     return { session, events:rows.length, nodes:nodes.length, status:src.status, sqlite:this.db.prepare('PRAGMA integrity_check').get().integrity_check, issues }
   }
 }
-export function importFile(store, path, label, origin = 'import') {
+export function importFile(store, path, label, origin = 'import', name) {
   if (typeof origin!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(origin)) throw new Error('Invalid harness origin')
   if (label!==undefined && (typeof label!=='string' || label.length>200 || !/^[\w.-]+$/.test(label))) throw new Error('Invalid session ID')
   const original = realpathSync(path), st = statSync(original)
@@ -270,7 +311,7 @@ export function importFile(store, path, label, origin = 'import') {
   else if (hash(readFileSync(dest)) !== digest) throw new Error('Existing imported original was modified; refusing to reuse it')
   const session = label || `import-${digest.slice(0,16)}`
   const result=store.ingest(session,dest,isJsonl?'jsonl':'text')
-  store.setOrigin(session,origin)
+  store.setMetadata(session,{harness:origin,externalId:session,name:name||derivedName(store.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview),nameSource:name?'manual':'derived'})
   return result
 }
 export const nodeId = (session, level, first, last, digest) => `s${level}-${hash(`${session}:${level}:${first}:${last}:${digest}`).slice(0,24)}`
