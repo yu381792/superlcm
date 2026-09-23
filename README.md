@@ -1,4 +1,6 @@
-# SuperLcm Claude Recall
+# SuperLcm Claude MCP
+
+**让 Claude 自己压缩上下文，SuperLcm 帮它找回旧对话的细节。**
 
 Independent Claude Code CLI and Claude Desktop adapter for **layered conversation summaries and exact original recall**. Claude's native context compaction is always controlled by Claude; this repository does **not** replace it. It has no DeepSeek Harness dependency or DSH source files.
 

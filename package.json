@@ -1,7 +1,7 @@
 {
-  "name": "superlcm-claude-recall",
+  "name": "superlcm-claude-mcp",
   "version": "0.1.0-alpha.1",
-  "description": "Independent layered recall MCP adapter for Claude Code and Claude Desktop",
+  "description": "SuperLcm Claude MCP — layered recall for Claude Code and Claude Desktop without replacing native compaction",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -22,5 +22,22 @@
     "check": "node scripts/check.mjs",
     "test": "node --test test/adapter.test.js test/package.test.js",
     "validate": "npm run check && npm test"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ygc3817922006-sketch/superlcm-claude-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ygc3817922006-sketch/superlcm-claude-mcp/issues"
+  },
+  "homepage": "https://github.com/ygc3817922006-sketch/superlcm-claude-mcp#readme",
+  "keywords": [
+    "superlcm",
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "mcp",
+    "lossless-recall",
+    "layered-summaries"
+  ]
 }
