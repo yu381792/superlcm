@@ -40,7 +40,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           const event=input.hook_event_name
           const session=codex ? codexSessionKey(input.session_id) : input.session_id
           const file=input.transcript_path ? (codex ? codexTranscript(input.transcript_path,{cwd:input.cwd}) : claudeTranscript(input.transcript_path)) : null
-          const shouldIndex=codex ? ['Stop','PostCompact','SessionEnd'].includes(event) || (event==='SessionStart' && input.source==='compact') : ['Stop','PostCompact'].includes(event) || (event==='SessionStart' && input.source==='compact')
+          const shouldIndex=codex ? ['Stop','PostCompact','SessionEnd','SessionStart','UserPromptSubmit'].includes(event) : ['Stop','PostCompact'].includes(event) || (event==='SessionStart' && input.source==='compact')
           if (shouldIndex && file) result=store.ingest(session,file)
           if (store.source(session)) {
             store.markClient(codex?'codex':'claude-code','hook')

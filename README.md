@@ -11,4 +11,4 @@ Independent MCP server for **layered conversation summaries and exact original r
 - Local Web control console: `node src/cli.js web` prints a one-time loopback URL; choose source/target navigation, a **global or harness-specific** summary backend (never per conversation), and run a local MCP handshake test. Subscription models appear in a selectable CLI-sourced list with a manual model-ID override; custom API has provider, endpoint, model ID and a write-only key. Saving never invokes a model.
 - [Setup, security, tools and limitations](./docs/SETUP.md)
 - Runtime: Node.js 22.16+, no third-party runtime dependencies.
-- Current source preview: 0.1.0-alpha.9. Live end-to-end installation has not been claimed.
+- Current source preview: 0.1.0-alpha.10. Live end-to-end installation has not been claimed.

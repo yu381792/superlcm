@@ -311,6 +311,20 @@ test('session Codex CLI choice dispatches through an isolated fake executable',f
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'summarize','chosen-backend'],{encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_CODEX_CLI_BIN:bin,SUPERLCM_SUMMARY_MODE:'off'},timeout:15000})
   assert.equal(r.status,0,r.stderr);assert.match(store.summaries('chosen-backend').nodes[0].model,/codex-cli:gpt-test/)
 }))
+test('Codex pre-turn hook indexes and current agent saves without MCP import permission',fixture(async ({dir,store})=>{
+  const home=join(dir,'codex-pre-turn'),sessions=join(home,'sessions'),file=join(sessions,'current.jsonl');mkdirSync(sessions,{recursive:true});writeFileSync(file,Array.from({length:8},(_,i)=>line(i)).join(''))
+  store.setGlobalSetting('off');store.setHarnessSetting('codex','agent')
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),env={...process.env,CODEX_HOME:home,SUPERLCM_HOME:store.dir}
+  const input={session_id:'thr_pre_turn',transcript_path:file,cwd:dir,hook_event_name:'UserPromptSubmit',prompt:'Please write a summary'}
+  const hook=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify(input),encoding:'utf8',env,timeout:15000})
+  assert.equal(hook.status,0,hook.stderr);assert.match(hook.stdout,/lcm_summary_work/)
+  const session='codex-thr_pre_turn';assert.equal(store.listSessions(5,0,'codex').total,1)
+  assert.equal(store.eventRows(session).length,8)
+  const {work}=await call(store,'lcm_summary_work',{session});assert.ok(work?.batch_id)
+  const result=await call(store,'lcm_save_summary',{session,batch_id:work.batch_id,summary:'The active session discussed eight events and retained their exact source references.'});assert.equal(result.saved,true)
+  assert.equal(store.summaries(session).total,1)
+  await assert.rejects(call(store,'lcm_import',{path:file}),/disabled/,'file import remains separately gated')
+}))
 test('Codex UserPromptSubmit nudges opted-in agent without a transcript path',fixture(async ({dir,store})=>{
   const file=join(dir,'agent-prompt.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
   store.ingest('codex-thr_agent',file,'text');store.setMetadata('codex-thr_agent',{harness:'codex',externalId:'thr_agent'});store.setGlobalSetting('off');store.setHarnessSetting('codex','agent')
