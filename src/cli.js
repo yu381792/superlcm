@@ -15,7 +15,7 @@ else if (command==='hook' || command==='index' || command==='import' || command=
       if (input.transcript_path && input.session_id) {
         const session=input.session_id, file=claudeTranscript(input.transcript_path)
         if (['Stop','PostCompact'].includes(input.hook_event_name)) result=store.ingest(session,file)
-        if (process.env.SUPERLCM_SUMMARIZE_ON_HOOK==='1' && process.env.SUPERLCM_CLAUDE_MODEL && process.env.ANTHROPIC_API_KEY && ['Stop','PostCompact'].includes(input.hook_event_name)) {
+        if (process.env.SUPERLCM_SUMMARIZE_ON_HOOK==='1' && process.env.SUPERLCM_CLAUDE_MODEL && process.env.SUPERLCM_ANTHROPIC_API_KEY && ['Stop','PostCompact'].includes(input.hook_event_name)) {
           const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session],{detached:true,stdio:'ignore',env:process.env});child.unref()
         }
         if (input.hook_event_name==='SessionStart' && input.source==='compact' && store.source(session)) {
@@ -30,7 +30,7 @@ else if (command==='hook' || command==='index' || command==='import' || command=
       // Indexing alone never starts a paid summarizer.
     } else if (command==='summarize') {
       if (!store.source(rest[0])) throw new Error('Unknown session')
-      try {result=await buildHierarchy(store,rest[0],{model:process.env.SUPERLCM_CLAUDE_MODEL,apiKey:process.env.ANTHROPIC_API_KEY,baseURL:process.env.SUPERLCM_CLAUDE_API_URL});store.setStatus(rest[0],'ok')}
+      try {result=await buildHierarchy(store,rest[0],{model:process.env.SUPERLCM_CLAUDE_MODEL,apiKey:process.env.SUPERLCM_ANTHROPIC_API_KEY,baseURL:process.env.SUPERLCM_CLAUDE_API_URL});store.setStatus(rest[0],'ok')}
       catch(error) {store.setStatus(rest[0],'summary_error');throw error}
     } else if (command==='import') {
       const {importFile}=await import('./store.js');result=importFile(store,rest[0],rest[1])

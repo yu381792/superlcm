@@ -45,10 +45,10 @@ To explicitly allow *paid external* background summarization after `Stop`/`PostC
 ```
 SUPERLCM_SUMMARIZE_ON_HOOK=1
 SUPERLCM_CLAUDE_MODEL=<explicit Anthropic model ID>
-ANTHROPIC_API_KEY=<your own credential, stored outside checked-in settings>
+SUPERLCM_ANTHROPIC_API_KEY=<separate API credential, never commit it>
 ```
 
-Only setting a model or key is not sufficient: the opt-in switch is mandatory. It calls `https://api.anthropic.com/v1/messages` unless you explicitly supply a clean HTTPS origin as `SUPERLCM_CLAUDE_API_URL`. The summarizer has **no implicit fallback to Claude's active model**. For controlled one-off generation, run `node src/cli.js summarize <session_id>` after explicitly setting model and key. Summaries cover completed batches (default 8 messages, then fanout 4); a short or still-growing tail remains searchable as exact originals without a premature invented summary. A crashed summarizer sets `summary_error` in session status; consult `lcm_doctor` and retry explicitly. Hooks do not interrupt a native compaction on summarization failure.
+Use the namespaced `SUPERLCM_ANTHROPIC_API_KEY` rather than Claude Code's `ANTHROPIC_API_KEY`: setting the latter globally can change how Claude Code authenticates and bills. Only setting a model or key is not sufficient: the opt-in switch is mandatory. It calls `https://api.anthropic.com/v1/messages` unless you explicitly supply a clean HTTPS origin as `SUPERLCM_CLAUDE_API_URL`. The summarizer has **no implicit fallback to Claude's active model**. For controlled one-off generation, run `node src/cli.js summarize <session_id>` after explicitly setting model and key. Summaries cover completed batches (default 8 messages, then fanout 4); a short or still-growing tail remains searchable as exact originals without a premature invented summary. A crashed summarizer sets `summary_error` in session status; consult `lcm_doctor` and retry explicitly. Hooks do not interrupt a native compaction on summarization failure.
 
 ## Claude Desktop ordinary chat
 
