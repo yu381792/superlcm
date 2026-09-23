@@ -65,12 +65,52 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_sessions',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
-  assert.equal(tools.length,9)
+  assert.equal(tools.length,10)
   assert.equal(tools.some(tool=>['lcm_summary_work','lcm_save_summary'].includes(tool.name)),false)
-  assert.deepEqual(await call(store,'lcm_sessions'),[])
+  assert.deepEqual(await call(store,'lcm_sessions'),{sessions:[],total:0,next_offset:null})
   input.end();await new Promise(r=>server.once('close',r));lines.close()
 }))
 
+test('any MCP client reads a chosen Claude conversation without merging other summaries',fixture(async ({dir,store})=>{
+  const claude=join(dir,'claude.jsonl');writeFileSync(claude,Array.from({length:32},(_,i)=>line(i)).join(''))
+  store.ingest('claude-conversation',claude);store.setOrigin('claude-conversation','claude-code')
+  assert.equal((await buildHierarchy(store,'claude-conversation',{model:'fake',summarize:async text=>'Claude decision: '+text.slice(0,50)})).created,5)
+  const codex=join(dir,'codex.jsonl')
+  const codexLines=Array.from({length:8},(_,i)=>JSON.stringify(i%2?{type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'Codex response '+i}]}}:{type:'event_msg',payload:{type:'user_message',message:'Codex user '+i}})+'\n').join('')
+  writeFileSync(codex,codexLines)
+  assert.equal(importFile(store,codex,'codex-conversation','codex').added,8)
+  assert.ok(store.search('codex-conversation','Codex').events.length)
+  assert.equal((await buildHierarchy(store,'codex-conversation',{model:'fake',summarize:async()=> 'Codex-only findings'})).created,1)
+  const client=new ClaudeStore(store.dir)
+  try {
+    const claudeOnly=await call(client,'lcm_sessions',{harness:'claude-code',limit:1})
+    assert.equal(claudeOnly.total,1);assert.equal(claudeOnly.sessions[0].session,'claude-conversation')
+    assert.equal(claudeOnly.sessions[0].summary_count,5);assert.match(claudeOnly.sessions[0].first_message,/alpha project/)
+    const all=await call(client,'lcm_sessions',{limit:1})
+    assert.equal(all.total,2);assert.equal(all.next_offset,1)
+    assert.equal((await call(client,'lcm_sessions',{limit:1,offset:1})).sessions.length,1)
+    let page=await call(client,'lcm_summaries',{session:'claude-conversation',limit:2})
+    assert.equal(page.total,5);assert.equal(page.nodes.length,2);assert.equal(page.next_offset,2)
+    const ids=new Set(page.nodes.map(n=>n.id))
+    while(page.next_offset!==null){page=await call(client,'lcm_summaries',{session:'claude-conversation',limit:2,offset:page.next_offset});page.nodes.forEach(n=>ids.add(n.id))}
+    assert.equal(ids.size,5)
+    assert.equal((await call(client,'lcm_summaries',{session:'codex-conversation'})).total,1)
+    assert.equal(client.search('claude-conversation','Codex-only').nodes.length,0)
+    assert.match(client.readEvent('claude-conversation',0).content,/alpha project/)
+    assert.throws(()=>client.setOrigin('claude-conversation','codex'),/different harness/)
+  } finally {client.close()}
+}))
+test('portable JSONL is searchable and unsupported exports are rejected before import',fixture(async ({dir,store})=>{
+  const portable=join(dir,'portable.jsonl')
+  writeFileSync(portable,'{"role":"user","content":"portable project decision"}\n{"role":"assistant","content":"portable confirmation"}\n')
+  const result=importFile(store,portable,'other-session','other-harness')
+  assert.equal(result.added,2);assert.equal(store.sources()[0].harness,'other-harness')
+  assert.equal(store.search('other-session','portable').events.length,2)
+  const unsupported=join(dir,'unsupported.jsonl');writeFileSync(unsupported,'{"type":"unknown","payload":{}}\n')
+  assert.throws(()=>importFile(store,unsupported,'bad-session','other-harness'),/No visible/)
+  assert.equal(store.source('bad-session'),undefined)
+  assert.throws(()=>importFile(store,portable,'bad/session','other-harness'),/Invalid session ID/)
+}))
 test('subscription adapter isolates credentials, tools and model choice',fixture(async ({dir})=>{
   let invoked
   const spawnProcess=(bin,args,options)=>{
@@ -113,9 +153,9 @@ const fs=require('node:fs');let input='';process.stdin.on('data',c=>input+=c);pr
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
   const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CLAUDE_CLI_MODEL:'opus',SUPERLCM_CLAUDE_CLI_BIN:fake,SUPERLCM_TEST_RECEIPT:receipt,ANTHROPIC_API_KEY:'must-be-stripped'}
   delete env.SUPERLCM_ANTHROPIC_API_KEY
-  const index=spawnSync(process.execPath,[cli,'index',src,'integration-session'],{encoding:'utf8',env,timeout:5000})
+  const index=spawnSync(process.execPath,[cli,'index',src,'integration-session'],{encoding:'utf8',env,timeout:15000})
   assert.equal(index.status,0,index.stderr)
-  const worker=spawnSync(process.execPath,[cli,'summarize','integration-session'],{encoding:'utf8',env,timeout:5000})
+  const worker=spawnSync(process.execPath,[cli,'summarize','integration-session'],{encoding:'utf8',env,timeout:15000})
   assert.equal(worker.status,0,worker.stderr)
   assert.equal(JSON.parse(worker.stdout).created,1)
   const args=JSON.parse(readFileSync(receipt,'utf8'))

@@ -21,7 +21,7 @@ else if (command==='hook' || command==='index' || command==='import' || command=
           const session=input.session_id, file=claudeTranscript(input.transcript_path)
           const mode=summaryMode(), event=input.hook_event_name
           if (['Stop','PostCompact'].includes(event) || (event==='SessionStart' && input.source==='compact')) result=store.ingest(session,file)
-          if (store.source(session)) store.setSummaryMode(session,mode)
+          if (store.source(session)) { store.setOrigin(session,'claude-code');store.setSummaryMode(session,mode) }
           if (['Stop','PostCompact'].includes(event) && ['cli','api'].includes(mode) && summaryWork(store,session)) {
             if (mode==='cli' || (process.env.SUPERLCM_CLAUDE_MODEL && process.env.SUPERLCM_ANTHROPIC_API_KEY)) {
               const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session],{detached:true,windowsHide:true,stdio:'ignore',env:{...process.env,SUPERLCM_HOOK_WORKER:'1'}})
@@ -38,6 +38,7 @@ else if (command==='hook' || command==='index' || command==='import' || command=
       const [path,session]=rest
       if (!path||!session) throw new Error('Usage: index <Claude transcript_path> <session_id>')
       result=store.ingest(session,claudeTranscript(path))
+      store.setOrigin(session,'claude-code')
       // Indexing alone never starts a paid summarizer.
     } else if (command==='summarize') {
       if (!store.source(rest[0])) throw new Error('Unknown session')
@@ -52,8 +53,8 @@ else if (command==='hook' || command==='index' || command==='import' || command=
       }
       catch(error) {store.setStatus(rest[0],'summary_error');throw error}
     } else if (command==='import') {
-      const {importFile}=await import('./store.js');result=importFile(store,rest[0],rest[1])
+      const {importFile}=await import('./store.js');result=importFile(store,rest[0],rest[1],rest[2] || 'import')
     } else result=store.overview(rest[0])
     if (command!=='hook') process.stdout.write(JSON.stringify(result)+'\n')
   } catch(error) {process.stderr.write(`SuperLcm: ${error.message}\n`);process.exitCode=1} finally {store.close()}
-} else { process.stderr.write('Usage: node src/cli.js mcp|hook|index|import|overview|summarize\n'); process.exitCode=2 }
+} else { process.stderr.write('Usage: node src/cli.js mcp|hook|index|import <path> [session] [harness]|overview|summarize\n'); process.exitCode=2 }

@@ -1,11 +1,12 @@
 {
-  "name": "superlcm-claude-mcp",
-  "version": "0.1.0-alpha.4",
-  "description": "SuperLcm Claude MCP — layered recall for Claude Code and Claude Desktop without replacing native compaction",
+  "name": "superlcm-mcp",
+  "version": "0.1.0-alpha.5",
+  "description": "Cross-harness conversation summaries and exact-source recall over MCP",
   "type": "module",
   "private": true,
   "license": "MIT",
   "bin": {
+    "superlcm": "./src/cli.js",
     "superlcm-claude": "./src/cli.js"
   },
   "engines": {
@@ -33,10 +34,10 @@
   "homepage": "https://github.com/yu381792/superlcm#readme",
   "keywords": [
     "superlcm",
-    "claude",
-    "claude-code",
-    "claude-desktop",
     "mcp",
+    "cross-harness",
+    "claude-code",
+    "codex",
     "lossless-recall",
     "layered-summaries"
   ]

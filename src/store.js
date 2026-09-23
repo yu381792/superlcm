@@ -6,7 +6,8 @@ import { DatabaseSync } from 'node:sqlite'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
 const maxFile = 256 * 1024 * 1024
-export const home = () => resolve(process.env.SUPERLCM_CLAUDE_HOME || join(homedir(), '.superlcm-claude'))
+// Preserve the existing index path; both Claude and Codex must point at the same home.
+export const home = () => resolve(process.env.SUPERLCM_HOME || process.env.SUPERLCM_CLAUDE_HOME || join(homedir(), '.superlcm-claude'))
 function ensurePrivate(path) { mkdirSync(path, { recursive: true, mode: 0o700 }) }
 function inside(parent, child) { const rel = relative(parent, child); return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) }
 export function claudeTranscript(path) {
@@ -16,17 +17,27 @@ export function claudeTranscript(path) {
   return file
 }
 function visible(record) {
-  const parts = record?.message?.content ?? record?.content ?? ''
+  const parts = record?.message?.content ?? record?.content ?? record?.message ?? ''
   if (typeof parts === 'string') return parts
   if (!Array.isArray(parts)) return ''
-  return parts.filter(p => p?.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n')
+  return parts.filter(p => ['text','input_text','output_text'].includes(p?.type) && typeof p.text === 'string').map(p => p.text).join('\n')
 }
 function extract(raw, kind) {
   if (kind === 'text') return raw.toString('utf8')
   try {
     const record = JSON.parse(raw.toString('utf8'))
-    if (record?.type !== 'user' && record?.type !== 'assistant') return ''
-    return `${record.type}: ${visible(record)}`.slice(0, 16000)
+    // Portable JSONL: {role:'user'|'assistant',content:'...'}; Claude Code;
+    // and visible Codex rollout messages. Every raw record remains exact on disk.
+    let role = record?.role ?? record?.type, item = record
+    if (record?.type === 'response_item' && record.payload?.type === 'message') { role=record.payload.role; item=record.payload }
+    if (record?.type === 'event_msg') {
+      const event=record.payload?.type
+      role=event === 'user_message' ? 'user' : event === 'agent_message' ? 'assistant' : null
+      item=record.payload
+    }
+    if (role !== 'user' && role !== 'assistant') return ''
+    const text=visible(item).trim()
+    return text ? `${role}: ${text}`.slice(0, 16000) : ''
   } catch { return '' }
 }
 function bounded(value, fallback, max) { return Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback }
@@ -45,6 +56,7 @@ export class ClaudeStore {
       CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(session UNINDEXED, id UNINDEXED, summary);
       CREATE TABLE IF NOT EXISTS leases(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS summary_policies(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('off','cli','api')));
+      CREATE TABLE IF NOT EXISTS session_origins(session TEXT PRIMARY KEY REFERENCES sources(session), harness TEXT NOT NULL);
     `)
   }
   close() { this.db.close() }
@@ -54,7 +66,28 @@ export class ClaudeStore {
     this.db.prepare('INSERT INTO summary_policies(session,mode) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET mode=excluded.mode').run(session,mode)
   }
   summaryMode(session) { return this.db.prepare('SELECT mode FROM summary_policies WHERE session=?').get(session)?.mode || null }
-  sources() { return this.db.prepare('SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode FROM sources s LEFT JOIN summary_policies m ON s.session=m.session ORDER BY s.session').all() }
+  setOrigin(session,harness) {
+    if (typeof harness !== 'string' || !/^[a-z][a-z0-9-]{0,39}$/.test(harness) || !this.source(session)) throw new Error('Invalid session harness or unknown session')
+    const prior=this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness
+    if (prior && prior!==harness) throw new Error('Session already belongs to a different harness; choose a new session ID')
+    this.db.prepare('INSERT OR IGNORE INTO session_origins(session,harness) VALUES(?,?)').run(session,harness)
+  }
+  sources() { return this.db.prepare("SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode,COALESCE(o.harness,'legacy') AS harness,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN session_origins o ON s.session=o.session ORDER BY s.session").all() }
+  listSessions(limit=20,offset=0,harness) {
+    const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
+    const params=harness ? [harness] : []
+    const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
+    const select="SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode,COALESCE(o.harness,'legacy') AS harness,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN session_origins o ON s.session=o.session"
+    const sessions=this.db.prepare(select+where+' ORDER BY s.session LIMIT ? OFFSET ?').all(...params,limit,offset)
+    return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}
+  }
+  summaries(session, limit=10, offset=0) {
+    if (!this.source(session)) throw new Error('Unknown session')
+    if (!Number.isSafeInteger(limit) || limit<1 || limit>50 || !Number.isSafeInteger(offset) || offset<0) throw new Error('Invalid summary page; limit must be 1–50 and offset nonnegative')
+    const total=this.db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE session=?').get(session).n
+    const rows=this.db.prepare('SELECT id,level,first,last,children,summary,model FROM nodes WHERE session=? ORDER BY level DESC,first ASC,id ASC LIMIT ? OFFSET ?').all(session,limit,offset).map(row=>({...row,children:JSON.parse(row.children)}))
+    return {session,total,nodes:rows,next_offset:offset+rows.length<total ? offset+rows.length : null}
+  }
   source(session) { return this.db.prepare('SELECT * FROM sources WHERE session=?').get(session) }
   #verifySource(session, path, kind) {
     if (!session || typeof session !== 'string' || session.length > 200 || !/^[\w.-]+$/.test(session)) throw new Error('Invalid session id')
@@ -209,7 +242,9 @@ export class ClaudeStore {
     return { session, events:rows.length, nodes:nodes.length, status:src.status, sqlite:this.db.prepare('PRAGMA integrity_check').get().integrity_check, issues }
   }
 }
-export function importFile(store, path, label) {
+export function importFile(store, path, label, origin = 'import') {
+  if (typeof origin!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(origin)) throw new Error('Invalid harness origin')
+  if (label!==undefined && (typeof label!=='string' || label.length>200 || !/^[\w.-]+$/.test(label))) throw new Error('Invalid session ID')
   const original = realpathSync(path), st = statSync(original)
   if (!/\.(jsonl|txt)$/i.test(original)) throw new Error('Import requires .jsonl or .txt source')
   if (!st.isFile() || st.size > 32*1024*1024 || !st.size) throw new Error('Import requires a nonempty regular file of at most 32 MiB')
@@ -217,13 +252,27 @@ export function importFile(store, path, label) {
   if (raw.includes(0)) throw new Error('Binary imports are not supported')
   new TextDecoder('utf-8',{fatal:true}).decode(raw)
   const digest = hash(raw)
-  const isJsonl = original.endsWith('.jsonl')
-  if (isJsonl && !raw.toString('utf8').endsWith('\n')) throw new Error('JSONL imports require a final newline')
+  const isJsonl = /\.jsonl$/i.test(original)
+  if (isJsonl) {
+    const content=raw.toString('utf8')
+    if (!content.endsWith('\n')) throw new Error('JSONL imports require a final newline')
+    let visibleCount=0
+    for (const line of content.split('\n').slice(0,-1)) {
+      if (Buffer.byteLength(line)>4*1024*1024) throw new Error('Individual JSONL line exceeds 4 MiB')
+      try { JSON.parse(line) } catch { throw new Error('Invalid JSONL import; use portable {role,content} records or a UTF-8 .txt export') }
+      if (extract(Buffer.from(line), 'jsonl')) visibleCount++
+    }
+    if (!visibleCount) throw new Error('No visible user/assistant messages in JSONL; export {role,content} records or a UTF-8 .txt file')
+  }
   const folder = join(store.dir,'imports'); ensurePrivate(folder)
   const dest = join(folder,`${digest}.${isJsonl?'jsonl':'txt'}`)
   if (!existsSync(dest)) writeFileSync(dest,raw,{flag:'wx',mode:0o600})
   else if (hash(readFileSync(dest)) !== digest) throw new Error('Existing imported original was modified; refusing to reuse it')
-  const session = label || `desktop-${digest.slice(0,16)}`
-  return store.ingest(session,dest,isJsonl?'jsonl':'text')
+  const session = label || `import-${digest.slice(0,16)}`
+  const result=store.ingest(session,dest,isJsonl?'jsonl':'text')
+  store.setOrigin(session,origin)
+  return result
 }
 export const nodeId = (session, level, first, last, digest) => `s${level}-${hash(`${session}:${level}:${first}:${last}:${digest}`).slice(0,24)}`
+
+export const SuperLcmStore = ClaudeStore
