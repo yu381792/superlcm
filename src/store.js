@@ -1,3 +1,4 @@
+import { summaryMode } from './mode.js'
 import { createHash } from 'node:crypto'
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -64,6 +65,8 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, source_session TEXT NOT NULL REFERENCES sources(session), target_session TEXT NOT NULL REFERENCES sources(session), target_harness TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), issued_at TEXT, CHECK(source_session<>target_session));
       CREATE INDEX IF NOT EXISTS deliveries_target ON deliveries(target_harness,target_session,issued_at);
       CREATE TABLE IF NOT EXISTS client_seen(client TEXT NOT NULL, seen_at TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(client,kind));
+      CREATE TABLE IF NOT EXISTS global_summary_settings(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
+      CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
     `)
     // Existing alpha.5 indexes have only (session,harness); preserve every row.
     const columns=new Set(this.db.prepare('PRAGMA table_info(session_origins)').all().map(c=>c.name))
@@ -82,6 +85,34 @@ export class ClaudeStore {
     return this.preference(session)
   }
   preference(session) {return this.db.prepare('SELECT mode,model FROM summary_preferences WHERE session=?').get(session)||{mode:'auto',model:null}}
+  // Legacy conversation preferences remain in SQLite for migration; routing ignores them.
+  validateSetting(mode,model) {
+    if (!['off','cli','codex-cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)))) throw new Error('Invalid summary setting')
+    if (['off','agent'].includes(mode) && model!==null) throw new Error('This summary mode does not use a model')
+  }
+  globalSetting() { return this.db.prepare('SELECT mode,model FROM global_summary_settings WHERE id=1').get() || null }
+  harnessSetting(harness) {
+    if(typeof harness!=='string'||!/^[a-z][a-z0-9-]{0,39}$/.test(harness))throw new Error('Invalid harness')
+    return this.db.prepare('SELECT mode,model FROM harness_summary_settings WHERE harness=?').get(harness) || null
+  }
+  setGlobalSetting(mode,model=null) {
+    this.validateSetting(mode,model)
+    this.db.prepare('INSERT INTO global_summary_settings(id,mode,model) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET mode=excluded.mode,model=excluded.model').run(mode,model)
+    return this.globalSetting()
+  }
+  setHarnessSetting(harness,mode,model=null) {
+    this.harnessSetting(harness);this.validateSetting(mode,model)
+    this.db.prepare('INSERT INTO harness_summary_settings(harness,mode,model) VALUES(?,?,?) ON CONFLICT(harness) DO UPDATE SET mode=excluded.mode,model=excluded.model').run(harness,mode,model)
+    return this.harnessSetting(harness)
+  }
+  clearHarnessSetting(harness) {this.harnessSetting(harness);this.db.prepare('DELETE FROM harness_summary_settings WHERE harness=?').run(harness);return null}
+  harnessSettings() {return this.db.prepare('SELECT harness,mode,model FROM harness_summary_settings ORDER BY harness').all()}
+  effectiveSetting(session,env=process.env) {
+    const harness=this.metadata(session).harness
+    const specific=harness!=='legacy'?this.harnessSetting(harness):null
+    const choice=specific||this.globalSetting()
+    return choice ? {...choice,scope:specific?'harness':'global',harness} : {mode:summaryMode(env),model:null,scope:'environment',harness}
+  }
   enqueue(source,target) {
     const from=this.metadata(source),to=this.metadata(target)
     if (source===target) throw new Error('Source and target conversations must differ')
@@ -139,8 +170,8 @@ export class ClaudeStore {
     const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
-    const select="SELECT s.session,s.kind,s.offset,s.status,CASE WHEN p.mode IS NOT NULL AND p.mode<>'auto' THEN p.mode ELSE m.mode END AS summary_mode,p.model AS summary_model,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN summary_preferences p ON s.session=p.session LEFT JOIN session_origins o ON s.session=o.session"
-    const sessions=this.db.prepare(select+where+' ORDER BY s.session LIMIT ? OFFSET ?').all(...params,limit,offset).map(row=>({...row,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}))
+    const select="SELECT s.session,s.kind,s.offset,s.status,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN session_origins o ON s.session=o.session"
+    const sessions=this.db.prepare(select+where+' ORDER BY s.session LIMIT ? OFFSET ?').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,summary_mode:setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}
   }
   resolveSession(query,harness) {

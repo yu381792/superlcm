@@ -5,22 +5,21 @@ import { buildHierarchy, summaryWork } from './summarize.js'
 import { summarizeWithClaudeCli } from './claude-cli.js'
 import { summarizeWithCodexCli } from './codex-cli.js'
 import { issuePending } from './context.js'
-import { summaryMode } from './mode.js'
 import { startServer } from './mcp.js'
 import { startWeb } from './web.js'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 const [command,...rest]=process.argv.slice(2)
-const effective=(store,session)=>{const pref=store.preference(session);return {mode:pref.mode==='auto'?summaryMode():pref.mode,model:pref.model}}
+const effective=(store,session)=>store.effectiveSetting(session)
 const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>resolve(JSON.parse(text)))})
-function scheduleSummary(store,session,mode) {
+function scheduleSummary(store,session,mode,model) {
   if (!['cli','codex-cli','api'].includes(mode) || !summaryWork(store,session)) return
-  if (mode==='api' && (!(store.preference(session).model||process.env.SUPERLCM_CLAUDE_MODEL) || !process.env.SUPERLCM_ANTHROPIC_API_KEY)) {
+  if (mode==='api' && (!(model||process.env.SUPERLCM_CLAUDE_MODEL) || !process.env.SUPERLCM_ANTHROPIC_API_KEY)) {
     store.setStatus(session,'summary_unconfigured')
     process.stderr.write('SuperLcm: api mode needs SUPERLCM_CLAUDE_MODEL and SUPERLCM_ANTHROPIC_API_KEY\n')
     return
   }
-  const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session],{detached:true,windowsHide:true,stdio:'ignore',env:{...process.env,SUPERLCM_HOOK_WORKER:'1',SUPERLCM_SUMMARY_EXPECTED_MODE:mode}})
+  const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session],{detached:true,windowsHide:true,stdio:'ignore',env:{...process.env,SUPERLCM_HOOK_WORKER:'1',SUPERLCM_SUMMARY_EXPECTED_MODE:mode,SUPERLCM_SUMMARY_EXPECTED_MODEL:model||''}})
   child.on('error',error=>process.stderr.write('SuperLcm: background worker could not start: '+error.message+'\n'))
   child.unref()
 }
@@ -44,12 +43,12 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           const shouldIndex=codex ? ['Stop','PostCompact','SessionEnd'].includes(event) || (event==='SessionStart' && input.source==='compact') : ['Stop','PostCompact'].includes(event) || (event==='SessionStart' && input.source==='compact')
           if (shouldIndex && file) result=store.ingest(session,file)
           if (store.source(session)) {
-            const {mode}=effective(store,session)
             store.markClient(codex?'codex':'claude-code','hook')
             const title=codex ? (file?codexNativeName(input.session_id,file):null) : store.nativeClaudeTitle(session)
             store.setMetadata(session,{harness:codex?'codex':'claude-code',externalId:input.session_id,name:title||derivedTitle(store,session),nameSource:title?'native':'derived'})
+            const {mode,model}=effective(store,session)
             if (['off','cli','api'].includes(mode)) store.setSummaryMode(session,mode)
-            if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) scheduleSummary(store,session,mode)
+            if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) scheduleSummary(store,session,mode,model)
             if (event==='UserPromptSubmit' || event==='SessionStart') {
               const packets=issuePending(store,codex?'codex':'claude-code',input.session_id,{maxChars:2200})
               for(const packet of packets) { process.stdout.write(`SuperLcm delivery #${packet.id}: ${packet.content}\n`);store.markIssued(packet.id) }
@@ -77,7 +76,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if (!store.source(rest[0])) throw new Error('Unknown session')
       try {
         const {mode,model}=effective(store,rest[0])
-        if (process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE||store.summaryMode(rest[0]))!==mode) throw new Error('Summary mode changed before background worker started')
+        if (process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
         result=mode==='api'
           ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:process.env.SUPERLCM_ANTHROPIC_API_KEY,baseURL:process.env.SUPERLCM_CLAUDE_API_URL})

@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { summarizeWithCodexCli, codexSubscriptionEnv } from '../src/codex-cli.js'
 import { startWeb } from '../src/web.js'
+import { modelCatalog, harnessConnections } from '../src/model-catalog.js'
 import { page as webPage } from '../src/web-page.js'
 import { codexTranscript, codexSessionKey } from '../src/codex.js'
 const fixture = fn => async t => {
@@ -196,6 +197,25 @@ test('duplicate names remain ambiguous; source identity is returned with summary
   assert.equal(page.nodes[0].summary,'A deliberately separate summary')
   assert.equal((await call(store,'lcm_summaries',{session:'two'})).source.conversation_id,'two')
 }))
+test('global defaults and per-harness overrides persist without a conversation selector',fixture(async ({dir,store})=>{
+  for(const [id,harness] of [['a','claude-code'],['b','codex']]){const file=join(dir,id+'.txt');writeFileSync(file,'A user decision\n');importFile(store,file,id,harness)}
+  assert.equal(store.effectiveSetting('a',{}).mode,'cli')
+  store.setGlobalSetting('off');assert.equal(store.effectiveSetting('a').mode,'off');assert.equal(store.effectiveSetting('b').mode,'off')
+  store.setHarnessSetting('codex','codex-cli','gpt-test');assert.equal(store.effectiveSetting('a').scope,'global');assert.deepEqual([store.effectiveSetting('b').mode,store.effectiveSetting('b').model,store.effectiveSetting('b').scope],['codex-cli','gpt-test','harness'])
+  store.setPreference('b','agent');assert.equal(store.effectiveSetting('b').mode,'codex-cli')
+  const reopened=new ClaudeStore(store.dir);try{assert.equal(reopened.effectiveSetting('b').mode,'codex-cli');assert.equal(reopened.listSessions().sessions.find(x=>x.session==='b').summary_mode,'codex-cli')}finally{reopened.close()}
+  store.clearHarnessSetting('codex');assert.equal(store.effectiveSetting('b').mode,'off')
+  assert.throws(()=>store.setGlobalSetting('off','gpt-test'),/does not use/);assert.throws(()=>store.setHarnessSetting('codex','cli','bad model'),/Invalid/)
+}))
+test('CLI model metadata reads only help and visible local Codex cache',fixture(async ({dir,store})=>{
+  writeFileSync(join(dir,'models_cache.json'),JSON.stringify({fetched_at:'test-date',models:[{slug:'gpt-listed',display_name:'GPT Listed',visibility:'list',priority:1},{slug:'gpt-hidden',visibility:'hide',priority:2}]}))
+  const codex=await modelCatalog('codex-cli',{env:{CODEX_HOME:dir}});assert.deepEqual(codex.models,[{id:'gpt-listed',label:'GPT Listed'}]);assert.equal(codex.updated_at,'test-date')
+  const calls=[];const claude=await modelCatalog('cli',{env:{SUPERLCM_CLAUDE_CLI_BIN:'fake-claude'},runCommand:async(bin,args)=>{calls.push([bin,args]);return {stdout:"--model <model>  Model for session. Provide\n                an alias for the latest model (e.g.\n                'fable', 'opus', or 'sonnet') or a\n                model's full name\n  -n, --name"}}})
+  assert.deepEqual(calls,[['fake-claude',['--help']]]);assert.deepEqual(claude.models.map(x=>x.id),['fable','opus','sonnet'])
+  store.setHarnessSetting('codex','off');store.markClient('claude-code','hook')
+  const evidence=await harnessConnections(store,{env:{},runCommand:async(bin,args)=>bin==='codex'?{stdout:''}:Promise.reject(Error('not configured'))})
+  assert.equal(evidence.find(x=>x.harness==='codex').configured,true);assert.ok(evidence.find(x=>x.harness==='claude-code').hook_seen)
+}))
 test('metadata-only Codex batches never invoke a summary model',fixture(async ({dir,store})=>{
   const path=join(dir,'metadata.jsonl')
   writeFileSync(path,Array.from({length:8},(_,i)=>JSON.stringify(i===0?{type:'custom-title',customTitle:'Title without messages'}:{type:'event_msg',payload:{type:'token_count',info:{i}}})+'\n').join(''))
@@ -227,14 +247,15 @@ test('main-agent summary mode requires explicit opt-in and exact unchanged sourc
   const file=join(dir,'agent.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'agent decision '+i+'\n').join(''))
   importFile(store,file,'agent-A','codex','Agent authored A')
   await assert.rejects(call(store,'lcm_summary_work',{session:'agent-A'}),/disabled/)
-  store.setPreference('agent-A','agent')
+  store.setGlobalSetting('off');store.setHarnessSetting('codex','agent');store.setPreference('agent-A','off')
+  assert.equal(store.effectiveSetting('agent-A').mode,'agent')
   const work=(await call(store,'lcm_summary_work',{session:'agent-A'})).work
   assert.ok(work.batch_id);assert.equal(work.level,0)
   const saved=await call(store,'lcm_save_summary',{session:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'})
   assert.equal(saved.saved,true);assert.equal(store.summaries('agent-A').nodes[0].model,'mcp-agent')
   await assert.rejects(call(store,'lcm_save_summary',{session:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'}),/Stale/)
   const another=join(dir,'tamper.txt');writeFileSync(another,Array.from({length:8},(_,i)=>'before '+i+'\n').join(''));importFile(store,another,'tamper-A','codex')
-  store.setPreference('tamper-A','agent');const pending=(await call(store,'lcm_summary_work',{session:'tamper-A'})).work
+  const pending=(await call(store,'lcm_summary_work',{session:'tamper-A'})).work
   const bound=store.source('tamper-A').path;const bytes=readFileSync(bound);bytes[3]=bytes[3]===65?66:65;writeFileSync(bound,bytes)
   await assert.rejects(call(store,'lcm_save_summary',{session:'tamper-A',batch_id:pending.batch_id,summary:'This should not persist with a changed original.'}),/changed/)
 }))
@@ -247,14 +268,14 @@ test('Codex CLI backend strips API credentials and captures final JSONL item',fi
 }))
 test('session Codex CLI choice dispatches through an isolated fake executable',fixture(async ({dir,store})=>{
   const file=join(dir,'codex-backend.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
-  importFile(store,file,'chosen-backend','codex');store.setPreference('chosen-backend','codex-cli','gpt-test')
+  importFile(store,file,'chosen-backend','codex');store.setGlobalSetting('off');store.setHarnessSetting('codex','codex-cli','gpt-test')
   const bin=join(dir,'fake-codex');writeFileSync(bin,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\'item.completed\',item:{type:\'agent_message\',text:\'Independent Codex worker summary recorded decisions.\'}})+\'\\n\')\n',{mode:0o700})
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'summarize','chosen-backend'],{encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_CODEX_CLI_BIN:bin,SUPERLCM_SUMMARY_MODE:'off'},timeout:15000})
   assert.equal(r.status,0,r.stderr);assert.match(store.summaries('chosen-backend').nodes[0].model,/codex-cli:gpt-test/)
 }))
 test('Codex UserPromptSubmit nudges opted-in agent without a transcript path',fixture(async ({dir,store})=>{
   const file=join(dir,'agent-prompt.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
-  store.ingest('codex-thr_agent',file,'text');store.setMetadata('codex-thr_agent',{harness:'codex',externalId:'thr_agent'});store.setPreference('codex-thr_agent','agent')
+  store.ingest('codex-thr_agent',file,'text');store.setMetadata('codex-thr_agent',{harness:'codex',externalId:'thr_agent'});store.setGlobalSetting('off');store.setHarnessSetting('codex','agent')
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_agent',transcript_path:null,cwd:dir,hook_event_name:'UserPromptSubmit'}),encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir},timeout:15000})
   assert.equal(r.status,0,r.stderr);assert.match(r.stdout,/lcm_summary_work/);assert.equal(store.summaries('codex-thr_agent').total,0)
 }))
@@ -265,7 +286,7 @@ test('8790-inspired Web markup keeps strict-token script syntactically valid',()
   assert.match(html,/\.nav-link:hover i,\.nav-link.active i\{background:var\(--accent\);border-color:var\(--accent\)\}/);assert.doesNotMatch(html,/\.nav-link:hover\{color:/);assert.doesNotMatch(html,/\.nav-link.active\{background:/);assert.match(html,/\.side-nav\{display:grid;align-content:start;gap:16px\}/)
   assert.match(html,/\.chapter\[hidden\]/);assert.match(html,/<aside class="intro"><h1>SuperLcm<\/h1>/)
   for(const label of ['对话索引','对话导入','模型设置','MCP连接'])assert.match(html,new RegExp('>'+label+'<'))
-  assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL/)
+  assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL|id="modeSession"|本页有摘要/);assert.match(html,/<div class="k">摘要<\/div>/)
 })
 test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
   const web=await startWeb({store:new ClaudeStore(store.dir)})
@@ -275,9 +296,18 @@ test('local Web console authenticates and probes actual MCP protocol',fixture(as
     const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token}
     assert.equal((await fetch(base+'/api/state')).status,401)
     assert.equal((await fetch(base+'/api/state',{headers})).status,200)
+    const original=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.equal(typeof original.global.mode,'string')
+    const saved=await fetch(base+'/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify({scope:'global',mode:'off'})});assert.equal(saved.status,200);assert.equal(store.globalSetting().mode,'off')
+    store.markClient('codex','hook')
+    const configured=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.ok(configured.harnesses.some(h=>h.harness==='codex'))
+    const post=body=>fetch(base+'/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify(body)})
+    assert.equal((await post({scope:'harness',harness:'codex',mode:'cli',model:'opus'})).status,200);assert.equal(store.harnessSetting('codex').model,'opus')
+    assert.equal((await post({scope:'harness',harness:'bogus',mode:'off'})).status,400)
+    assert.equal((await post({scope:'harness',harness:'codex',mode:'inherit'})).status,200);assert.equal(store.harnessSetting('codex'),null)
+    assert.equal((await fetch(base+'/api/preference',{headers})).status,404)
     const probe=await fetch(base+'/api/probe',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:'{}'}).then(r=>r.json())
     assert.equal(probe.ok,true,JSON.stringify(probe))
-    assert.equal((await fetch(base+'/api/preference',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:'http://evil.local'},body:'{}'})).status,403)
+    assert.equal((await fetch(base+'/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:'http://evil.local'},body:'{}'})).status,403)
   }finally{await web.close()}
 }))
 test('subscription adapter isolates credentials, tools and model choice',fixture(async ({dir})=>{
