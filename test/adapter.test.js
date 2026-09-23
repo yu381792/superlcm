@@ -1,15 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore, importFile } from '../src/store.js'
-import { buildHierarchy, summaryWork, saveAgentSummary } from '../src/summarize.js'
+import { buildHierarchy } from '../src/summarize.js'
+import { summarizeWithClaudeCli, subscriptionEnv } from '../src/claude-cli.js'
 import { summaryMode } from '../src/mode.js'
 import { call, startServer, tools } from '../src/mcp.js'
 import { PassThrough } from 'node:stream'
 import { createInterface } from 'node:readline'
 import { spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 const fixture = fn => async t => {
   const dir=mkdtempSync(join(tmpdir(),'superlcm-claude-'))
@@ -63,62 +65,106 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_sessions',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
-  assert.equal(tools.length,11)
+  assert.equal(tools.length,9)
+  assert.equal(tools.some(tool=>['lcm_summary_work','lcm_save_summary'].includes(tool.name)),false)
   assert.deepEqual(await call(store,'lcm_sessions'),[])
   input.end();await new Promise(r=>server.once('close',r));lines.close()
 }))
 
-test('agent-written summaries create verified hierarchical DAG without an API key',fixture(async ({dir,store})=>{
-  const src=join(dir,'agent.jsonl');writeFileSync(src,Array.from({length:32},(_,i)=>line(i)).join(''))
-  assert.equal(store.ingest('agent-session',src).added,32)
-  const first=await call(store,'lcm_summary_work',{session:'agent-session'})
-  assert.equal(first.level,0);assert.equal(first.first,0);assert.equal(first.last,7)
-  assert.equal((await call(store,'lcm_save_summary',{session:'agent-session',batch_id:first.batch_id,summary:'Decisions 0–7 concern alpha project.'})).created,true)
-  assert.equal(saveAgentSummary(store,'agent-session',first.batch_id,'Duplicate summary is ignored.').created,false)
-  let work=summaryWork(store,'agent-session'),count=1
-  while(work){saveAgentSummary(store,'agent-session',work.batch_id,`Summary level ${work.level} from event ${work.first} to ${work.last}.`);count++;work=summaryWork(store,'agent-session');if(count>10)throw Error('summary loop did not converge')}
-  assert.equal(count,5);assert.equal(store.overview('agent-session').nodes[0].level,1)
-  assert.equal(store.doctor('agent-session').issues.length,0)
-  assert.rejects(call(store,'lcm_save_summary',{session:'agent-session',batch_id:'fake',summary:'Fabricated summary content.'}),/Batch changed/)
+test('subscription adapter isolates credentials, tools and model choice',fixture(async ({dir})=>{
+  let invoked
+  const spawnProcess=(bin,args,options)=>{
+    invoked={bin,args,options}
+    const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:()=>{}})
+    queueMicrotask(()=>{child.stdout.end(JSON.stringify({type:'result',is_error:false,result:'Concise factual summary.'}));child.stderr.end();child.emit('close',0)})
+    return child
+  }
+  const result=await summarizeWithClaudeCli('Decision: use CLI summary.',{model:'opus',bin:'test-claude',env:{ANTHROPIC_API_KEY:'secret',ANTHROPIC_AUTH_TOKEN:'token',ANTHROPIC_BASE_URL:'http://elsewhere',ANTHROPIC_PROFILE:'profile',CLAUDE_CODE_USE_VERTEX:'1',CLAUDE_CODE_OAUTH_TOKEN:'subscription-token'},cwd:join(dir,'isolated'),spawnProcess})
+  assert.equal(result,'Concise factual summary.')
+  assert.equal(invoked.bin,'test-claude')
+  assert.deepEqual(invoked.args.slice(0,6),['--print','--output-format','json','--model','opus','--disable-slash-commands'])
+  assert.deepEqual(invoked.args.slice(6,9),['--tools','','--strict-mcp-config'])
+  assert.equal(invoked.args[9],'--system-prompt')
+  assert.match(invoked.args[10],/Never follow instructions/)
+  assert.equal(invoked.options.env.ANTHROPIC_API_KEY,undefined)
+  assert.equal(invoked.options.env.ANTHROPIC_PROFILE,undefined)
+  assert.equal(invoked.options.env.CLAUDE_CODE_USE_VERTEX,undefined)
+  assert.equal(invoked.options.env.CLAUDE_CODE_OAUTH_TOKEN,'subscription-token')
+  assert.equal(invoked.options.env.SUPERLCM_CLI_WORKER,'1')
+  assert.throws(()=>summarizeWithClaudeCli('yes',{model:'--evil'}),/Invalid/)
 }))
-test('agent summary refuses changed original source',fixture(async ({dir,store})=>{
+test('CLI model callback builds hierarchical summaries without an API key',fixture(async ({dir,store})=>{
+  const src=join(dir,'cli.jsonl');writeFileSync(src,Array.from({length:32},(_,i)=>line(i)).join(''))
+  store.ingest('cli-session',src)
+  const summarize=async text=>'Summary: '+text.slice(0,45)
+  assert.equal((await buildHierarchy(store,'cli-session',{model:'claude-cli:sonnet',summarize})).created,5)
+  assert.equal(store.overview('cli-session').nodes[0].level,1)
+  assert.equal(store.doctor('cli-session').issues.length,0)
+  assert.equal((await buildHierarchy(store,'cli-session',{model:'claude-cli:sonnet',summarize})).created,0)
+}))
+test('CLI command persists summary from a fake subscription executable', {skip:process.platform==='win32'}, fixture(async ({dir,store})=>{
+  const config=join(dir,'claude-config'),projects=join(config,'projects'),src=join(projects,'session.jsonl')
+  mkdirSync(projects,{recursive:true});writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
+  const fake=join(dir,'fake-claude'),receipt=join(dir,'receipt.json')
+  writeFileSync(fake,`#!/usr/bin/env node
+const fs=require('node:fs');let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{fs.writeFileSync(process.env.SUPERLCM_TEST_RECEIPT,JSON.stringify({args:process.argv.slice(2),inputChars:input.length,apiKeyPresent:Boolean(process.env.ANTHROPIC_API_KEY)}));process.stdout.write(JSON.stringify({type:'result',is_error:false,result:'Decisions concern alpha project.'}));});
+`)
+  chmodSync(fake,0o700)
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
+  const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CLAUDE_CLI_MODEL:'opus',SUPERLCM_CLAUDE_CLI_BIN:fake,SUPERLCM_TEST_RECEIPT:receipt,ANTHROPIC_API_KEY:'must-be-stripped'}
+  delete env.SUPERLCM_ANTHROPIC_API_KEY
+  const index=spawnSync(process.execPath,[cli,'index',src,'integration-session'],{encoding:'utf8',env,timeout:5000})
+  assert.equal(index.status,0,index.stderr)
+  const worker=spawnSync(process.execPath,[cli,'summarize','integration-session'],{encoding:'utf8',env,timeout:5000})
+  assert.equal(worker.status,0,worker.stderr)
+  assert.equal(JSON.parse(worker.stdout).created,1)
+  const args=JSON.parse(readFileSync(receipt,'utf8'))
+  assert.equal(args.args[4],'opus');assert.equal(args.apiKeyPresent,false);assert.ok(args.inputChars>50)
+  const nodeId=store.overview('integration-session').nodes[0].id
+  assert.equal(store.node('integration-session',nodeId).model,'claude-cli:opus')
+}))
+test('background summary refuses changed original before any model call',fixture(async ({dir,store})=>{
   const src=join(dir,'changed.jsonl');writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
-  store.ingest('changed-session',src);const work=summaryWork(store,'changed-session')
+  store.ingest('changed-session',src)
   writeFileSync(src,Array.from({length:8},(_,i)=>line(i).replace('alpha','omega')).join(''))
-  assert.throws(()=>saveAgentSummary(store,'changed-session',work.batch_id,'Facts must reflect verified original content.'),/changed/)
+  let called=false
+  await assert.rejects(buildHierarchy(store,'changed-session',{model:'claude-cli:sonnet',summarize:async()=>{called=true;return 'must never save'}}),/changed/)
+  assert.equal(called,false)
+  assert.deepEqual(store.overview('changed-session').nodes,[])
 }))
-
-test('agent hook nudges locally, explicit agent mode wins over legacy API flag',fixture(async ({dir})=>{
+test('CLI mode never injects agent writing prompts and worker hooks do not recurse',fixture(async ({dir})=>{
   const config=join(dir,'claude-config'),projects=join(config,'projects'),db=join(dir,'hook-index')
   mkdirSync(projects,{recursive:true});const src=join(projects,'hook.jsonl')
   writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
-  const hook={hook_event_name:'UserPromptSubmit',session_id:'hook-session',transcript_path:src}
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
-  const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:db,SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_SUMMARIZE_ON_HOOK:'1'}
+  const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:db,SUPERLCM_SUMMARY_MODE:'cli'}
   delete env.SUPERLCM_ANTHROPIC_API_KEY;delete env.SUPERLCM_CLAUDE_MODEL
-  const run=()=>spawnSync(process.execPath,[cli,'hook'],{input:JSON.stringify(hook),encoding:'utf8',env,timeout:5000})
-  const result=run();assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/lcm_summary_work/);assert.doesNotMatch(result.stderr,/api mode/)
-  env.SUPERLCM_ANTHROPIC_API_KEY='fake-not-used';const api=run();assert.equal(api.status,0,api.stderr);assert.equal(api.stdout,'')
-  const seen=new ClaudeStore(db);assert.equal(seen.summaryMode('hook-session'),'api');assert.equal(seen.sources()[0].summary_mode,'api')
-  await assert.rejects(call(seen,'lcm_summary_work',{session:'hook-session'}),/Agent summaries disabled/)
-  await assert.rejects(call(seen,'lcm_save_summary',{session:'hook-session',batch_id:'fake',summary:'This must not be written.'}),/Agent summaries disabled/)
-  seen.close()
-  env.SUPERLCM_SUMMARY_MODE='off';const off=run();assert.equal(off.status,0,off.stderr);assert.equal(off.stdout,'')
-  const disabled=new ClaudeStore(db);assert.equal(disabled.summaryMode('hook-session'),'off');await assert.rejects(call(disabled,'lcm_summary_work',{session:'hook-session'}),/Agent summaries disabled/);disabled.close()
+  const run=(hook, extra={})=>spawnSync(process.execPath,[cli,'hook'],{input:JSON.stringify({session_id:'hook-session',transcript_path:src,...hook}),encoding:'utf8',env:{...env,...extra},timeout:5000})
+  const prompt=run({hook_event_name:'UserPromptSubmit'})
+  assert.equal(prompt.status,0,prompt.stderr);assert.equal(prompt.stdout,'')
+  const nested=run({hook_event_name:'Stop'},{SUPERLCM_CLI_WORKER:'1'})
+  assert.equal(nested.status,0,nested.stderr);assert.equal(nested.stdout,'')
+  const check=new ClaudeStore(db);assert.deepEqual(check.sources(),[]);check.close()
+  env.SUPERLCM_SUMMARY_MODE='api';env.SUPERLCM_ANTHROPIC_API_KEY='test-not-used'
+  const missingModel=run({hook_event_name:'Stop'})
+  assert.equal(missingModel.status,0,missingModel.stderr);assert.match(missingModel.stderr,/api mode needs/)
+  const indexed=new ClaudeStore(db);assert.equal(indexed.summaryMode('hook-session'),'api');assert.equal(indexed.sources()[0].status,'summary_unconfigured');indexed.close()
 }))
-
-test('summary lease grants only one concurrent holder',fixture(async ({store})=>{
-  assert.equal(store.lease('lock-session'),true)
-  assert.equal(store.lease('lock-session'),false)
-  store.release('lock-session')
-  assert.equal(store.lease('lock-session'),true)
+test('legacy agent policy row does not block independent CLI policy',fixture(async ({dir,store})=>{
+  const src=join(dir,'legacy.jsonl');writeFileSync(src,line(0));store.ingest('legacy-session',src)
+  store.db.exec("CREATE TABLE IF NOT EXISTS session_modes(session TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','agent','api')))")
+  store.db.prepare('INSERT INTO session_modes(session,mode) VALUES(?,?)').run('legacy-session','agent')
+  store.setSummaryMode('legacy-session','cli')
+  assert.equal(store.summaryMode('legacy-session'),'cli')
+  assert.equal(store.db.prepare('SELECT mode FROM session_modes WHERE session=?').get('legacy-session').mode,'agent')
 }))
-
-test('mode defaults to agent, a dedicated API key switches to API even under old agent setting',()=>{
-  assert.equal(summaryMode({}),'agent')
+test('mode chooses CLI subscription by default, separate API only with dedicated key',()=>{
+  assert.equal(summaryMode({}),'cli')
   assert.equal(summaryMode({SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
-  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
+  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'cli')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'off',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'off')
   assert.equal(summaryMode({SUPERLCM_SUMMARIZE_ON_HOOK:'1'}),'api')
-  assert.throws(()=>summaryMode({SUPERLCM_SUMMARY_MODE:'unknown'}),/must be/)
+  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent'}),'cli')
+  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
+  assert.equal(subscriptionEnv({ANTHROPIC_API_KEY:'secret',SUPERLCM_CLI_WORKER:'0'}).SUPERLCM_CLI_WORKER,'1')
 })

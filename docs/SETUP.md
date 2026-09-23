@@ -1,6 +1,6 @@
 # SuperLcm for Claude Code CLI and Desktop Code (preview)
 
-This adapter is **an independent Claude recall package (not a DSH plugin)**. It does not replace Claude native compaction. It builds an external layered summary DAG and retrieves the original conversation on demand. Summary modes are exclusive: default `auto` chooses `agent` without a dedicated API key and `api` when `SUPERLCM_ANTHROPIC_API_KEY` is set. Explicit `off` disables summaries. Agent mode still depends on Claude calling tools and is not guaranteed automatic. Its source files are in `src/`; no Claude configuration is modified by the package.
+This adapter is **an independent Claude recall package (not a DSH plugin)**. It does not replace Claude native compaction. It builds an external layered summary DAG and retrieves the original conversation on demand. Summary modes are exclusive: default `auto` uses a separate `claude --print` subprocess (`cli` mode) with selectable model, and a dedicated `SUPERLCM_ANTHROPIC_API_KEY` selects the separate paid `api` backend. Explicit `off` disables summaries. The active Claude agent never writes summaries. No Claude configuration is modified by the package.
 
 ## Requirements and data ownership
 
@@ -8,7 +8,7 @@ This adapter is **an independent Claude recall package (not a DSH plugin)**. It 
 - Claude Code CLI sessions: original source is Claude Code's local JSONL under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`). Hook `transcript_path` may lag behind the current in-memory turn; indexing waits for complete JSONL lines. The index never modifies the transcript.
 - Ordinary Claude Desktop chat: MCP does **not** expose the whole chat transcript. You must explicitly export a conversation to a `.jsonl` or UTF-8 `.txt` file and import it. A `.txt` file is copied byte-for-byte and each line (including newlines) is indexed as an exact source event; no claim is made that a partial export contains every chat message. Claude Code sessions inside the Desktop application follow the Code path only when their hooks and transcript are accessible.
 - The local index defaults to `~/.superlcm-claude/lcm.sqlite` and imported originals to `~/.superlcm-claude/imports/`; override with `SUPERLCM_CLAUDE_HOME`. Files are created with private permissions. SQLite contains source byte offsets, SHA-256 hashes, searchable text and summaries. It is **not** the authoritative original conversation. Do not delete the source Claude Code JSONL if you need exact expansion. Imported originals are retained inside the private directory. Summaries can be regenerated with an explicit model; regenerating them does not promise byte-identical text.
-- Indexed text and summaries can contain secrets. Keep the index local and restrict filesystem backups and permissions. In agent mode, bounded excerpts reach the active Claude conversation and count toward its usage; API mode additionally sends excerpts to the explicitly selected HTTPS summarizer endpoint. Without an API key there is no separate summarizer request.
+- Indexed text and summaries can contain secrets. Keep the index local and restrict filesystem backups and permissions. In `cli` mode, bounded excerpts go to a separate Claude CLI subprocess using that machine's own login and subscription allowance (subject to its configured auth/billing and usage limits). `api` mode sends them to the explicitly selected HTTPS endpoint and incurs separate API billing. Neither mode asks the main agent to write summaries.
 
 ## Claude Code CLI integration (manual setup, no configuration is written for you)
 
@@ -31,7 +31,6 @@ Example `.claude/settings.json` hook block (merge with your existing `hooks` rat
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js hook" }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js hook", "async": true }] }],
     "PostCompact": [{ "hooks": [{ "type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js hook", "async": true }] }],
     "SessionStart": [{ "matcher": "compact", "hooks": [{ "type": "command", "command": "node /ABSOLUTE_PATH_TO_REPO/src/cli.js hook" }] }]
@@ -39,28 +38,37 @@ Example `.claude/settings.json` hook block (merge with your existing `hooks` rat
 }
 ```
 
-`Stop`/`PostCompact` asynchronously index complete JSONL records. In `agent` mode, `UserPromptSubmit` indexes the prior completed tail and injects a short nudge when a batch is ready; it does not inject the transcript. `SessionStart(compact)` adds compact navigation and any pending batch ID. Claude may ignore these hints: do not claim guaranteed pre-compaction summaries. You can explicitly request: 'Use lcm_summary_work and lcm_save_summary until no batch remains; verify important source events.'
+`Stop`/`PostCompact` asynchronously index complete JSONL records and, when a batch is ready, start the selected background worker. `SessionStart(compact)` adds only compact navigation for retrieval after Claude's native compaction. There is no `UserPromptSubmit` summary nudge; existing installations may leave that old hook in place, but it no longer injects a writing prompt. Remove it from your own configuration when convenient.
 
 ## Summary modes for Claude Code CLI and Desktop Code (Local)
 
-The default is `SUPERLCM_SUMMARY_MODE=auto`. Without a dedicated API key, the hook reminds the active Claude agent to summarize; adding `SUPERLCM_ANTHROPIC_API_KEY` chooses API-only background summaries, even if an old setting says `agent`. You may explicitly set `SUPERLCM_SUMMARY_MODE=off|agent|api|auto` in the environment that starts Claude Code. For project-local settings you may use the `env` field in `.claude/settings.local.json` (merge, do not overwrite existing settings):
+The default `SUPERLCM_SUMMARY_MODE=auto` chooses `cli` without a dedicated API key, or `api` when `SUPERLCM_ANTHROPIC_API_KEY` is set. `SUPERLCM_SUMMARY_MODE=cli|api|off|auto` can explicitly select a backend or turn summaries off. Explicit `cli` wins even if a dedicated API key exists; that key is stripped from the CLI subprocess. The old `agent` value is accepted as a compatibility alias, but **maps to `cli`** (or `api` when a dedicated key is set); agent-authored MCP summary tools have been removed. Existing summary nodes are preserved.
 
-```json
-{ "env": { "SUPERLCM_SUMMARY_MODE": "auto" } }
-```
+### CLI subscription backend (default, no separate API key)
 
-- `off` (explicit opt-out): local indexing and original search only.
-- `agent` (default in `auto` without a key): active Claude calls `lcm_summary_work`, writes a factual summary of the returned bounded batch, and calls `lcm_save_summary`. No extra API credential; uses current session context and subscription allowance. Completed batches of 8 records become level-0 nodes, and groups of 4 nodes become parent summaries. Server chooses node IDs, verifies source hashes and rejects stale batches. The hook reminder is advisory, not a guarantee.
-- `api` (selected automatically when the dedicated API key is present): on `Stop`/`PostCompact`, an asynchronous worker uses an explicit Anthropic API model and separate credential. This incurs separate API billing and never replaces Claude native compaction.
-
-The legacy `SUPERLCM_SUMMARIZE_ON_HOOK=1` still selects `api` if `SUPERLCM_SUMMARY_MODE` is unset. A dedicated API key also overrides an old `agent` setting, suppresses hook agent reminders, and makes MCP refuse both agent summary tools for the session; already-stored nodes remain. Explicit `off` always wins. To enable paid API mode, provide the dedicated key and model in the environment launching Claude Code (setting `SUPERLCM_SUMMARY_MODE=api` is optional):
+Install and log into the `claude` CLI on **the same machine that runs the hook**, including Windows for Desktop Code Local. The hook starts a background worker that runs `claude --print` with a selectable model:
 
 ```text
+SUPERLCM_SUMMARY_MODE=cli
+SUPERLCM_CLAUDE_CLI_MODEL=sonnet
+# Optional, if claude is not on PATH: SUPERLCM_CLAUDE_CLI_BIN=/absolute/path/to/claude
+```
+
+`sonnet` is the default model alias; set `SUPERLCM_CLAUDE_CLI_MODEL` to another installed CLI-supported model or alias (for example `opus` or `claude-sonnet-5`). CLI login/subscription usage and model availability are controlled by Claude Code, not MCP. The child disables built-in tools and MCP (`--tools '' --strict-mcp-config`), runs in a private scratch directory under the SuperLcm index home (keep that home outside projects), strips API/cloud-routing environment variables, and marks inherited SuperLcm hooks so they cannot recurse. No `--bare` is used (it can change CLI authentication). User-level Claude instructions and other hooks may still apply; confirm the `claude` CLI's own login and billing selection before relying on subscription billing. Summary failures set `summary_error`; completed raw records remain searchable.
+
+### Explicit API backend
+
+Provide both credentials in the environment launching Claude Code, not only in MCP server configuration:
+
+```text
+SUPERLCM_SUMMARY_MODE=api  # optional when a dedicated key is already set
 SUPERLCM_CLAUDE_MODEL=<explicit Anthropic model ID>
 SUPERLCM_ANTHROPIC_API_KEY=<separate API credential; never commit it>
 ```
 
-Use the namespaced credential, not the `ANTHROPIC_API_KEY` variable used by Claude Code: the latter can switch Claude Code authentication and billing. A configured key without a model sets `summary_unconfigured` status without interrupting native compaction; it never silently falls back to agent mode. The key must reach the Claude Code hook environment, not only the separate MCP server environment. API calls go to `https://api.anthropic.com/v1/messages` by default; `SUPERLCM_CLAUDE_API_URL` can name a clean HTTPS origin. There is no implicit active-model fallback. `node src/cli.js summarize <session_id>` is a separate one-off paid action after model and key are set. A failed worker sets `summary_error`; inspect `lcm_doctor`. A short fresh tail stays directly searchable before a complete batch exists.
+The namespaced key avoids changing Claude Code authentication via the generic `ANTHROPIC_API_KEY`. API requests go to `https://api.anthropic.com/v1/messages` by default; `SUPERLCM_CLAUDE_API_URL` may select a clean HTTPS origin. A missing key or model sets `summary_unconfigured` without falling back to another backend. The legacy `SUPERLCM_SUMMARIZE_ON_HOOK=1` chooses API if the main mode is unset. All summaries use bounded eight-record batches, four-child parent nodes and source pointers. A fresh tail stays directly searchable before a batch is ready.
+
+`node src/cli.js summarize <session_id>` performs an explicit one-off summary using the selected backend. `index` never invokes a summarizer. Background jobs persist status (`ok`, `summary_unconfigured`, `summary_error`) and `lcm_sessions` shows the selected mode. No model calls are made merely by listing or searching.
 
 ### Desktop surfaces are different
 
@@ -77,12 +85,12 @@ node /ABSOLUTE_PATH_TO_REPO/src/cli.js import /absolute/path/to/export.txt deskt
 node /ABSOLUTE_PATH_TO_REPO/src/cli.js summarize desktop-my-chat
 ```
 
-The second command is for paid API mode only and requires the separate model and API key. For no-key agent mode, import first and ask Claude in the Chat tab to call `lcm_summary_work` and `lcm_save_summary` for that session until no batches remain. Claude uses its active subscription model, but you still must explicitly supply/import transcript content. You may also omit summaries and search the original lines directly. `lcm_import` is disabled inside the MCP server unless you explicitly set `SUPERLCM_IMPORT_DIR` to a trusted local folder; it refuses paths outside that folder, including symlinks that escape it. `lcm_index` is disabled inside MCP unless `SUPERLCM_ALLOW_MCP_INDEX=1`; Claude Code hooks and the explicit CLI indexing command work without that setting. Do not expose this stdio server remotely or give it broad filesystem access.
+The second command uses the configured backend: the locally logged-in Claude CLI by default, or the explicit API credentials in API mode. You must explicitly supply/import an ordinary Chat transcript; MCP cannot capture that tab's hidden history. You may also omit summaries and search original lines directly. `lcm_import` is disabled inside MCP unless `SUPERLCM_IMPORT_DIR` names a trusted local folder; it refuses escaping symlinks/paths. `lcm_index` is disabled inside MCP unless `SUPERLCM_ALLOW_MCP_INDEX=1`; hooks and the explicit CLI indexing command work without that setting. Never expose this stdio server remotely or give it broad filesystem access.
 
 ## Tool contract and current limitations
 
 - `lcm_sessions` lists available sessions; all other read tools require an explicit `session` (MCP has no implicit access to Claude's current session ID).
-- `lcm_summary_work` / `lcm_save_summary`: Claude-in-session hierarchical summary with server-chosen node IDs and raw hash checks; `lcm_overview`: small top-layer navigation; `lcm_search`: original event text and summary search; `lcm_read_event`: exact raw record by event ordinal, including unsummarized tail; `lcm_describe`: node relationships and source range; `lcm_expand`: **exact original record bytes decoded as UTF-8**, paginated by returned `next.ordinal` and `next.charOffset`; `lcm_doctor`: verify source pointers and SQLite integrity, read-only.
+- `lcm_overview`: small top-layer navigation; `lcm_search`: original event text and summary search; `lcm_read_event`: exact raw record by event ordinal, including unsummarized tail; `lcm_describe`: node relationships and source range; `lcm_expand`: **exact original record bytes decoded as UTF-8**, paginated by returned `next.ordinal` and `next.charOffset`; `lcm_doctor`: verify source pointers and SQLite integrity, read-only.
 - Import/index are side-effecting, explicit, local operations. They do not replace native context compaction. There is no claim that original JSONL contains model-internal hidden state; "exact" means the retained on-disk source record. Search indexes visible user/assistant text (not every tool-result field), while expansion returns the full retained record.
 - A modified/truncated source is not silently reindexed. Expansion verifies the raw SHA-256 and fails closed if changed. The per-source cap is 256 MiB, per-JSONL-line cap 4 MiB, and manual import cap 32 MiB. Session IDs isolate records. The implementation accepts both legacy MCP `initialize` and current `2026-07-28` `server/discover` request formats; actual Claude Desktop/Code interoperability still needs testing on the target installations.
 
