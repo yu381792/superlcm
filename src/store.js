@@ -60,6 +60,10 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS leases(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS summary_policies(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('off','cli','api')));
       CREATE TABLE IF NOT EXISTS session_origins(session TEXT PRIMARY KEY REFERENCES sources(session), harness TEXT NOT NULL, external_id TEXT, display_name TEXT, name_source TEXT);
+      CREATE TABLE IF NOT EXISTS summary_preferences(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('auto','off','cli','codex-cli','api','agent')), model TEXT);
+      CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, source_session TEXT NOT NULL REFERENCES sources(session), target_session TEXT NOT NULL REFERENCES sources(session), target_harness TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), issued_at TEXT, CHECK(source_session<>target_session));
+      CREATE INDEX IF NOT EXISTS deliveries_target ON deliveries(target_harness,target_session,issued_at);
+      CREATE TABLE IF NOT EXISTS client_seen(client TEXT NOT NULL, seen_at TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(client,kind));
     `)
     // Existing alpha.5 indexes have only (session,harness); preserve every row.
     const columns=new Set(this.db.prepare('PRAGMA table_info(session_origins)').all().map(c=>c.name))
@@ -72,6 +76,30 @@ export class ClaudeStore {
     this.db.prepare('INSERT INTO summary_policies(session,mode) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET mode=excluded.mode').run(session,mode)
   }
   summaryMode(session) { return this.db.prepare('SELECT mode FROM summary_policies WHERE session=?').get(session)?.mode || null }
+  setPreference(session,mode,model=null) {
+    if (!this.source(session) || !['auto','off','cli','codex-cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)))) throw new Error('Invalid summary preference')
+    this.db.prepare('INSERT INTO summary_preferences(session,mode,model) VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET mode=excluded.mode,model=excluded.model').run(session,mode,model)
+    return this.preference(session)
+  }
+  preference(session) {return this.db.prepare('SELECT mode,model FROM summary_preferences WHERE session=?').get(session)||{mode:'auto',model:null}}
+  enqueue(source,target) {
+    const from=this.metadata(source),to=this.metadata(target)
+    if (source===target) throw new Error('Source and target conversations must differ')
+    if (!this.nodeRows(source,0).length) throw new Error('Source conversation has no summaries to deliver')
+    const prior=this.db.prepare('SELECT id FROM deliveries WHERE source_session=? AND target_session=? AND issued_at IS NULL').get(source,target)
+    if (prior) return {id:prior.id,source:from,target:to,status:'pending',deduplicated:true}
+    const id=this.db.prepare('INSERT INTO deliveries(source_session,target_session,target_harness) VALUES(?,?,?)').run(source,target,to.harness).lastInsertRowid
+    return {id:Number(id),source:from,target:to,status:'pending'}
+  }
+  pendingFor(harness,conversationId,limit=3) {
+    const targets=this.db.prepare('SELECT s.session FROM sources s JOIN session_origins o ON s.session=o.session WHERE o.harness=? AND o.external_id=?').all(harness,conversationId)
+    if(targets.length!==1)return []
+    return this.db.prepare('SELECT id,source_session,target_session FROM deliveries WHERE target_harness=? AND target_session=? AND issued_at IS NULL ORDER BY id LIMIT ?').all(harness,targets[0].session,limit)
+  }
+  markIssued(id) {this.db.prepare("UPDATE deliveries SET issued_at=datetime('now') WHERE id=? AND issued_at IS NULL").run(id)}
+  deliveries(limit=30) {return this.db.prepare('SELECT id,source_session,target_session,target_harness,created_at,issued_at FROM deliveries ORDER BY id DESC LIMIT ?').all(limit)}
+  markClient(client,kind='mcp') {if(typeof client!=='string'||!client.trim()||client.length>100)return;this.db.prepare("INSERT INTO client_seen(client,seen_at,kind) VALUES(?,datetime('now'),?) ON CONFLICT(client,kind) DO UPDATE SET seen_at=excluded.seen_at").run(client,kind)}
+  clients() {return this.db.prepare('SELECT client,seen_at,kind FROM client_seen ORDER BY seen_at DESC LIMIT 30').all()}
   setOrigin(session,harness) {
     if (typeof harness !== 'string' || !/^[a-z][a-z0-9-]{0,39}$/.test(harness) || !this.source(session)) throw new Error('Invalid session harness or unknown session')
     const prior=this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness
@@ -111,7 +139,7 @@ export class ClaudeStore {
     const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
-    const select="SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN session_origins o ON s.session=o.session"
+    const select="SELECT s.session,s.kind,s.offset,s.status,CASE WHEN p.mode IS NOT NULL AND p.mode<>'auto' THEN p.mode ELSE m.mode END AS summary_mode,p.model AS summary_model,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN summary_policies m ON s.session=m.session LEFT JOIN summary_preferences p ON s.session=p.session LEFT JOIN session_origins o ON s.session=o.session"
     const sessions=this.db.prepare(select+where+' ORDER BY s.session LIMIT ? OFFSET ?').all(...params,limit,offset).map(row=>({...row,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}))
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}
   }

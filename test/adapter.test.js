@@ -14,6 +14,9 @@ import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { summarizeWithCodexCli, codexSubscriptionEnv } from '../src/codex-cli.js'
+import { startWeb } from '../src/web.js'
+import { page as webPage } from '../src/web-page.js'
 import { codexTranscript, codexSessionKey } from '../src/codex.js'
 const fixture = fn => async t => {
   const dir=mkdtempSync(join(tmpdir(),'superlcm-claude-'))
@@ -67,8 +70,8 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_sessions',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
-  assert.equal(tools.length,12)
-  assert.equal(tools.some(tool=>['lcm_summary_work','lcm_save_summary'].includes(tool.name)),false)
+  assert.equal(tools.length,17)
+  assert.equal(tools.filter(tool=>['lcm_summary_work','lcm_save_summary'].includes(tool.name)).length,2)
   assert.deepEqual(await call(store,'lcm_sessions'),{sessions:[],total:0,next_offset:null})
   input.end();await new Promise(r=>server.once('close',r));lines.close()
 }))
@@ -202,6 +205,76 @@ test('metadata-only Codex batches never invoke a summary model',fixture(async ({
   assert.equal(result.created,0);assert.equal(called,0)
   assert.equal(store.summaries('metadata-session').total,0)
 }))
+test('MCP directly imports context and target hook issues a bounded delivery',fixture(async ({dir,store})=>{
+  const file=join(dir,'source.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'source decision '+i+'\n').join(''))
+  importFile(store,file,'source-A','claude-code','Architecture A')
+  await buildHierarchy(store,'source-A',{model:'mock',summarize:async()=> 'We decided to preserve original evidence across harnesses.'})
+  const home=join(dir,'codex-home'),sessions=join(home,'sessions'),targetFile=join(sessions,'target.jsonl');mkdirSync(sessions,{recursive:true});writeFileSync(targetFile,JSON.stringify({role:'user',content:'Continue B'})+'\n')
+  store.ingest('codex-thr_B',targetFile);store.setMetadata('codex-thr_B',{harness:'codex',externalId:'thr_B',name:'Conversation B'})
+  const direct=await call(store,'lcm_context',{session:'source-A'});assert.match(direct.content,/preserve original evidence/)
+  await assert.rejects(call(store,'lcm_enqueue_context',{source:'source-A',target:'codex-thr_B'}),/disabled/)
+  const oldGate=process.env.SUPERLCM_ALLOW_MCP_DELIVERY;process.env.SUPERLCM_ALLOW_MCP_DELIVERY='1'
+  try {
+    const queued=await call(store,'lcm_enqueue_context',{source:'source-A',target:'codex-thr_B'});assert.equal(queued.status,'pending')
+    assert.equal((await call(store,'lcm_enqueue_context',{source:'source-A',target:'codex-thr_B'})).deduplicated,true)
+  } finally { if(oldGate===undefined)delete process.env.SUPERLCM_ALLOW_MCP_DELIVERY;else process.env.SUPERLCM_ALLOW_MCP_DELIVERY=oldGate }
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),env={...process.env,CODEX_HOME:home,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'off'}
+  const result=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_B',transcript_path:null,cwd:dir,hook_event_name:'UserPromptSubmit',prompt:'Find A'}),encoding:'utf8',env,timeout:15000})
+  assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/SuperLcm delivery #/);assert.match(result.stdout,/Architecture A/)
+  assert.ok(store.deliveries()[0].issued_at);assert.equal(store.pendingFor('codex','thr_B').length,0)
+}))
+test('main-agent summary mode requires explicit opt-in and exact unchanged source',fixture(async ({dir,store})=>{
+  const file=join(dir,'agent.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'agent decision '+i+'\n').join(''))
+  importFile(store,file,'agent-A','codex','Agent authored A')
+  await assert.rejects(call(store,'lcm_summary_work',{session:'agent-A'}),/disabled/)
+  store.setPreference('agent-A','agent')
+  const work=(await call(store,'lcm_summary_work',{session:'agent-A'})).work
+  assert.ok(work.batch_id);assert.equal(work.level,0)
+  const saved=await call(store,'lcm_save_summary',{session:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'})
+  assert.equal(saved.saved,true);assert.equal(store.summaries('agent-A').nodes[0].model,'mcp-agent')
+  await assert.rejects(call(store,'lcm_save_summary',{session:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'}),/Stale/)
+  const another=join(dir,'tamper.txt');writeFileSync(another,Array.from({length:8},(_,i)=>'before '+i+'\n').join(''));importFile(store,another,'tamper-A','codex')
+  store.setPreference('tamper-A','agent');const pending=(await call(store,'lcm_summary_work',{session:'tamper-A'})).work
+  const bound=store.source('tamper-A').path;const bytes=readFileSync(bound);bytes[3]=bytes[3]===65?66:65;writeFileSync(bound,bytes)
+  await assert.rejects(call(store,'lcm_save_summary',{session:'tamper-A',batch_id:pending.batch_id,summary:'This should not persist with a changed original.'}),/changed/)
+}))
+test('Codex CLI backend strips API credentials and captures final JSONL item',fixture(async ({dir})=>{
+  let seen
+  const spawnProcess=(bin,args,options)=>{seen={bin,args,options};const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:()=>{}});queueMicrotask(()=>{child.stdout.end(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Codex factual summary'}})+'\n');child.stderr.end();child.emit('close',0)});return child}
+  const value=await summarizeWithCodexCli('decision',{model:'gpt-model',bin:'fake-codex',cwd:join(dir,'scratch'),env:{OPENAI_API_KEY:'secret',OPENAI_BASE_URL:'https://paid.example',CODEX_API_KEY:'paid',ANTHROPIC_API_KEY:'other',CODEX_HOME:'safe-home'},spawnProcess})
+  assert.equal(value,'Codex factual summary');assert.ok(seen.args.includes('--ephemeral'));assert.ok(seen.args.includes('--ignore-user-config'));assert.ok(seen.args.includes('read-only'));assert.deepEqual(seen.args.slice(-4),['-m','gpt-model','--json','-']);assert.equal(seen.options.env.OPENAI_API_KEY,undefined);assert.equal(seen.options.env.OPENAI_BASE_URL,undefined);assert.equal(seen.options.env.CODEX_API_KEY,undefined);assert.equal(seen.options.env.CODEX_HOME,'safe-home')
+  assert.equal(codexSubscriptionEnv({OPENAI_API_KEY:'secret'}).OPENAI_API_KEY,undefined)
+}))
+test('session Codex CLI choice dispatches through an isolated fake executable',fixture(async ({dir,store})=>{
+  const file=join(dir,'codex-backend.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
+  importFile(store,file,'chosen-backend','codex');store.setPreference('chosen-backend','codex-cli','gpt-test')
+  const bin=join(dir,'fake-codex');writeFileSync(bin,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\'item.completed\',item:{type:\'agent_message\',text:\'Independent Codex worker summary recorded decisions.\'}})+\'\\n\')\n',{mode:0o700})
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'summarize','chosen-backend'],{encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_CODEX_CLI_BIN:bin,SUPERLCM_SUMMARY_MODE:'off'},timeout:15000})
+  assert.equal(r.status,0,r.stderr);assert.match(store.summaries('chosen-backend').nodes[0].model,/codex-cli:gpt-test/)
+}))
+test('Codex UserPromptSubmit nudges opted-in agent without a transcript path',fixture(async ({dir,store})=>{
+  const file=join(dir,'agent-prompt.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
+  store.ingest('codex-thr_agent',file,'text');store.setMetadata('codex-thr_agent',{harness:'codex',externalId:'thr_agent'});store.setPreference('codex-thr_agent','agent')
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_agent',transcript_path:null,cwd:dir,hook_event_name:'UserPromptSubmit'}),encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir},timeout:15000})
+  assert.equal(r.status,0,r.stderr);assert.match(r.stdout,/lcm_summary_work/);assert.equal(store.summaries('codex-thr_agent').total,0)
+}))
+test('8790-inspired Web markup keeps strict-token script syntactically valid',()=>{
+  const html=webPage('demo-token','nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
+  assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/#f0eee6/);assert.match(html,/--accent:#d97757/)
+})
+test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
+  const web=await startWeb({store:new ClaudeStore(store.dir)})
+  try {
+    const initial=await fetch(web.url),html=await initial.text();assert.match(html,/SuperLcm.*对话索引/);assert.match(html,/#f0eee6/)
+    const cookie=initial.headers.get('set-cookie');assert.match(cookie,/HttpOnly/);assert.equal((await fetch(new URL(web.url).origin+'/',{headers:{Cookie:cookie.split(';')[0]}})).status,200)
+    const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token}
+    assert.equal((await fetch(base+'/api/state')).status,401)
+    assert.equal((await fetch(base+'/api/state',{headers})).status,200)
+    const probe=await fetch(base+'/api/probe',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:'{}'}).then(r=>r.json())
+    assert.equal(probe.ok,true,JSON.stringify(probe))
+    assert.equal((await fetch(base+'/api/preference',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:'http://evil.local'},body:'{}'})).status,403)
+  }finally{await web.close()}
+}))
 test('subscription adapter isolates credentials, tools and model choice',fixture(async ({dir})=>{
   let invoked
   const spawnProcess=(bin,args,options)=>{
@@ -289,13 +362,13 @@ test('legacy agent policy row does not block independent CLI policy',fixture(asy
   assert.equal(store.summaryMode('legacy-session'),'cli')
   assert.equal(store.db.prepare('SELECT mode FROM session_modes WHERE session=?').get('legacy-session').mode,'agent')
 }))
-test('mode chooses CLI subscription by default, separate API only with dedicated key',()=>{
+test('mode defaults to CLI and preserves explicit agent or API choice',()=>{
   assert.equal(summaryMode({}),'cli')
   assert.equal(summaryMode({SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'cli')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'off',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'off')
   assert.equal(summaryMode({SUPERLCM_SUMMARIZE_ON_HOOK:'1'}),'api')
-  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent'}),'cli')
-  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
+  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent'}),'agent')
+  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'agent')
   assert.equal(subscriptionEnv({ANTHROPIC_API_KEY:'secret',SUPERLCM_CLI_WORKER:'0'}).SUPERLCM_CLI_WORKER,'1')
 })
