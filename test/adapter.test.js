@@ -1,13 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore, importFile } from '../src/store.js'
-import { buildHierarchy } from '../src/summarize.js'
+import { buildHierarchy, summaryWork, saveAgentSummary } from '../src/summarize.js'
 import { call, startServer, tools } from '../src/mcp.js'
 import { PassThrough } from 'node:stream'
 import { createInterface } from 'node:readline'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 const fixture = fn => async t => {
   const dir=mkdtempSync(join(tmpdir(),'superlcm-claude-'))
   const store=new ClaudeStore(join(dir,'private'))
@@ -60,7 +62,39 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_sessions',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
-  assert.equal(tools.length,9)
+  assert.equal(tools.length,11)
   assert.deepEqual(await call(store,'lcm_sessions'),[])
   input.end();await new Promise(r=>server.once('close',r));lines.close()
+}))
+
+test('agent-written summaries create verified hierarchical DAG without an API key',fixture(async ({dir,store})=>{
+  const src=join(dir,'agent.jsonl');writeFileSync(src,Array.from({length:32},(_,i)=>line(i)).join(''))
+  assert.equal(store.ingest('agent-session',src).added,32)
+  const first=await call(store,'lcm_summary_work',{session:'agent-session'})
+  assert.equal(first.level,0);assert.equal(first.first,0);assert.equal(first.last,7)
+  assert.equal((await call(store,'lcm_save_summary',{session:'agent-session',batch_id:first.batch_id,summary:'Decisions 0–7 concern alpha project.'})).created,true)
+  assert.equal(saveAgentSummary(store,'agent-session',first.batch_id,'Duplicate summary is ignored.').created,false)
+  let work=summaryWork(store,'agent-session'),count=1
+  while(work){saveAgentSummary(store,'agent-session',work.batch_id,`Summary level ${work.level} from event ${work.first} to ${work.last}.`);count++;work=summaryWork(store,'agent-session');if(count>10)throw Error('summary loop did not converge')}
+  assert.equal(count,5);assert.equal(store.overview('agent-session').nodes[0].level,1)
+  assert.equal(store.doctor('agent-session').issues.length,0)
+  assert.rejects(call(store,'lcm_save_summary',{session:'agent-session',batch_id:'fake',summary:'Fabricated summary content.'}),/Batch changed/)
+}))
+test('agent summary refuses changed original source',fixture(async ({dir,store})=>{
+  const src=join(dir,'changed.jsonl');writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
+  store.ingest('changed-session',src);const work=summaryWork(store,'changed-session')
+  writeFileSync(src,Array.from({length:8},(_,i)=>line(i).replace('alpha','omega')).join(''))
+  assert.throws(()=>saveAgentSummary(store,'changed-session',work.batch_id,'Facts must reflect verified original content.'),/changed/)
+}))
+
+test('agent hook nudges locally, explicit agent mode wins over legacy API flag',fixture(async ({dir})=>{
+  const config=join(dir,'claude-config'),projects=join(config,'projects'),db=join(dir,'hook-index')
+  mkdirSync(projects,{recursive:true});const src=join(projects,'hook.jsonl')
+  writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
+  const hook={hook_event_name:'UserPromptSubmit',session_id:'hook-session',transcript_path:src}
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
+  const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:db,SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_SUMMARIZE_ON_HOOK:'1'}
+  const run=()=>spawnSync(process.execPath,[cli,'hook'],{input:JSON.stringify(hook),encoding:'utf8',env,timeout:5000})
+  const result=run();assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/lcm_summary_work/);assert.doesNotMatch(result.stderr,/api mode/)
+  env.SUPERLCM_SUMMARY_MODE='off';const off=run();assert.equal(off.status,0,off.stderr);assert.equal(off.stdout,'')
 }))
