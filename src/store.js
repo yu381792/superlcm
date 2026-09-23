@@ -141,8 +141,8 @@ export class ClaudeStore {
   }
   lease(session, duration = 120000) {
     const now = Date.now()
-    this.db.prepare('INSERT INTO leases(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms WHERE leases.until_ms < ?').run(session, now+duration, now)
-    return this.db.prepare('SELECT until_ms FROM leases WHERE session=?').get(session)?.until_ms === now+duration
+    const result=this.db.prepare('INSERT INTO leases(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms WHERE leases.until_ms < ?').run(session, now+duration, now)
+    return result.changes === 1
   }
   release(session) { this.db.prepare('UPDATE leases SET until_ms=0 WHERE session=?').run(session) }
   search(session, query, limit = 10) {

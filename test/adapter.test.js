@@ -98,3 +98,10 @@ test('agent hook nudges locally, explicit agent mode wins over legacy API flag',
   const result=run();assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/lcm_summary_work/);assert.doesNotMatch(result.stderr,/api mode/)
   env.SUPERLCM_SUMMARY_MODE='off';const off=run();assert.equal(off.status,0,off.stderr);assert.equal(off.stdout,'')
 }))
+
+test('summary lease grants only one concurrent holder',fixture(async ({store})=>{
+  assert.equal(store.lease('lock-session'),true)
+  assert.equal(store.lease('lock-session'),false)
+  store.release('lock-session')
+  assert.equal(store.lease('lock-session'),true)
+}))
