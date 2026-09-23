@@ -1,3 +1,6 @@
+import { connectionEvidence } from './connections.js'
+import { definitions } from './harness.js'
+import { probeClaudeConnection } from './claude-connection.js'
 import { localConversations, indexLocalConversation } from './local-conversations.js'
 import { testHarness } from './diagnostics.js'
 import { setupPreview, publicPreview, applySetup } from './setup.js'
@@ -16,7 +19,7 @@ const secret=()=>randomBytes(24).toString('hex')
 const equal=(a,b)=>typeof a==='string' && a.length===b.length && timingSafeEqual(Buffer.from(a),Buffer.from(b))
 const json=(res,status,data)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'});res.end(JSON.stringify(data))}
 async function body(req){const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>16000)throw new Error('Request body too large');chunks.push(chunk)}const x=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));if(!x||typeof x!=='object'||Array.isArray(x))throw new Error('JSON object required');return x}
-export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',token=secret(),env=process.env,discovery=harnessConnections,catalog=modelCatalog}={}) {
+export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',token=secret(),env=process.env,discovery=harnessConnections,catalog=modelCatalog,claudeProbe=probeClaudeConnection}={}) {
   if(host!=='127.0.0.1')throw new Error('Web console is loopback-only')
   if(!Number.isSafeInteger(port)||port<0||port>65535)throw new Error('Invalid local Web port')
   const server=createServer(async(req,res)=>{
@@ -32,9 +35,11 @@ export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',
       if(req.method==='GET' && url.pathname==='/api/sessions'){
         const offset=Number(url.searchParams.get('offset')||0);if(!Number.isSafeInteger(offset)||offset<0)return json(res,400,{error:'Invalid offset'});return json(res,200,store.listSessions(50,offset,url.searchParams.get('harness')||undefined))
       }
+      if(req.method==='GET' && url.pathname==='/api/connections')return json(res,200,{connections:definitions.map(h=>({harness:h.id,evidence:connectionEvidence(store,h.id)}))})
       if(req.method==='GET' && url.pathname==='/api/harnesses')return json(res,200,{harnesses:await discovery(store,{env})})
       if(req.method==='GET' && url.pathname==='/api/local-conversations')return json(res,200,localConversations(store,url.searchParams.get('harness'),{env,offset:Number(url.searchParams.get('offset')||0)}))
       if(req.method==='POST' && url.pathname==='/api/index-local'){const x=await body(req);return json(res,200,indexLocalConversation(store,x.harness,x.key,{env}))}
+      if(req.method==='POST' && url.pathname==='/api/connection-check'){const x=await body(req);return json(res,200,x.harness==='claude-code'?await claudeProbe(store,{env}):await testHarness(store,x.harness,{env}))}
       if(req.method==='POST' && url.pathname==='/api/harness-test'){const x=await body(req);return json(res,200,await testHarness(store,x.harness,{env}))}
       if(req.method==='POST' && url.pathname==='/api/setup-preview'){const x=await body(req);return json(res,200,publicPreview(await setupPreview(store,x.harness,{env})))}
       if(req.method==='POST' && url.pathname==='/api/setup-apply'){const x=await body(req);if(x.confirm!==true)throw Error('请先预览并确认安装');return json(res,200,await applySetup(store,x.harness,x.revision,{env}))}
@@ -45,7 +50,7 @@ export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',
       if(req.method==='GET' && url.pathname==='/api/settings')return json(res,200,{global:{...(store.globalSetting()||{mode:summaryMode(),model:null,api_provider:null,api_url:null,configured:false}),api_key_configured:store.hasApiCredential('global')},harnesses:await discovery(store,{env}),settings:store.harnessSettings().map(x=>({...x,api_key_configured:store.hasApiCredential('harness:'+x.harness)}))})
       if(req.method==='GET' && url.pathname==='/api/models')return json(res,200,await catalog(url.searchParams.get('backend'),{env}))
       if(req.method==='GET' && url.pathname==='/api/context')return json(res,200,contextPacket(store,url.searchParams.get('session')))
-      if(req.method==='POST' && url.pathname==='/api/deliver'){const x=await body(req);return json(res,200,store.enqueue(x.source,x.target))}
+      if(req.method==='POST' && url.pathname==='/api/deliver'){const x=await body(req);return json(res,200,store.enqueue(x.source,x.target,x.route||'hook'))}
       if(req.method==='POST' && url.pathname==='/api/settings'){
         const x=await body(req)
         if(x.scope!=='global'&&x.scope!=='harness')return json(res,400,{error:'Invalid settings scope'})

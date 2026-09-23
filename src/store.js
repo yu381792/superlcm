@@ -1,3 +1,4 @@
+import { contextPacket } from './context.js'
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { normalizeApiEndpoint } from './api-endpoint.js'
@@ -66,11 +67,15 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS session_origins(session TEXT PRIMARY KEY REFERENCES sources(session), harness TEXT NOT NULL, external_id TEXT, display_name TEXT, name_source TEXT);
       CREATE TABLE IF NOT EXISTS summary_preferences(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('auto','off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, source_session TEXT NOT NULL REFERENCES sources(session), target_session TEXT NOT NULL REFERENCES sources(session), target_harness TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), issued_at TEXT, CHECK(source_session<>target_session));
+      CREATE TABLE IF NOT EXISTS delivery_packets(id INTEGER PRIMARY KEY REFERENCES deliveries(id),content TEXT NOT NULL,source_json TEXT NOT NULL,details_json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS deliveries_target ON deliveries(target_harness,target_session,issued_at);
       CREATE TABLE IF NOT EXISTS client_seen(client TEXT NOT NULL, seen_at TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(client,kind));
       CREATE TABLE IF NOT EXISTS global_summary_settings(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
     `)
+    const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
+    if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
+    if(!deliveryColumns.has('delivery_route'))this.db.exec("ALTER TABLE deliveries ADD COLUMN delivery_route TEXT NOT NULL DEFAULT 'hook'")
     // Existing alpha.5 indexes have only (session,harness); preserve every row.
     const columns=new Set(this.db.prepare('PRAGMA table_info(session_origins)').all().map(c=>c.name))
     for (const [column,type] of [['external_id','TEXT'],['display_name','TEXT'],['name_source','TEXT']]) if (!columns.has(column)) this.db.exec(`ALTER TABLE session_origins ADD COLUMN ${column} ${type}`)
@@ -126,22 +131,43 @@ export class ClaudeStore {
     return readApiKey(this.dir,scope) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null)
   }
   hasApiCredential(scope){return Boolean(readApiKey(this.dir,scope))}
-  enqueue(source,target) {
+  enqueue(source,target,route='hook') {
     const from=this.metadata(source),to=this.metadata(target)
-    if (source===target) throw new Error('Source and target conversations must differ')
-    if (!this.nodeRows(source,0).length) throw new Error('Source conversation has no summaries to deliver')
-    const prior=this.db.prepare('SELECT id FROM deliveries WHERE source_session=? AND target_session=? AND issued_at IS NULL').get(source,target)
-    if (prior) return {id:prior.id,source:from,target:to,status:'pending',deduplicated:true}
-    const id=this.db.prepare('INSERT INTO deliveries(source_session,target_session,target_harness) VALUES(?,?,?)').run(source,target,to.harness).lastInsertRowid
-    return {id:Number(id),source:from,target:to,status:'pending'}
+    if(source===target)throw Error('Source and target conversations must differ')
+    if(!['hook','mcp'].includes(route))throw Error('Unknown delivery route')
+    if(route==='hook'&&!['codex','claude-code'].includes(to.harness))throw Error('该目标尚无自动 hook；请选择目标 MCP 领取')
+    const packet=contextPacket(this,source)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const prior=this.db.prepare('SELECT id,delivery_route FROM deliveries WHERE source_session=? AND target_session=? AND issued_at IS NULL').get(source,target)
+      if(prior){this.db.exec('COMMIT');return {id:prior.id,source:from,target:to,status:'pending',route:prior.delivery_route,deduplicated:true}}
+      const id=Number(this.db.prepare('INSERT INTO deliveries(source_session,target_session,target_harness,delivery_route) VALUES(?,?,?,?)').run(source,target,to.harness,route).lastInsertRowid)
+      const {content,source:metadata,...details}=packet
+      this.db.prepare('INSERT INTO delivery_packets VALUES(?,?,?,?)').run(id,content,JSON.stringify(metadata),JSON.stringify(details));this.db.exec('COMMIT')
+      return {id,source:from,target:to,status:'pending',route,snapshot:true}
+    }catch(error){this.db.exec('ROLLBACK');throw error}
   }
   pendingFor(harness,conversationId,limit=3) {
     const targets=this.db.prepare('SELECT s.session FROM sources s JOIN session_origins o ON s.session=o.session WHERE o.harness=? AND o.external_id=?').all(harness,conversationId)
     if(targets.length!==1)return []
-    return this.db.prepare('SELECT id,source_session,target_session FROM deliveries WHERE target_harness=? AND target_session=? AND issued_at IS NULL ORDER BY id LIMIT ?').all(harness,targets[0].session,limit)
+    return this.db.prepare("SELECT id,source_session,target_session FROM deliveries WHERE target_harness=? AND target_session=? AND issued_at IS NULL AND delivery_route='hook' ORDER BY id LIMIT ?").all(harness,targets[0].session,limit)
   }
-  markIssued(id) {this.db.prepare("UPDATE deliveries SET issued_at=datetime('now') WHERE id=? AND issued_at IS NULL").run(id)}
-  deliveries(limit=30) {return this.db.prepare('SELECT id,source_session,target_session,target_harness,created_at,issued_at FROM deliveries ORDER BY id DESC LIMIT ?').all(limit)}
+  deliveryPacket(delivery,{maxChars=4000}={}) {
+    const row=this.db.prepare('SELECT * FROM delivery_packets WHERE id=?').get(delivery.id)
+    if(!row)return contextPacket(this,delivery.source_session,{maxChars})
+    const details=JSON.parse(row.details_json)
+    return {...details,source:JSON.parse(row.source_json),content:row.content.slice(0,maxChars),truncated:details.truncated||row.content.length>maxChars,snapshot:true}
+  }
+  receivePending(target) {
+    const destination=this.metadata(target),packets=[]
+    this.db.exec('BEGIN IMMEDIATE')
+    try{for(const delivery of this.db.prepare('SELECT id,source_session FROM deliveries WHERE target_session=? AND issued_at IS NULL ORDER BY id LIMIT 3').all(target)){
+      const packet=this.deliveryPacket(delivery);if(this.markIssued(delivery.id,'mcp'))packets.push({id:delivery.id,...packet})
+    }this.db.exec('COMMIT')}catch(error){this.db.exec('ROLLBACK');throw error}
+    return {target:destination,packets,status:packets.length?'mcp_received':'no_pending',note:'MCP 已领取不等于模型已理解或采纳。'}
+  }
+  markIssued(id,via='hook') {return this.db.prepare("UPDATE deliveries SET issued_at=datetime('now'),issued_via=? WHERE id=? AND issued_at IS NULL").run(via,id).changes===1}
+  deliveries(limit=30) {return this.db.prepare('SELECT id,source_session,target_session,target_harness,created_at,issued_at,issued_via,delivery_route FROM deliveries ORDER BY id DESC LIMIT ?').all(limit).map(x=>({...x,source:this.metadata(x.source_session),target:this.metadata(x.target_session),status:x.issued_at?(x.issued_via==='mcp'?'mcp_received':'hook_issued'):'pending'}))}
   markClient(client,kind='mcp') {if(typeof client!=='string'||!client.trim()||client.length>100)return;this.db.prepare("INSERT INTO client_seen(client,seen_at,kind) VALUES(?,datetime('now'),?) ON CONFLICT(client,kind) DO UPDATE SET seen_at=excluded.seen_at").run(client,kind)}
   clients() {return this.db.prepare('SELECT client,seen_at,kind FROM client_seen ORDER BY seen_at DESC LIMIT 30').all()}
   setOrigin(session,harness) {

@@ -74,7 +74,7 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_sessions',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
-  assert.equal(tools.length,17)
+  assert.equal(tools.length,18)
   assert.equal(tools.filter(tool=>['lcm_summary_work','lcm_save_summary'].includes(tool.name)).length,2)
   assert.deepEqual(await call(store,'lcm_sessions'),{sessions:[],total:0,next_offset:null})
   input.end();await new Promise(r=>server.once('close',r));lines.close()

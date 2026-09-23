@@ -172,3 +172,9 @@ The second command uses the configured backend: the locally logged-in Claude CLI
 - Current MCP discovery, tools: https://modelcontextprotocol.io/specification/2026-07-28/server/discover and https://modelcontextprotocol.io/specification/2026-07-28/server/tools
 
 Native Claude metadata probing can refresh its own cachedGrowthBookFeatures, cachedGrowthBookFeaturesAt and cachedExperimentData fields in .claude.json. It does not send a model prompt. The browser test compares real user settings after excluding only those observed runtime-cache fields; all MCP, hook, model and trust configuration remains included in the comparison.
+
+## Indexed conversation import and connection feedback (alpha.12)
+
+In 对话导入, select an already-saved SuperLcm conversation and a destination. No native CLI files are scanned. Choose target hook delivery or MCP pickup via `lcm_receive_context` with the target ID. For a new destination not in the list, use the generated `lcm_context` instruction. Queueing is not receipt; receipt is not comprehension.
+
+Connecting Claude opens a confirmation dialog. After official registration/readback, an ephemeral Claude process verifies `mcp_status` without a prompt. Existing Code sessions may need `/mcp` reconnect or a new local session. Real observed tool calls are shown separately from this test. Other harnesses can use explicit MCP pickup even without automatic hooks.

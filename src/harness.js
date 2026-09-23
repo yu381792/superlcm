@@ -1,3 +1,4 @@
+import { connectionEvidence } from './connections.js'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -51,7 +52,7 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     const hook=def.supported?hookInspection(def.id,env):{status:'unsupported',events:[]}
     const hookSeen=seen.find(c=>c.kind==='hook'&&c.client===def.id)?.seen_at||null
     const mcpSeen=seen.find(c=>c.kind==='mcp-self-reported'&&(def.id==='claude-code'?/claude/i:/codex/i).test(c.client)&&!c.client.includes('self-test'))?.seen_at||null
-    return {harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:def.supported&&matchingMcp(reg,store),config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:def.supported?mcpSeen:null,connection:'unverified',index_home:store.dir}
+    return {harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:def.supported&&matchingMcp(reg,store),config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:def.supported?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
   }))
   for(const x of store.harnessSettings())if(!rows.some(r=>r?.harness===x.harness))rows.push({harness:x.harness,label:x.harness,supported:false,detected:false,configured:false,hook:{status:'unsupported'},connection:'unverified'})
   return rows.filter(Boolean)

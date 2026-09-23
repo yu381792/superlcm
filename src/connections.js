@@ -1,0 +1,11 @@
+import { randomUUID } from 'node:crypto'
+function init(store){store.db.exec('CREATE TABLE IF NOT EXISTS mcp_connections(id TEXT PRIMARY KEY,client TEXT NOT NULL,diagnostic INTEGER NOT NULL,opened_ms INTEGER NOT NULL,last_ms INTEGER NOT NULL,closed_ms INTEGER,successful_calls INTEGER NOT NULL DEFAULT 0,last_tool TEXT,last_call_ms INTEGER)')}
+export function openConnection(store,client,{diagnostic=false,now=Date.now()}={}){init(store);const id=randomUUID();client=String(client||'anonymous').slice(0,100);const test=diagnostic||/self[-_ ]?test|probe|diagnostic/i.test(client);store.db.prepare('INSERT INTO mcp_connections(id,client,diagnostic,opened_ms,last_ms) VALUES(?,?,?,?,?)').run(id,client,test?1:0,now,now);return id}
+export function touchConnection(store,id){store.db.prepare('UPDATE mcp_connections SET last_ms=? WHERE id=? AND closed_ms IS NULL').run(Date.now(),id)}
+export function recordToolCall(store,id,tool,success){if(!id)return;if(!success){touchConnection(store,id);return}store.db.prepare('UPDATE mcp_connections SET last_ms=?,last_tool=?,last_call_ms=?,successful_calls=successful_calls+? WHERE id=?').run(Date.now(),String(tool||'unknown').slice(0,100),Date.now(),success?1:0,id)}
+export function closeConnection(store,id){if(id)store.db.prepare('UPDATE mcp_connections SET closed_ms=? WHERE id=? AND closed_ms IS NULL').run(Date.now(),id)}
+export function connectionEvidence(store,harness,{now=Date.now()}={}){
+ init(store);const rows=store.db.prepare('SELECT client,last_ms,closed_ms,successful_calls,last_tool,last_call_ms FROM mcp_connections WHERE diagnostic=0 ORDER BY last_ms DESC LIMIT 100').all().filter(x=>harness==='claude-code'?/claude/i.test(x.client):harness==='codex'?/codex/i.test(x.client):x.client.toLowerCase()===harness)
+ const live=rows.filter(x=>x.closed_ms===null&&now-x.last_ms<45000);const called=live.find(x=>x.successful_calls>0);const observed=rows.find(x=>x.successful_calls>0)
+ return {state:called?'tool_verified':live.length?'mcp_loaded':'not_observed',active_clients:live.length,client:called?.client||live[0]?.client||null,last_tool:observed?.last_tool||null,last_call_at:observed?.last_call_ms?new Date(observed.last_call_ms).toISOString():null,identity:'self-reported',note:'活动连接按本服务心跳判断；客户端名称自报，不认证具体宿主或对话。诊断进程不计入用户连接。'}
+}

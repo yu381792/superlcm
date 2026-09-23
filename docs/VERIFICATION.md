@@ -1,3 +1,19 @@
+# alpha.12 verification — 2026-09-23
+
+- `npm run validate`: **53 passed, 0 failed**, exit 0.
+- `python3 scripts/test-ui.py`: real Chrome desktop/mobile, four views, zero unexpected browser errors, exit 0.
+- Indexed source → selected target → actual stdio MCP pickup → Web receipt updated. No source nodes merged into the target DAG.
+- Actual Claude initialization reported **18 MCP tools / connected**, with no model prompt; registration used temporary homes. Existing user-session reload is not implied.
+- Connect dialog immediately visible; injected configuration failure remained visible and actionable rather than appearing to do nothing.
+- Opening import generated **0 native scan or ingestion requests**; index-source shortcut selected the correct saved conversation.
+- Actual target hook emitted the full saved navigation beyond the former 2200-character clipping limit.
+- Offline tests exclude diagnostic peers, failed calls, closed clients and expired heartbeats from active connection evidence.
+- Pack dry-run includes new connection/frontend modules and no user index/config/credential artifacts.
+
+Real user MCP/hook/model/trust settings were not changed. Native Claude may refresh the same three feature-cache fields documented below. No paid inference, real-user auto-install, repository visibility change or native trust bypass occurred.
+
+---
+
 # alpha.11 verification — 2026-09-23
 
 ## Completed on macOS, Node 22

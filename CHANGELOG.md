@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.12
+
+- Correct import to indexed-source → target context; move native collection into lazy index management and eliminate automatic page-load scans.
+- Persist queued navigation snapshots and add lcm_receive_context for target pickup, with explicit pending/hook-issued/MCP-received states and no DAG merge.
+- Replace invisible setup confirmation with an immediate dialog, error feedback, configuration readback and next steps.
+- Verify actual Claude MCP loading using initialization-only mcp_status; distinguish diagnostics from existing user-session connectivity.
+- Track connection heartbeats and successful tool calls, excluding diagnostic peers; add offline and real-browser regression coverage.
+
 ## 0.1.0-alpha.11
 
 - Redesign the four console views around shared real local harness detection, grouped conversation selection, actual saved-node inspection, per-row diagnostics and reviewed setup.

@@ -8,10 +8,10 @@ Independent MCP server for **layered conversation summaries and exact original r
 
 **Claude Code CLI, Desktop Code (Local), and Codex CLI**: automatic local JSONL ingestion via their respective trusted hooks; Codex and Claude retain native compaction. **Any MCP harness** on the same local index can list sessions and read the entire paginated summary DAG of a selected conversation, including one created by Claude Code. Every saved conversation carries a source harness, original conversation ID, and a resolvable name; ambiguous names return candidates. Other harnesses can explicitly import portable JSONL or UTF-8 text; automatic capture needs a dedicated adapter. Summaries normally use an independent background worker or explicit CLI summarization: default `cli` runs logged-in `claude --print`; explicit `codex-cli` uses isolated `codex exec`; configured `SUPERLCM_ANTHROPIC_API_KEY` selects the paid `api` backend. `agent` is opt-in and advisory; `off` disables summaries. Neither main Claude nor Codex agent writes nodes unless explicitly switched to agent mode.
 
-- Local Web control console: `node src/cli.js web` prints a one-time loopback URL; choose source/target navigation, a **global or harness-specific** summary backend (never per conversation), and run a local MCP handshake test. Subscription models appear in a selectable CLI-sourced list with a manual model-ID override; custom API has provider, endpoint, model ID and a write-only key. Saving never invokes a model.
+- Local Web control console: `node src/cli.js web` prints a one-time loopback URL; choose source/target navigation, a **global or harness-specific** summary backend (never per conversation), and verify Claude with its own runtime MCP status. Configuration, diagnostic success and observed client tool calls are distinct states. Subscription models appear in a selectable CLI-sourced list with a manual model-ID override; custom API has provider, endpoint, model ID and a write-only key. Saving never invokes a model.
 - [Setup, security, tools and limitations](./docs/SETUP.md)
 - Runtime: Node.js 22.16+, no third-party runtime dependencies.
-- Current source preview: 0.1.0-alpha.11. See the capability/test matrix; metadata checks do not prove inference or live host consumption.
+- Current source preview: 0.1.0-alpha.12. See the capability/test matrix; metadata checks do not prove inference or live host consumption.
 
 ## Quick local setup
 
@@ -19,7 +19,7 @@ With Node.js >=22.16, run from this repository:
 
     node src/cli.js web
 
-Open the printed URL → MCP连接 → choose a detected harness → 接入 / 修复. Preview, confirm, then finish any native host trust review. No agent must hand-edit hooks. Terminal equivalent:
+Open the printed URL → MCP连接 → choose a detected harness → 连接. A visible dialog previews the change, asks for confirmation, writes/verifies configuration, and shows runtime checks plus any required reload/trust steps. No agent must hand-edit hooks. Terminal equivalent:
 
     node src/cli.js doctor-local
     node src/cli.js setup codex
@@ -30,3 +30,5 @@ Hermes and Pi are detected with explicit capability states and offer selected na
 
 - [Console behavior, capabilities and tests](docs/CONSOLE.md)
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+
+**对话导入** selects only already-indexed conversations and sends their summary navigation to another conversation. It does not scan CLI history. Targets receive via trusted hooks or `lcm_receive_context`; pending, hook-issued and MCP-received receipts are distinct. Native collection is an optional lazy action under 对话索引.

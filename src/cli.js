@@ -53,7 +53,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
             if (['off','cli','api'].includes(mode)) store.setSummaryMode(session,mode)
             if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) scheduleSummary(store,session,mode,model)
             if (event==='UserPromptSubmit' || event==='SessionStart') {
-              const packets=issuePending(store,codex?'codex':'claude-code',input.session_id,{maxChars:2200})
+              const packets=issuePending(store,codex?'codex':'claude-code',input.session_id,{maxChars:4000})
               for(const packet of packets) { process.stdout.write(`SuperLcm delivery #${packet.id}: ${packet.content}\n`);store.markIssued(packet.id) }
               if (event==='UserPromptSubmit' && mode==='agent' && summaryWork(store,session)) process.stdout.write(`SuperLcm opt-in agent summary for ${session}: call lcm_summary_work, summarize its bounded content, then lcm_save_summary with its batch_id. Tool use is advisory; never claim a summary was saved without tool confirmation.\n`)
             }

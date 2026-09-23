@@ -20,10 +20,14 @@ Group by source harness, retain original names/IDs, page stored nodes and verify
 
 ## 对话导入
 
-1. **Local conversation → index.** Read-only discovery; only the selected row is indexed. No mass import or model invocation. Codex/Claude use exact native JSONL pointers. Hermes/Pi keep private immutable visible-message snapshots because their native stores mutate or branch. Exact expansion validates the retained snapshot, not a live database or all Pi branches.
-2. **Indexed summary → another conversation.** Select a source harness/conversation and a target harness/conversation. Sources with zero saved nodes cannot be delivered. Queue receipt is not consumption. Unsupported target hooks require direct MCP lcm_context retrieval instead.
+This means **an already-indexed conversation → another conversation context**, never discovery/import of arbitrary current CLI history. Selectors use saved index identities; the source and destination DAGs remain independent.
 
-MCP lcm_import's arbitrary-file allowlist is independent of known-native-store Web selection and agent-mode lcm_save_summary.
+1. Select a source harness and saved source conversation, preview its source-labelled summary navigation, then choose an indexed destination.
+2. Choose hook receipt (Claude/Codex) or explicit target MCP receipt. Confirmation stores an immutable bounded navigation packet and returns pending, not imported/consumed success.
+3. Hooks offer the packet on the next prompt/start. Alternatively the target agent calls `lcm_receive_context` with its exact target ID. Receipts distinguish pending, hook-issued and MCP-received; no receipt proves comprehension.
+4. A current/new conversation absent from the target list can call `lcm_context` with the source ID using the generated instruction. Complete summaries and originals remain accessible via paginated tools; the initial packet is bounded navigation, not a full transcript dump.
+
+Native collection is now under **对话索引 → 采集管理**. It runs only after an explicit scan action. Opening 对话导入 sends no native scan or ingestion request. The arbitrary-file `lcm_import` allowlist is separate.
 
 ## 模型设置
 
@@ -37,9 +41,11 @@ Harness override → global default → environment fallback; no per-conversatio
 
 ## MCP连接 and installation
 
-Each row shows CLI/version, MCP match, hooks, last hook activity and self-reported handshake. Supported-adapter tests match the known launch command/index, perform real stdio initialize/tools-list, and execute an actual hook against an isolated temporary fixture. Other adapters test only their implemented detection/read capabilities.
+Clicking **连接** opens a visible modal immediately: loading, errors, paths, confirmation, verification and next steps. No below-fold hidden confirmation. The official CLI writes configuration only after confirmation, with private backups; setup reads it back before readiness. Stale/conflicting previews still fail closed and preserve unrelated settings and native trust.
 
-接入 / 修复 previews affected paths and commands. Confirmation backs up files privately, uses official CLI registration and merges missing SuperLcm hooks. It preserves unrelated entries, rejects stale previews and same-name conflicts, and never modifies internal trust. Existing clients may require reload; Codex /hooks review remains a human-native action.
+Claude verification launches a real ephemeral Claude CLI and sends only control `initialize` and `mcp_status`; Claude must report SuperLcm connected. No user prompt, inference, hooks or persistent conversation. This proves a fresh runtime can load the configuration, not that previously opened sessions reloaded it. Codex protocol/hook fixture checks remain labelled self-tests.
+
+Independently observe MCP initialization, live server heartbeats, successful tools/call and connection closure. Diagnostic peers are excluded. Names are self-reported, not authenticated host identity. Existing clients may require /mcp or a new local Code session; native Codex /hooks review remains mandatory. Old SuperLcm processes lack new heartbeat evidence until reloaded.
 
 ## Tests
 
@@ -56,3 +62,5 @@ Mocks/fixtures are not evidence of a live host calling summary tools or consumin
 No private paths, credentials, transcripts, account routes or trust state are distributed. Default index remains ~/.superlcm-claude for compatibility; SUPERLCM_HOME overrides it. Node >=22.16, no runtime dependencies. Source remains private until a separate release decision; no npm publication or GitHub visibility change is implied.
 
 Native Claude metadata probing can refresh its own cachedGrowthBookFeatures, cachedGrowthBookFeaturesAt and cachedExperimentData fields in .claude.json. It does not send a model prompt. The browser test compares real user settings after excluding only those observed runtime-cache fields; all MCP, hook, model and trust configuration remains included in the comparison.
+
+MCP pickup target IDs are supplied by the caller; this shared index is not a per-client access-control boundary. An MCP receipt proves a packet was claimed for that target ID, not authenticated insertion into a particular host conversation.
