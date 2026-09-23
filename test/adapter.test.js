@@ -261,6 +261,8 @@ test('Codex UserPromptSubmit nudges opted-in agent without a transcript path',fi
 test('8790-inspired Web markup keeps strict-token script syntactically valid',()=>{
   const html=webPage('demo-token','nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
   assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/#f0eee6/);assert.match(html,/--accent:#d97757/)
+  assert.match(html,/<nav class="side-nav"/);assert.equal((html.match(/data-view-panel="/g)||[]).length,4)
+  assert.match(html,/\.nav-link:hover/);assert.match(html,/\.chapter\[hidden\]/)
 })
 test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
   const web=await startWeb({store:new ClaudeStore(store.dir)})
