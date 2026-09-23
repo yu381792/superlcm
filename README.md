@@ -1,4 +1,6 @@
-# SuperLcm Claude MCP
+# SuperLcm
+
+Claude Code & Claude Desktop MCP companion for layered recall.
 
 **让 Claude 自己压缩上下文，SuperLcm 帮它找回旧对话的细节。**
 

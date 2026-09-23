@@ -25,12 +25,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ygc3817922006-sketch/superlcm-claude-mcp.git"
+    "url": "git+https://github.com/ygc3817922006-sketch/superlcm.git"
   },
   "bugs": {
-    "url": "https://github.com/ygc3817922006-sketch/superlcm-claude-mcp/issues"
+    "url": "https://github.com/ygc3817922006-sketch/superlcm/issues"
   },
-  "homepage": "https://github.com/ygc3817922006-sketch/superlcm-claude-mcp#readme",
+  "homepage": "https://github.com/ygc3817922006-sketch/superlcm#readme",
   "keywords": [
     "superlcm",
     "claude",
