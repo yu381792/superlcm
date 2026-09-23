@@ -1,0 +1,26 @@
+{
+  "name": "superlcm-claude-recall",
+  "version": "0.1.0-alpha.1",
+  "description": "Independent layered recall MCP adapter for Claude Code and Claude Desktop",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "superlcm-claude": "./src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "files": [
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/adapter.test.js test/package.test.js",
+    "validate": "npm run check && npm test"
+  }
+}
