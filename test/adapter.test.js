@@ -1,16 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSync, readFileSync, realpathSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore, importFile } from '../src/store.js'
-import { buildHierarchy } from '../src/summarize.js'
+import { buildHierarchy, summarizeWithModel } from '../src/summarize.js'
+import { saveApiKey } from '../src/api-credentials.js'
+import { normalizeApiEndpoint } from '../src/api-endpoint.js'
+import { createServer } from 'node:http'
 import { summarizeWithClaudeCli, subscriptionEnv } from '../src/claude-cli.js'
 import { summaryMode } from '../src/mode.js'
 import { call, startServer, tools } from '../src/mcp.js'
 import { PassThrough } from 'node:stream'
 import { createInterface } from 'node:readline'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
@@ -216,6 +219,41 @@ test('CLI model metadata reads only help and visible local Codex cache',fixture(
   const evidence=await harnessConnections(store,{env:{},runCommand:async(bin,args)=>bin==='codex'?{stdout:''}:Promise.reject(Error('not configured'))})
   assert.equal(evidence.find(x=>x.harness==='codex').configured,true);assert.ok(evidence.find(x=>x.harness==='claude-code').hook_seen)
 }))
+test('custom API settings require scoped endpoint, model and private write-only key',fixture(async ({dir,store})=>{
+  const path=join(dir,'api-source.txt');writeFileSync(path,'source message\n');importFile(store,path,'api-session','codex')
+  assert.throws(()=>store.setGlobalSetting('api',null,'openai','https://api.example.test/v1/chat/completions'),/model ID/)
+  assert.throws(()=>normalizeApiEndpoint('openai','http://remote.example/v1/chat/completions'),/HTTPS/)
+  assert.throws(()=>normalizeApiEndpoint('anthropic','https://key@api.example.test/v1/messages'),/HTTPS/)
+  store.setGlobalSetting('api','model-v1','openai','https://api.example.test/v1/chat/completions')
+  saveApiKey(store.dir,'global','global-secret-123456');assert.equal(store.apiCredential('api-session',{}),'global-secret-123456')
+  assert.equal(store.globalSetting().api_provider,'openai');assert.equal(statSync(join(store.dir,'api-credentials.json')).mode&0o077,0)
+  assert.equal(readFileSync(join(store.dir,'lcm.sqlite')).includes('global-secret-123456'),false)
+  store.setHarnessSetting('codex','api','model-v2','anthropic','https://api.example.test')
+  assert.equal(store.apiCredential('api-session',{}),null,'a harness override must never borrow a key for another endpoint')
+  saveApiKey(store.dir,'harness:codex','codex-secret-7890');assert.equal(store.apiCredential('api-session',{}),'codex-secret-7890')
+}))
+test('Anthropic and OpenAI custom API requests use configured URL/model/key only',async()=>{
+  const sent=[];const fetchImpl=async(url,init)=>{sent.push({url,init});return {ok:true,json:async()=>sent.length===1?{content:[{type:'text',text:'Anthropic summary'}]}:{choices:[{message:{content:'OpenAI summary'}}]}}}
+  assert.equal(await summarizeWithModel('source',{model:'claude-test',apiKey:'key-a',apiProvider:'anthropic',apiURL:'https://api.example.test',fetchImpl}),'Anthropic summary')
+  assert.equal(await summarizeWithModel('source',{model:'gpt-test',apiKey:'key-b',apiProvider:'openai',apiURL:'https://api.example.test/v1/chat/completions',fetchImpl}),'OpenAI summary')
+  assert.equal(sent[0].url,'https://api.example.test/v1/messages');assert.equal(sent[1].url,'https://api.example.test/v1/chat/completions')
+  assert.equal(sent[0].init.headers['x-api-key'],'key-a');assert.equal(sent[1].init.headers.authorization,'Bearer key-b')
+  assert.equal(JSON.parse(sent[1].init.body).model,'gpt-test')
+})
+test('background worker actually uses saved API settings against a local fake endpoint',fixture(async ({dir,store})=>{
+  const received=[];const server=createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{received.push({url:req.url,auth:req.headers.authorization,body:JSON.parse(body)});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:'The decisions were preserved in a local fake response.'}}]}))})})
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
+  try {
+    const file=join(dir,'api-worker.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'record '+i+'\n').join(''));importFile(store,file,'api-worker','codex')
+    store.setGlobalSetting('api','gpt-local','openai','http://127.0.0.1:'+server.address().port+'/v1/chat/completions');saveApiKey(store.dir,'global','local-key-123456')
+    const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),child=spawn(process.execPath,[cli,'summarize','api-worker'],{env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'off'},stdio:['ignore','pipe','pipe']})
+    let stdout='',stderr='';child.stdout.on('data',x=>stdout+=x);child.stderr.on('data',x=>stderr+=x)
+    const code=await new Promise(resolve=>child.on('close',resolve))
+    assert.equal(code,0,stderr);assert.equal(received.length,1);assert.equal(received[0].auth,'Bearer local-key-123456');assert.equal(received[0].url,'/v1/chat/completions');assert.equal(received[0].body.model,'gpt-local')
+    assert.equal(store.summaries('api-worker').nodes[0].summary,'The decisions were preserved in a local fake response.')
+    assert.doesNotMatch(stdout,/local-key-123456/)
+  }finally{await new Promise(resolve=>server.close(resolve))}
+}))
 test('metadata-only Codex batches never invoke a summary model',fixture(async ({dir,store})=>{
   const path=join(dir,'metadata.jsonl')
   writeFileSync(path,Array.from({length:8},(_,i)=>JSON.stringify(i===0?{type:'custom-title',customTitle:'Title without messages'}:{type:'event_msg',payload:{type:'token_count',info:{i}}})+'\n').join(''))
@@ -287,6 +325,7 @@ test('8790-inspired Web markup keeps strict-token script syntactically valid',()
   assert.match(html,/\.chapter\[hidden\]/);assert.match(html,/<aside class="intro"><h1>SuperLcm<\/h1>/)
   for(const label of ['对话索引','对话导入','模型设置','MCP连接'])assert.match(html,new RegExp('>'+label+'<'))
   assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL|id="modeSession"|本页有摘要/);assert.match(html,/<div class="k">摘要<\/div>/)
+  assert.doesNotMatch(html,/<datalist/);assert.match(html,/data-role=\"model-choice\"/);assert.match(html,/data-role=\"api-key\"/);assert.match(html,/data-role=\"provider\"/)
 })
 test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
   const web=await startWeb({store:new ClaudeStore(store.dir)})
@@ -304,6 +343,11 @@ test('local Web console authenticates and probes actual MCP protocol',fixture(as
     assert.equal((await post({scope:'harness',harness:'codex',mode:'cli',model:'opus'})).status,200);assert.equal(store.harnessSetting('codex').model,'opus')
     assert.equal((await post({scope:'harness',harness:'bogus',mode:'off'})).status,400)
     assert.equal((await post({scope:'harness',harness:'codex',mode:'inherit'})).status,200);assert.equal(store.harnessSetting('codex'),null)
+    const apiSetting={scope:'global',mode:'api',model:'gpt-test',api_provider:'openai',api_url:'https://api.example.test/v1/chat/completions'}
+    assert.equal((await post(apiSetting)).status,400,'API configuration without a key must be rejected')
+    const apiResponse=await post({...apiSetting,api_key:'web-secret-123456'});assert.equal(apiResponse.status,200);assert.doesNotMatch(await apiResponse.text(),/web-secret-123456/)
+    const apiRead=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.equal(apiRead.global.api_key_configured,true);assert.equal(JSON.stringify(apiRead).includes('web-secret-123456'),false);assert.equal(store.globalSetting().model,'gpt-test')
+    assert.equal((await post({...apiSetting,model:'gpt-updated'})).status,200,'blank key retains the saved credential')
     assert.equal((await fetch(base+'/api/preference',{headers})).status,404)
     const probe=await fetch(base+'/api/probe',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:'{}'}).then(r=>r.json())
     assert.equal(probe.ok,true,JSON.stringify(probe))

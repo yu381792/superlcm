@@ -7,6 +7,7 @@ import { ClaudeStore } from './store.js'
 import { contextPacket } from './context.js'
 import { modelCatalog, harnessConnections } from './model-catalog.js'
 import { summaryMode } from './mode.js'
+import { saveApiKey } from './api-credentials.js'
 
 const secret=()=>randomBytes(24).toString('hex')
 const equal=(a,b)=>typeof a==='string' && a.length===b.length && timingSafeEqual(Buffer.from(a),Buffer.from(b))
@@ -47,11 +48,26 @@ export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',
         const offset=Number(url.searchParams.get('offset')||0);if(!Number.isSafeInteger(offset)||offset<0)return json(res,400,{error:'Invalid offset'});return json(res,200,store.listSessions(50,offset))
       }
       if(req.method==='GET' && url.pathname==='/api/state')return json(res,200,{deliveries:store.deliveries(),clients:store.clients()})
-      if(req.method==='GET' && url.pathname==='/api/settings')return json(res,200,{global:store.globalSetting()||{mode:summaryMode(),model:null,configured:false},harnesses:await harnessConnections(store),settings:store.harnessSettings()})
+      if(req.method==='GET' && url.pathname==='/api/settings')return json(res,200,{global:{...(store.globalSetting()||{mode:summaryMode(),model:null,api_provider:null,api_url:null,configured:false}),api_key_configured:store.hasApiCredential('global')},harnesses:await harnessConnections(store),settings:store.harnessSettings().map(x=>({...x,api_key_configured:store.hasApiCredential('harness:'+x.harness)}))})
       if(req.method==='GET' && url.pathname==='/api/models')return json(res,200,await modelCatalog(url.searchParams.get('backend')))
       if(req.method==='GET' && url.pathname==='/api/context')return json(res,200,contextPacket(store,url.searchParams.get('session')))
       if(req.method==='POST' && url.pathname==='/api/deliver'){const x=await body(req);return json(res,200,store.enqueue(x.source,x.target))}
-      if(req.method==='POST' && url.pathname==='/api/settings'){const x=await body(req);if(x.scope==='global')return json(res,200,store.setGlobalSetting(x.mode,x.model||null));if(x.scope==='harness'){const known=await harnessConnections(store);if(!known.some(h=>h.harness===x.harness))return json(res,400,{error:'Harness has not been configured or observed'});return json(res,200,x.mode==='inherit'?store.clearHarnessSetting(x.harness):store.setHarnessSetting(x.harness,x.mode,x.model||null))}return json(res,400,{error:'Invalid settings scope'})}
+      if(req.method==='POST' && url.pathname==='/api/settings'){
+        const x=await body(req)
+        if(x.scope!=='global'&&x.scope!=='harness')return json(res,400,{error:'Invalid settings scope'})
+        if(x.scope==='harness'){const known=await harnessConnections(store);if(!known.some(h=>h.harness===x.harness))return json(res,400,{error:'Harness has not been configured or observed'})}
+        if(x.scope==='harness'&&x.mode==='inherit')return json(res,200,store.clearHarnessSetting(x.harness))
+        const scope=x.scope==='global'?'global':'harness:'+x.harness
+        const model=x.model||null,provider=x.api_provider||null,address=x.api_url||null,key=x.api_key
+        store.validateSetting(x.mode,model,provider,address)
+        if(x.mode==='api'){
+          if(key!==undefined&&typeof key!=='string')throw new Error('API key must be text')
+          if(!key&&!store.hasApiCredential(scope))throw new Error('Enter and save an API key for this setting')
+          if(key)saveApiKey(store.dir,scope,key)
+        }else if(key)throw new Error('API key is accepted only for custom API mode')
+        const result=x.scope==='global'?store.setGlobalSetting(x.mode,model,provider,address):store.setHarnessSetting(x.harness,x.mode,model,provider,address)
+        return json(res,200,{...result,api_key_configured:store.hasApiCredential(scope)})
+      }
       if(req.method==='POST' && url.pathname==='/api/probe'){await body(req);return json(res,200,await probeMcp({env:{...process.env,SUPERLCM_HOME:store.dir}}))}
       json(res,404,{error:'Unknown console route'})
     }catch(error){json(res,400,{error:error.message})}
