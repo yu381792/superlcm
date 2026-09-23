@@ -262,8 +262,9 @@ test('8790-inspired Web markup keeps strict-token script syntactically valid',()
   const html=webPage('demo-token','nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
   assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/#f0eee6/);assert.match(html,/--accent:#d97757/)
   assert.match(html,/<nav class="side-nav"/);assert.equal((html.match(/data-view-panel="/g)||[]).length,4)
-  assert.match(html,/\.nav-link:hover\{border-color:var\(--accent\)\}/);assert.match(html,/\.nav-link.active\{background:var\(--accent-soft\);border-color:var\(--accent\)\}/)
+  assert.match(html,/\.nav-link:hover\{color:var\(--accent-deep\)\}/);assert.match(html,/\.nav-link.active\{background:var\(--accent-soft\);border-color:var\(--accent\)\}/)
   assert.match(html,/\.chapter\[hidden\]/);assert.match(html,/<aside class="intro"><h1>SuperLcm<\/h1>/)
+  for(const label of ['对话索引','对话导入','模型设置','MCP连接'])assert.match(html,new RegExp('>'+label+'<'))
   assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL/)
 })
 test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
