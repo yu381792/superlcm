@@ -262,12 +262,14 @@ test('8790-inspired Web markup keeps strict-token script syntactically valid',()
   const html=webPage('demo-token','nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
   assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/#f0eee6/);assert.match(html,/--accent:#d97757/)
   assert.match(html,/<nav class="side-nav"/);assert.equal((html.match(/data-view-panel="/g)||[]).length,4)
-  assert.match(html,/\.nav-link:hover/);assert.match(html,/\.chapter\[hidden\]/)
+  assert.match(html,/\.nav-link:hover\{border-color:var\(--accent\)\}/);assert.match(html,/\.nav-link.active\{background:var\(--accent-soft\);border-color:var\(--accent\)\}/)
+  assert.match(html,/\.chapter\[hidden\]/);assert.match(html,/<aside class="intro"><h1>SuperLcm<\/h1>/)
+  assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL/)
 })
 test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
   const web=await startWeb({store:new ClaudeStore(store.dir)})
   try {
-    const initial=await fetch(web.url),html=await initial.text();assert.match(html,/SuperLcm.*对话索引/);assert.match(html,/#f0eee6/)
+    const initial=await fetch(web.url),html=await initial.text();assert.match(html,/<title>SuperLcm<\/title>/);assert.match(html,/#f0eee6/)
     const cookie=initial.headers.get('set-cookie');assert.match(cookie,/HttpOnly/);assert.equal((await fetch(new URL(web.url).origin+'/',{headers:{Cookie:cookie.split(';')[0]}})).status,200)
     const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token}
     assert.equal((await fetch(base+'/api/state')).status,401)
