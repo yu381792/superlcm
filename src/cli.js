@@ -37,4 +37,4 @@ else if (command==='hook' || command==='index' || command==='import' || command=
     } else result=store.overview(rest[0])
     if (command!=='hook') process.stdout.write(JSON.stringify(result)+'\n')
   } catch(error) {process.stderr.write(`SuperLcm: ${error.message}\n`);process.exitCode=1} finally {store.close()}
-} else { process.stderr.write('Usage: node claude/cli.js mcp|hook|index|import|overview\n'); process.exitCode=2 }
+} else { process.stderr.write('Usage: node src/cli.js mcp|hook|index|import|overview|summarize\n'); process.exitCode=2 }
