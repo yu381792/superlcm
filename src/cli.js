@@ -1,14 +1,10 @@
 #!/usr/bin/env node
 import { ClaudeStore, claudeTranscript } from './store.js'
 import { buildHierarchy, summaryWork } from './summarize.js'
+import { summaryMode } from './mode.js'
 import { startServer } from './mcp.js'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-export function summaryMode(env = process.env) {
-  const mode=env.SUPERLCM_SUMMARY_MODE || (env.SUPERLCM_SUMMARIZE_ON_HOOK==='1' ? 'api' : 'off')
-  if (!['off','api','agent'].includes(mode)) throw new Error('SUPERLCM_SUMMARY_MODE must be off, api, or agent')
-  return mode
-}
 const [command,...rest]=process.argv.slice(2)
 if (command==='mcp') startServer()
 else if (command==='hook' || command==='index' || command==='import' || command==='overview' || command==='summarize') {
@@ -21,6 +17,7 @@ else if (command==='hook' || command==='index' || command==='import' || command=
         const session=input.session_id, file=claudeTranscript(input.transcript_path)
         const mode=summaryMode(), event=input.hook_event_name
         if (['Stop','PostCompact'].includes(event) || (mode==='agent' && event==='UserPromptSubmit') || (event==='SessionStart' && input.source==='compact')) result=store.ingest(session,file)
+        if (store.source(session)) store.setSummaryMode(session,mode)
         if (mode==='api' && ['Stop','PostCompact'].includes(event)) {
           if (process.env.SUPERLCM_CLAUDE_MODEL && process.env.SUPERLCM_ANTHROPIC_API_KEY) {
             const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session],{detached:true,stdio:'ignore',env:process.env});child.unref()

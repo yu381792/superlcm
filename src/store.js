@@ -44,11 +44,17 @@ export class ClaudeStore {
       CREATE INDEX IF NOT EXISTS nodes_level ON nodes(session,level,first);
       CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(session UNINDEXED, id UNINDEXED, summary);
       CREATE TABLE IF NOT EXISTS leases(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_modes(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('off','agent','api')));
     `)
   }
   close() { this.db.close() }
   setStatus(session,status) { this.db.prepare('UPDATE sources SET status=? WHERE session=?').run(status,session) }
-  sources() { return this.db.prepare('SELECT session,kind,offset,status FROM sources ORDER BY session').all() }
+  setSummaryMode(session,mode) {
+    if (!['off','agent','api'].includes(mode) || !this.source(session)) throw new Error('Invalid session summary mode')
+    this.db.prepare('INSERT INTO session_modes(session,mode) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET mode=excluded.mode').run(session,mode)
+  }
+  summaryMode(session) { return this.db.prepare('SELECT mode FROM session_modes WHERE session=?').get(session)?.mode || null }
+  sources() { return this.db.prepare('SELECT s.session,s.kind,s.offset,s.status,m.mode AS summary_mode FROM sources s LEFT JOIN session_modes m ON s.session=m.session ORDER BY s.session').all() }
   source(session) { return this.db.prepare('SELECT * FROM sources WHERE session=?').get(session) }
   #verifySource(session, path, kind) {
     if (!session || typeof session !== 'string' || session.length > 200 || !/^[\w.-]+$/.test(session)) throw new Error('Invalid session id')

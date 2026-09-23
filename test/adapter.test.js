@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore, importFile } from '../src/store.js'
 import { buildHierarchy, summaryWork, saveAgentSummary } from '../src/summarize.js'
+import { summaryMode } from '../src/mode.js'
 import { call, startServer, tools } from '../src/mcp.js'
 import { PassThrough } from 'node:stream'
 import { createInterface } from 'node:readline'
@@ -94,9 +95,16 @@ test('agent hook nudges locally, explicit agent mode wins over legacy API flag',
   const hook={hook_event_name:'UserPromptSubmit',session_id:'hook-session',transcript_path:src}
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
   const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:db,SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_SUMMARIZE_ON_HOOK:'1'}
+  delete env.SUPERLCM_ANTHROPIC_API_KEY;delete env.SUPERLCM_CLAUDE_MODEL
   const run=()=>spawnSync(process.execPath,[cli,'hook'],{input:JSON.stringify(hook),encoding:'utf8',env,timeout:5000})
   const result=run();assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/lcm_summary_work/);assert.doesNotMatch(result.stderr,/api mode/)
+  env.SUPERLCM_ANTHROPIC_API_KEY='fake-not-used';const api=run();assert.equal(api.status,0,api.stderr);assert.equal(api.stdout,'')
+  const seen=new ClaudeStore(db);assert.equal(seen.summaryMode('hook-session'),'api');assert.equal(seen.sources()[0].summary_mode,'api')
+  await assert.rejects(call(seen,'lcm_summary_work',{session:'hook-session'}),/Agent summaries disabled/)
+  await assert.rejects(call(seen,'lcm_save_summary',{session:'hook-session',batch_id:'fake',summary:'This must not be written.'}),/Agent summaries disabled/)
+  seen.close()
   env.SUPERLCM_SUMMARY_MODE='off';const off=run();assert.equal(off.status,0,off.stderr);assert.equal(off.stdout,'')
+  const disabled=new ClaudeStore(db);assert.equal(disabled.summaryMode('hook-session'),'off');await assert.rejects(call(disabled,'lcm_summary_work',{session:'hook-session'}),/Agent summaries disabled/);disabled.close()
 }))
 
 test('summary lease grants only one concurrent holder',fixture(async ({store})=>{
@@ -105,3 +113,12 @@ test('summary lease grants only one concurrent holder',fixture(async ({store})=>
   store.release('lock-session')
   assert.equal(store.lease('lock-session'),true)
 }))
+
+test('mode defaults to agent, a dedicated API key switches to API even under old agent setting',()=>{
+  assert.equal(summaryMode({}),'agent')
+  assert.equal(summaryMode({SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
+  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
+  assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'off',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'off')
+  assert.equal(summaryMode({SUPERLCM_SUMMARIZE_ON_HOOK:'1'}),'api')
+  assert.throws(()=>summaryMode({SUPERLCM_SUMMARY_MODE:'unknown'}),/must be/)
+})

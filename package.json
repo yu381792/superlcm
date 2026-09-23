@@ -1,6 +1,6 @@
 {
   "name": "superlcm-claude-mcp",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "SuperLcm Claude MCP — layered recall for Claude Code and Claude Desktop without replacing native compaction",
   "type": "module",
   "private": true,
