@@ -1,3 +1,4 @@
+import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { normalizeApiEndpoint } from './api-endpoint.js'
 import { readApiKey } from './api-credentials.js'
@@ -83,14 +84,14 @@ export class ClaudeStore {
   }
   summaryMode(session) { return this.db.prepare('SELECT mode FROM summary_policies WHERE session=?').get(session)?.mode || null }
   setPreference(session,mode,model=null) {
-    if (!this.source(session) || !['auto','off','cli','codex-cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)))) throw new Error('Invalid summary preference')
+    if (!this.source(session) || !['auto','off','cli','codex-cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !validModel(model)))) throw new Error('Invalid summary preference')
     this.db.prepare('INSERT INTO summary_preferences(session,mode,model) VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET mode=excluded.mode,model=excluded.model').run(session,mode,model)
     return this.preference(session)
   }
   preference(session) {return this.db.prepare('SELECT mode,model FROM summary_preferences WHERE session=?').get(session)||{mode:'auto',model:null}}
   // Legacy conversation preferences remain in SQLite for migration; routing ignores them.
   validateSetting(mode,model,apiProvider=null,apiURL=null) {
-    if (!['off','cli','codex-cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)))) throw new Error('Invalid summary setting or model ID')
+    if (!['off','cli','codex-cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !validModel(model)))) throw new Error('Invalid summary setting or model ID')
     if(mode==='api') {if(!model)throw new Error('Custom API requires an explicit model ID');return {api_provider:apiProvider,api_url:normalizeApiEndpoint(apiProvider,apiURL)}}
     if (['off','agent'].includes(mode) && model!==null) throw new Error('This summary mode does not use a model')
     return {api_provider:null,api_url:null}

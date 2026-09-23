@@ -1,3 +1,4 @@
+import { validModel } from './runtime.js'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -10,7 +11,7 @@ export function codexSubscriptionEnv(env=process.env) {
 }
 export function summarizeWithCodexCli(text,{model=process.env.SUPERLCM_CODEX_CLI_MODEL||'',bin=process.env.SUPERLCM_CODEX_CLI_BIN||'codex',env=process.env,timeoutMs=90000,cwd=join(home(),'codex-cli-cwd'),spawnProcess=spawn}={}) {
   if(typeof text!=='string' || !text.trim() || text.length>22000) throw new Error('Codex CLI summary input must be 1–22000 characters')
-  if(typeof model!=='string' || (model && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model))) throw new Error('Invalid SUPERLCM_CODEX_CLI_MODEL')
+  if(typeof model!=='string' || (model && !validModel(model))) throw new Error('Invalid SUPERLCM_CODEX_CLI_MODEL')
   if(!Number.isSafeInteger(timeoutMs) || timeoutMs<1000 || timeoutMs>300000) throw new Error('Invalid Codex CLI timeout')
   mkdirSync(cwd,{recursive:true,mode:0o700})
   const args=['exec','--ephemeral','--ignore-user-config','--ignore-rules','--skip-git-repo-check','-s','read-only',...(model?['-m',model]:[]),'--json','-']

@@ -10,6 +10,8 @@ import { startWeb } from './web.js'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 const [command,...rest]=process.argv.slice(2)
+const homeFlag=rest.indexOf('--home')
+if(homeFlag>=0){if(!rest[homeFlag+1])throw Error('--home requires a path');process.env.SUPERLCM_HOME=rest[homeFlag+1];rest.splice(homeFlag,2)}
 const effective=(store,session)=>store.effectiveSetting(session)
 const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>resolve(JSON.parse(text)))})
 function scheduleSummary(store,session,mode,model) {
@@ -24,7 +26,8 @@ function scheduleSummary(store,session,mode,model) {
   child.unref()
 }
 const derivedTitle=(store,session)=>store.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview.replace(/^user:\s*/,'').replace(/\s+/g,' ').trim().slice(0,90)
-if (command==='mcp') startServer()
+if(command==='setup' || command==='doctor-local'){const store=new ClaudeStore();try{const {harnessConnections}=await import('./harness.js');if(command==='doctor-local'||!rest[0])console.log(JSON.stringify(await harnessConnections(store),null,2));else{const {setupPreview,publicPreview,applySetup}=await import('./setup.js');const preview=await setupPreview(store,rest[0]);console.log(JSON.stringify(rest.includes('--apply')?await applySetup(store,rest[0],preview.revision):publicPreview(preview),null,2))}}catch(error){console.error(error.message);process.exitCode=1}finally{store.close()}}
+else if (command==='mcp') startServer()
 else if (command==='web') { const web=await startWeb({port:rest[0]?Number(rest[0]):0});process.stdout.write(`SuperLcm local console: ${web.url}\n`) }
 else if (command==='hook' || command==='codex-hook' || command==='index' || command==='index-codex' || command==='import' || command==='name' || command==='overview' || command==='summarize') {
   const store=new ClaudeStore()
@@ -40,7 +43,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           const event=input.hook_event_name
           const session=codex ? codexSessionKey(input.session_id) : input.session_id
           const file=input.transcript_path ? (codex ? codexTranscript(input.transcript_path,{cwd:input.cwd}) : claudeTranscript(input.transcript_path)) : null
-          const shouldIndex=codex ? ['Stop','PostCompact','SessionEnd','SessionStart','UserPromptSubmit'].includes(event) : ['Stop','PostCompact'].includes(event) || (event==='SessionStart' && input.source==='compact')
+          const shouldIndex=['Stop','PostCompact','SessionEnd','SessionStart','UserPromptSubmit'].includes(event)
           if (shouldIndex && file) result=store.ingest(session,file)
           if (store.source(session)) {
             store.markClient(codex?'codex':'claude-code','hook')
@@ -92,4 +95,4 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     else result=store.overview(rest[0])
     if (command!=='hook' && command!=='codex-hook') process.stdout.write(JSON.stringify(result)+'\n')
   } catch(error) {process.stderr.write(`SuperLcm: ${error.message}\n`);process.exitCode=1} finally {store.close()}
-} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|hook|codex-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }
+} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|doctor-local|setup <codex|claude-code> [--apply]|hook|codex-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }

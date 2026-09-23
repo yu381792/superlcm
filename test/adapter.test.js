@@ -210,14 +210,12 @@ test('global defaults and per-harness overrides persist without a conversation s
   store.clearHarnessSetting('codex');assert.equal(store.effectiveSetting('b').mode,'off')
   assert.throws(()=>store.setGlobalSetting('off','gpt-test'),/does not use/);assert.throws(()=>store.setHarnessSetting('codex','cli','bad model'),/Invalid/)
 }))
-test('CLI model metadata reads only help and visible local Codex cache',fixture(async ({dir,store})=>{
-  writeFileSync(join(dir,'models_cache.json'),JSON.stringify({fetched_at:'test-date',models:[{slug:'gpt-listed',display_name:'GPT Listed',visibility:'list',priority:1},{slug:'gpt-hidden',visibility:'hide',priority:2}]}))
-  const codex=await modelCatalog('codex-cli',{env:{CODEX_HOME:dir}});assert.deepEqual(codex.models,[{id:'gpt-listed',label:'GPT Listed'}]);assert.equal(codex.updated_at,'test-date')
-  const calls=[];const claude=await modelCatalog('cli',{env:{SUPERLCM_CLAUDE_CLI_BIN:'fake-claude'},runCommand:async(bin,args)=>{calls.push([bin,args]);return {stdout:"--model <model>  Model for session. Provide\n                an alias for the latest model (e.g.\n                'fable', 'opus', or 'sonnet') or a\n                model's full name\n  -n, --name"}}})
-  assert.deepEqual(calls,[['fake-claude',['--help']]]);assert.deepEqual(claude.models.map(x=>x.id),['fable','opus','sonnet'])
-  store.setHarnessSetting('codex','off');store.markClient('claude-code','hook')
-  const evidence=await harnessConnections(store,{env:{},runCommand:async(bin,args)=>bin==='codex'?{stdout:''}:Promise.reject(Error('not configured'))})
-  assert.equal(evidence.find(x=>x.harness==='codex').configured,true);assert.ok(evidence.find(x=>x.harness==='claude-code').hook_seen)
+test('CLI model metadata uses real catalog and explicit cache fallback',fixture(async ({dir})=>{
+  writeFileSync(join(dir,'models_cache.json'),JSON.stringify({fetched_at:'test-date',models:[{slug:'gpt-listed',display_name:'GPT Listed',visibility:'list'},{slug:'gpt-hidden',visibility:'hide'}]}))
+  const codex=await modelCatalog('codex-cli',{env:{CODEX_HOME:dir},runCommand:async()=>{throw Error('offline')}});assert.deepEqual(codex.models.map(x=>x.id),['gpt-listed']);assert.equal(codex.status,'cached');assert.equal(codex.updated_at,'test-date')
+  const calls=[];const live=await modelCatalog('codex-cli',{env:{CODEX_HOME:dir},runCommand:async(bin,args)=>{calls.push(args);return {stdout:JSON.stringify({models:[{slug:'provider/model',visibility:'list'}]})}}});assert.deepEqual(calls,[['debug','models']]);assert.equal(live.models[0].id,'provider/model');assert.equal(live.status,'live')
+  const claude=await modelCatalog('cli',{readClaude:async()=>[{value:'opus[1m]',resolvedModel:'claude-real[1m]',displayName:'Actual CLI model'}]});assert.equal(claude.models[0].id,'opus[1m]');assert.equal(claude.models[0].resolved_model,'claude-real[1m]');assert.equal(claude.source,'Claude CLI · initialize.models')
+  const failed=await modelCatalog('cli',{readClaude:async()=>{throw Error('No catalog')}});assert.deepEqual(failed.models,[]);assert.equal(failed.status,'unavailable')
 }))
 test('custom API settings require scoped endpoint, model and private write-only key',fixture(async ({dir,store})=>{
   const path=join(dir,'api-source.txt');writeFileSync(path,'source message\n');importFile(store,path,'api-session','codex')
@@ -338,11 +336,11 @@ test('8790-inspired Web markup keeps strict-token script syntactically valid',()
   assert.match(html,/\.nav-link:hover i,\.nav-link.active i\{background:var\(--accent\);border-color:var\(--accent\)\}/);assert.doesNotMatch(html,/\.nav-link:hover\{color:/);assert.doesNotMatch(html,/\.nav-link.active\{background:/);assert.match(html,/\.side-nav\{display:grid;align-content:start;gap:16px\}/)
   assert.match(html,/\.chapter\[hidden\]/);assert.match(html,/<aside class="intro"><h1>SuperLcm<\/h1>/)
   for(const label of ['对话索引','对话导入','模型设置','MCP连接'])assert.match(html,new RegExp('>'+label+'<'))
-  assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL|id="modeSession"|本页有摘要/);assert.match(html,/<div class="k">摘要<\/div>/)
+  assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL|id="modeSession"|本页有摘要/);assert.match(html,/\['摘要',counts.summaries/)
   assert.doesNotMatch(html,/<datalist/);assert.match(html,/data-role=\"model-choice\"/);assert.match(html,/data-role=\"api-key\"/);assert.match(html,/data-role=\"provider\"/)
 })
 test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
-  const web=await startWeb({store:new ClaudeStore(store.dir)})
+  const web=await startWeb({store:new ClaudeStore(store.dir),discovery:async()=>[{harness:'codex',detected:true,configured:true}]})
   try {
     const initial=await fetch(web.url),html=await initial.text();assert.match(html,/<title>SuperLcm<\/title>/);assert.match(html,/#f0eee6/)
     const cookie=initial.headers.get('set-cookie');assert.match(cookie,/HttpOnly/);assert.equal((await fetch(new URL(web.url).origin+'/',{headers:{Cookie:cookie.split(';')[0]}})).status,200)
@@ -441,7 +439,7 @@ test('CLI mode never injects agent writing prompts and worker hooks do not recur
   assert.equal(prompt.status,0,prompt.stderr);assert.equal(prompt.stdout,'')
   const nested=run({hook_event_name:'Stop'},{SUPERLCM_CLI_WORKER:'1'})
   assert.equal(nested.status,0,nested.stderr);assert.equal(nested.stdout,'')
-  const check=new ClaudeStore(db);assert.deepEqual(check.sources(),[]);check.close()
+  const check=new ClaudeStore(db);assert.equal(check.sources().length,1);assert.equal(check.eventRows('hook-session').length,8);assert.equal(check.summaries('hook-session').total,0);check.close()
   env.SUPERLCM_SUMMARY_MODE='api';env.SUPERLCM_ANTHROPIC_API_KEY='test-not-used'
   const missingModel=run({hook_event_name:'Stop'})
   assert.equal(missingModel.status,0,missingModel.stderr);assert.match(missingModel.stderr,/api mode needs/)

@@ -11,4 +11,22 @@ Independent MCP server for **layered conversation summaries and exact original r
 - Local Web control console: `node src/cli.js web` prints a one-time loopback URL; choose source/target navigation, a **global or harness-specific** summary backend (never per conversation), and run a local MCP handshake test. Subscription models appear in a selectable CLI-sourced list with a manual model-ID override; custom API has provider, endpoint, model ID and a write-only key. Saving never invokes a model.
 - [Setup, security, tools and limitations](./docs/SETUP.md)
 - Runtime: Node.js 22.16+, no third-party runtime dependencies.
-- Current source preview: 0.1.0-alpha.10. Live end-to-end installation has not been claimed.
+- Current source preview: 0.1.0-alpha.11. See the capability/test matrix; metadata checks do not prove inference or live host consumption.
+
+## Quick local setup
+
+With Node.js >=22.16, run from this repository:
+
+    node src/cli.js web
+
+Open the printed URL → MCP连接 → choose a detected harness → 接入 / 修复. Preview, confirm, then finish any native host trust review. No agent must hand-edit hooks. Terminal equivalent:
+
+    node src/cli.js doctor-local
+    node src/cli.js setup codex
+    node src/cli.js setup codex --apply
+    # or: node src/cli.js setup claude-code --apply
+
+Hermes and Pi are detected with explicit capability states and offer selected native snapshots; automatic MCP/hook setup for them is not yet implemented. Setup performs no mass import, native trust grant or inference.
+
+- [Console behavior, capabilities and tests](docs/CONSOLE.md)
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)

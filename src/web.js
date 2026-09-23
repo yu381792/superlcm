@@ -1,7 +1,10 @@
+import { localConversations, indexLocalConversation } from './local-conversations.js'
+import { testHarness } from './diagnostics.js'
+import { setupPreview, publicPreview, applySetup } from './setup.js'
+import { probeMcp } from './mcp-probe.js'
+export { probeMcp } from './mcp-probe.js'
 import { createServer } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import { page } from './web-page.js'
 import { ClaudeStore } from './store.js'
 import { contextPacket } from './context.js'
@@ -13,25 +16,7 @@ const secret=()=>randomBytes(24).toString('hex')
 const equal=(a,b)=>typeof a==='string' && a.length===b.length && timingSafeEqual(Buffer.from(a),Buffer.from(b))
 const json=(res,status,data)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'});res.end(JSON.stringify(data))}
 async function body(req){const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>16000)throw new Error('Request body too large');chunks.push(chunk)}const x=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));if(!x||typeof x!=='object'||Array.isArray(x))throw new Error('JSON object required');return x}
-export function probeMcp({bin=process.execPath,script=fileURLToPath(new URL('./cli.js',import.meta.url)),env=process.env,timeoutMs=5000}={}) {
-  return new Promise(resolve=>{
-    let child,settled=false,text='',answers=[]
-    const finish=x=>{if(settled)return;settled=true;clearTimeout(timer);if(child?.exitCode===null)child.kill('SIGTERM');resolve(x)}
-    try{child=spawn(bin,[script,'mcp'],{env,stdio:['pipe','pipe','pipe'],windowsHide:true})}
-    catch(error){return resolve({ok:false,error:error.message})}
-    const timer=setTimeout(()=>finish({ok:false,error:'MCP protocol test timed out'}),timeoutMs)
-    child.on('error',error=>finish({ok:false,error:error.message}))
-    child.stderr.resume()
-    child.stdout.setEncoding('utf8');child.stdout.on('data',chunk=>{
-      text+=chunk;if(text.length>200000)return finish({ok:false,error:'MCP response too large'})
-      let index;while((index=text.indexOf('\n'))>=0){const line=text.slice(0,index);text=text.slice(index+1);try{answers.push(JSON.parse(line))}catch{return finish({ok:false,error:'Invalid MCP JSON'})}}
-      if(answers.length>=2){const init=answers.find(x=>x.id===1),listed=answers.find(x=>x.id===2);finish(init?.result?.serverInfo?.name==='superlcm' && Array.isArray(listed?.result?.tools)?{ok:true,tool_count:listed.result.tools.length,scope:'local-protocol-only'}:{ok:false,error:'MCP handshake/tool list did not match'})}
-    })
-    child.stdin.on('error',()=>{})
-    child.stdin.end(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',clientInfo:{name:'web-self-test',version:'1'},capabilities:{}}})+'\n'+JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list',params:{}})+'\n')
-  })
-}
-export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',token=secret()}={}) {
+export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',token=secret(),env=process.env,discovery=harnessConnections,catalog=modelCatalog}={}) {
   if(host!=='127.0.0.1')throw new Error('Web console is loopback-only')
   if(!Number.isSafeInteger(port)||port<0||port>65535)throw new Error('Invalid local Web port')
   const server=createServer(async(req,res)=>{
@@ -45,17 +30,26 @@ export async function startWeb({store=new ClaudeStore(),port=0,host='127.0.0.1',
       if(!equal(req.headers.authorization?.replace(/^Bearer /,''),token))return json(res,401,{error:'Local console token required'})
       if(req.method==='POST' && req.headers.origin && req.headers.origin!==`http://127.0.0.1:${server.address()?.port}`)return json(res,403,{error:'Cross-origin mutation refused'})
       if(req.method==='GET' && url.pathname==='/api/sessions'){
-        const offset=Number(url.searchParams.get('offset')||0);if(!Number.isSafeInteger(offset)||offset<0)return json(res,400,{error:'Invalid offset'});return json(res,200,store.listSessions(50,offset))
+        const offset=Number(url.searchParams.get('offset')||0);if(!Number.isSafeInteger(offset)||offset<0)return json(res,400,{error:'Invalid offset'});return json(res,200,store.listSessions(50,offset,url.searchParams.get('harness')||undefined))
       }
+      if(req.method==='GET' && url.pathname==='/api/harnesses')return json(res,200,{harnesses:await discovery(store,{env})})
+      if(req.method==='GET' && url.pathname==='/api/local-conversations')return json(res,200,localConversations(store,url.searchParams.get('harness'),{env,offset:Number(url.searchParams.get('offset')||0)}))
+      if(req.method==='POST' && url.pathname==='/api/index-local'){const x=await body(req);return json(res,200,indexLocalConversation(store,x.harness,x.key,{env}))}
+      if(req.method==='POST' && url.pathname==='/api/harness-test'){const x=await body(req);return json(res,200,await testHarness(store,x.harness,{env}))}
+      if(req.method==='POST' && url.pathname==='/api/setup-preview'){const x=await body(req);return json(res,200,publicPreview(await setupPreview(store,x.harness,{env})))}
+      if(req.method==='POST' && url.pathname==='/api/setup-apply'){const x=await body(req);if(x.confirm!==true)throw Error('请先预览并确认安装');return json(res,200,await applySetup(store,x.harness,x.revision,{env}))}
+      if(req.method==='GET' && url.pathname==='/api/doctor')return json(res,200,store.doctor(url.searchParams.get('session')))
+      if(req.method==='GET' && url.pathname==='/api/summary-nodes')return json(res,200,store.summaries(url.searchParams.get('session'),20,Number(url.searchParams.get('offset')||0)))
+      if(req.method==='GET' && url.pathname==='/api/statistics')return json(res,200,{sessions:store.db.prepare('SELECT count(*) AS n FROM sources').get().n,summaries:store.db.prepare('SELECT count(*) AS n FROM nodes').get().n,groups:store.db.prepare("SELECT COALESCE(o.harness,'legacy') AS harness,count(*) AS sessions FROM sources s LEFT JOIN session_origins o ON o.session=s.session GROUP BY harness").all()})
       if(req.method==='GET' && url.pathname==='/api/state')return json(res,200,{deliveries:store.deliveries(),clients:store.clients()})
-      if(req.method==='GET' && url.pathname==='/api/settings')return json(res,200,{global:{...(store.globalSetting()||{mode:summaryMode(),model:null,api_provider:null,api_url:null,configured:false}),api_key_configured:store.hasApiCredential('global')},harnesses:await harnessConnections(store),settings:store.harnessSettings().map(x=>({...x,api_key_configured:store.hasApiCredential('harness:'+x.harness)}))})
-      if(req.method==='GET' && url.pathname==='/api/models')return json(res,200,await modelCatalog(url.searchParams.get('backend')))
+      if(req.method==='GET' && url.pathname==='/api/settings')return json(res,200,{global:{...(store.globalSetting()||{mode:summaryMode(),model:null,api_provider:null,api_url:null,configured:false}),api_key_configured:store.hasApiCredential('global')},harnesses:await discovery(store,{env}),settings:store.harnessSettings().map(x=>({...x,api_key_configured:store.hasApiCredential('harness:'+x.harness)}))})
+      if(req.method==='GET' && url.pathname==='/api/models')return json(res,200,await catalog(url.searchParams.get('backend'),{env}))
       if(req.method==='GET' && url.pathname==='/api/context')return json(res,200,contextPacket(store,url.searchParams.get('session')))
       if(req.method==='POST' && url.pathname==='/api/deliver'){const x=await body(req);return json(res,200,store.enqueue(x.source,x.target))}
       if(req.method==='POST' && url.pathname==='/api/settings'){
         const x=await body(req)
         if(x.scope!=='global'&&x.scope!=='harness')return json(res,400,{error:'Invalid settings scope'})
-        if(x.scope==='harness'){const known=await harnessConnections(store);if(!known.some(h=>h.harness===x.harness))return json(res,400,{error:'Harness has not been configured or observed'})}
+        if(x.scope==='harness'){const known=await discovery(store,{env});if(!known.some(h=>h.harness===x.harness))return json(res,400,{error:'Harness has not been configured or observed'})}
         if(x.scope==='harness'&&x.mode==='inherit')return json(res,200,store.clearHarnessSetting(x.harness))
         const scope=x.scope==='global'?'global':'harness:'+x.harness
         const model=x.model||null,provider=x.api_provider||null,address=x.api_url||null,key=x.api_key

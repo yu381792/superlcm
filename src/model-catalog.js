@@ -1,54 +1,47 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { runCommand as run, paths, findCli, commandOptions, validModel } from './runtime.js'
+import { subscriptionEnv } from './claude-cli.js'
+export { harnessConnections } from './harness.js'
 
-const run=promisify(execFile)
-const valid=id=>typeof id==='string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)
-
-// Metadata only: these probes never submit a prompt or invoke a paid model.
-export async function modelCatalog(kind,{env=process.env,runCommand=run}={}) {
+// Initialize-only control protocol: no user message, inference, tools, hooks or persisted session.
+export function claudeModels({env=process.env,spawnProcess=spawn,timeoutMs=15000}={}) {
+  return new Promise((resolve,reject)=>{
+    const args=['--print','--input-format','stream-json','--output-format','stream-json','--verbose','--no-session-persistence','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--settings','{"disableAllHooks":true}','--tools','']
+    const child=spawnProcess(findCli('claude',env)||env.SUPERLCM_CLAUDE_CLI_BIN||'claude',args,{env:subscriptionEnv(env),cwd:tmpdir(),stdio:['pipe','pipe','pipe'],windowsHide:true})
+    let settled=false,text='',bytes=0
+    const finish=(err,value)=>{if(settled)return;settled=true;clearTimeout(timer);child.stdin.end();if(child.exitCode===null||child.exitCode===undefined)child.kill('SIGTERM');err?reject(err):resolve(value)}
+    const timer=setTimeout(()=>finish(new Error('Claude 初始化目录读取超时')),timeoutMs)
+    child.on('error',()=>finish(new Error('Claude CLI 无法启动')))
+    child.on('close',code=>{if(!settled)finish(new Error('Claude 未返回模型目录（exit '+code+'）'))})
+    child.stderr.resume();child.stdin.on('error',()=>{})
+    child.stdout.setEncoding('utf8');child.stdout.on('data',chunk=>{
+      bytes+=Buffer.byteLength(chunk);if(bytes>2*1024*1024)return finish(new Error('Claude 目录响应超限'))
+      text+=chunk;let i;while((i=text.indexOf('\n'))>=0){const line=text.slice(0,i);text=text.slice(i+1);let msg;try{msg=JSON.parse(line)}catch{continue}
+        if(msg.type==='control_response'&&msg.response?.request_id==='superlcm-models'){
+          const models=msg.response.response?.models
+          if(msg.response.subtype!=='success'||!Array.isArray(models))return finish(new Error('CLI 不支持初始化模型目录；不使用帮助示例代替'))
+          return finish(null,models)
+        }
+      }
+    })
+    child.stdin.write(JSON.stringify({type:'control_request',request_id:'superlcm-models',request:{subtype:'initialize'}})+'\n')
+  })
+}
+export async function modelCatalog(kind,{env=process.env,runCommand=run,readClaude=claudeModels}={}) {
+  const fetched=new Date().toISOString()
   if(kind==='codex-cli') {
-    try {
-      const file=join(env.CODEX_HOME||join(homedir(),'.codex'),'models_cache.json')
-      if(statSync(file).size>2*1024*1024)throw new Error('Model cache is too large')
-      const cache=JSON.parse(readFileSync(file,'utf8'))
-      const models=(Array.isArray(cache.models)?cache.models:[])
-        .filter(m=>m.visibility==='list' && valid(m.slug))
-        .sort((a,b)=>(a.priority??999)-(b.priority??999))
-        .slice(0,50).map(m=>({id:m.slug,label:typeof m.display_name==='string'?m.display_name.slice(0,100):m.slug}))
-      return {kind,models,source:'Codex CLI models_cache.json',updated_at:cache.fetched_at||null,note:models.length?'本机 CLI 缓存；是否可调用仍以登录和订阅权限为准。':'CLI 缓存没有可列出的模型；可手动输入模型名。'}
-    }catch {return {kind,models:[],source:'Codex CLI models_cache.json',updated_at:null,note:'未找到可用的本机 Codex 模型缓存；可手动输入模型名。'}}
+    let cache,source='Codex CLI · debug models',stale=false,error=null,updated=fetched
+    try {const result=await runCommand(findCli('codex',env)||'codex',['debug','models'],commandOptions(env));cache=JSON.parse(result.stdout);if(!Array.isArray(cache.models))throw Error('missing catalog')}
+    catch {stale=true;error='实时 CLI 目录读取失败';source='Codex CLI · models_cache.json（缓存回退）';try{const file=join(paths(env).codex,'models_cache.json');if(statSync(file).size>2*1024*1024)throw Error('too large');cache=JSON.parse(readFileSync(file,'utf8'));updated=cache.fetched_at||null}catch{cache={models:[]};updated=null}}
+    const models=(cache.models||[]).filter(m=>m.visibility!=='hide'&&validModel(m.slug)).sort((a,b)=>(a.priority??999)-(b.priority??999)).slice(0,100).map(m=>({id:m.slug,label:String(m.display_name||m.slug).slice(0,100),description:String(m.description||'').slice(0,250)}))
+    return {kind,models,source,stale,error,updated_at:updated,status:models.length?(stale?'cached':'live'):'unavailable',note:'来自本机 CLI 的真实目录；不是订阅调用成功证明。自定义 provider 模型还依赖其配置，独立 worker 不继承用户配置。'}
   }
   if(kind==='cli') {
-    try {
-      const {stdout}=await runCommand(env.SUPERLCM_CLAUDE_CLI_BIN||'claude',['--help'],{env,timeout:5000,maxBuffer:128*1024,windowsHide:true})
-      const section=stdout.split('--model <model>')[1]?.split(/\n\s{2}-[a-zA-Z]/)[0]||''
-      const aliasText=section.split("model's full name")[0]
-      const ids=[...new Set([...aliasText.matchAll(/'([a-zA-Z][a-zA-Z0-9_-]{0,127})'/g)].map(m=>m[1]))].slice(0,15)
-      return {kind,models:ids.map(id=>({id,label:id})),source:'Claude CLI --help',updated_at:null,note:'CLI 文档中的模型别名示例，不是订阅可用性验证；完整模型名可手动输入。'}
-    }catch {return {kind,models:[],source:'Claude CLI --help',updated_at:null,note:'无法读取 Claude CLI 模型帮助信息；可手动输入模型名。'}}
+    try {const raw=await readClaude({env});const models=raw.filter(m=>validModel(m.value)).slice(0,100).map(m=>({id:m.value,label:String(m.displayName||m.value).slice(0,100),resolved_model:m.resolvedModel||null,description:String(m.description||'').slice(0,250)}));return {kind,models,source:'Claude CLI · initialize.models',updated_at:fetched,status:models.length?'live':'unavailable',stale:false,note:'CLI 初始化真实选项（无推理）；resolvedModel 显示别名当前指向，不保证账户可调用。'}}
+    catch(error){return {kind,models:[],source:'Claude CLI · initialize.models',updated_at:null,status:'unavailable',stale:false,error:error.message,note:'未能读取真实目录；不会用 help 示例或写死的模型冒充。可手动输入。'}}
   }
   throw new Error('Unknown CLI model backend')
-}
-
-// Configured is not connected. ClientInfo is self-reported, and hooks only show past activity.
-export async function harnessConnections(store,{env=process.env,runCommand=run}={}) {
-  const seen=store.clients()
-  const names=['codex','claude-code']
-  const checks=await Promise.all(names.map(async name=>{
-    const bin=name==='codex'?(env.SUPERLCM_CODEX_CLI_BIN||'codex'):(env.SUPERLCM_CLAUDE_CLI_BIN||'claude')
-    try {await runCommand(bin,['mcp','get','superlcm'],{env,timeout:5000,maxBuffer:128*1024,windowsHide:true});return true}
-    catch{return false}
-  }))
-  const known=store.harnessSettings().map(x=>x.harness)
-  const observed=seen.filter(x=>x.kind==='hook' || x.kind==='mcp-self-reported')
-  const fromClient=x=>{if(!x||/^(anonymous|modern-anonymous|web-self-test)$/i.test(x))return null;return /codex/i.test(x)?'codex':/claude/i.test(x)?'claude-code':x.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40)||null}
-  const all=[...new Set([...names.filter((_,i)=>checks[i]),...known,...observed.map(x=>fromClient(x.client)).filter(Boolean)])]
-  return all.map(harness=>{
-    const hook=observed.find(x=>x.kind==='hook'&&x.client===harness)
-    const mcp=observed.find(x=>x.kind==='mcp-self-reported'&&fromClient(x.client)===harness)
-    return {harness,configured:checks[names.indexOf(harness)]===true,hook_seen:hook?.seen_at||null,mcp_self_reported:mcp?.seen_at||null}
-  })
 }
