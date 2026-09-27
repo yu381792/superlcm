@@ -36,6 +36,8 @@ Hermes keeps its transcripts in a SQLite database and rewrites them on compressi
 | `lcm_read` | Read exact original records by number |
 | `lcm_summary_task` / `lcm_summary_submit` | In-conversation summary mode only: claim a segment, submit its summary (verified against the originals) |
 
+Every tool is marked with MCP annotations: the four lookups are read-only, the two summary tools write only SuperLcm's own summaries, and none is destructive or reaches outside this computer, so hosts such as Codex run them without asking each time.
+
 ## More
 
 - [Setup, security and limitations](docs/SETUP.md)

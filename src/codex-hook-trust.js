@@ -26,9 +26,10 @@ export function codexHookTrust({ env = process.env, bin = findCli('codex', env),
         if (message?.id === 1) { send({ method: 'initialized' }); send({ id: 2, method: 'hooks/list', params: { cwds: [cwd] } }) }
         if (message?.id === 2 || message?.id === 4) {
           if (message.error) return finish({ checked: false, error: message.error.message || 'hooks/list failed' })
-          const hooks = (message.result?.data || []).flatMap(x => x.hooks || []).filter(ours)
+          // Given the exact command setup writes, only that hook counts (another cli.js codex-hook entry is not ours).
+          const hooks = (message.result?.data || []).flatMap(x => x.hooks || []).filter(ours).filter(h => !command || h.command === command)
           const pending = hooks.filter(h => h.enabled !== false && h.trustStatus !== 'trusted')
-          const approvable = pending.filter(h => h.key && h.currentHash && (!command || h.command === command))
+          const approvable = pending.filter(h => h.key && h.currentHash)
           if (message.id === 2 && approve && approvable.length) {
             send({ id: 3, method: 'config/batchWrite', params: { edits: [{ keyPath: 'hooks.state', mergeStrategy: 'upsert', value: Object.fromEntries(approvable.map(h => [h.key, { trusted_hash: h.currentHash }])) }] } })
             continue

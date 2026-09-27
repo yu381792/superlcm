@@ -20,6 +20,9 @@ export const tools = [
   {name:'lcm_summary_submit',description:'In-conversation summaries only: submit the summary for the task from lcm_summary_task. The server verifies the originals are unchanged before saving.',inputSchema:schema({conversation:str('Your current conversation ID or #code'),batch_id:str('batch_id from lcm_summary_task'),summary:str('Factual summary, 20–6000 characters')},['conversation','batch_id','summary'])}
 ]
 const agentTools = new Set(['lcm_summary_task','lcm_summary_submit'])
+// Tell hosts what each tool does (MCP annotations): lookups only read SuperLcm's own index; the summary tools
+// write only SuperLcm's summaries. Nothing is deleted and nothing leaves this computer.
+for (const t of tools) t.annotations = { readOnlyHint: !agentTools.has(t.name), destructiveHint: false, idempotentHint: true, openWorldHint: false }
 // Summary-writing tools are only offered when some scope actually uses in-conversation summaries.
 export function listTools(store) {
   const agent = store.globalSetting()?.mode === 'agent' || store.harnessSettings().some(h => h.mode === 'agent') || (!store.globalSetting() && summaryMode() === 'agent')

@@ -100,6 +100,7 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_find',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
   assert.equal(tools.length,6)
+  assert.deepEqual(tools.map(t=>t.annotations.readOnlyHint),[true,true,true,true,false,false]);assert.ok(tools.every(t=>t.annotations.destructiveHint===false&&t.annotations.openWorldHint===false))
   assert.deepEqual((await send({jsonrpc:'2.0',id:6,method:'tools/list',params:{}})).result.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read','lcm_summary_task','lcm_summary_submit'],'in-conversation summaries are the default')
   assert.deepEqual(await call(store,'lcm_find'),{conversations:[],total:0})
   input.end();await new Promise(r=>server.once('close',r));lines.close()
@@ -557,6 +558,8 @@ if(m.id===3){fs.writeFileSync(${JSON.stringify(log)},JSON.stringify(m.params));t
   const approved=await codexHookTrust({bin,cwd:dir,approve:true,command:'node /x/src/cli.js codex-hook'})
   assert.deepEqual(JSON.parse(readFileSync(log,'utf8')).edits,[{keyPath:'hooks.state',mergeStrategy:'upsert',value:{'k-ours':{trusted_hash:'sha256:ours'}}}],'only the exact SuperLcm command is trusted')
   assert.equal(approved.approved,true)
+  // The other cli.js codex-hook entry is neither trusted nor counted when the exact command is known.
+  assert.deepEqual([approved.total,approved.ok],[1,true])
 }))
 
 test('opening Codex for its own hook review launches only the fixed CLI in a terminal',fixture(async ({dir})=>{
