@@ -3,7 +3,7 @@ import { summaryMode } from './mode.js'
 import { normalizeApiEndpoint } from './api-endpoint.js'
 import { readApiKey } from './api-credentials.js'
 import { createHash } from 'node:crypto'
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -305,7 +305,8 @@ export class ClaudeStore {
     if (!['jsonl','text'].includes(kind)) throw new Error('Unsupported source type')
     const file = this.#verifySource(session, path, kind)
     const src = this.source(session)
-    const fd = openSync(file, 'r')
+    if (src.offset > 0) this.archive(session)
+    const fd = openSync(file, 'r'), copy = this.#archiveWriter(session, src.offset)
     try {
       const size = fstatSync(fd).size
       if (size > maxFile) throw new Error('Source exceeds 256 MiB per session; split it first')
@@ -325,14 +326,61 @@ export class ClaudeStore {
           const raw = pending.subarray(0, cut + 1)
           if (raw.length > 4 * 1024 * 1024) throw new Error('Individual JSONL line exceeds 4 MiB')
           if (kind === 'jsonl') { try { JSON.parse(raw.toString('utf8')) } catch { return { session, added, offset, warning: 'Incomplete or invalid JSONL line; waiting for a complete record' } } }
+          if (copy !== null) writeSync(copy, raw, 0, raw.length, offset)
           this.#addEvent(session, ordinal++, offset, offset + raw.length, raw, kind)
           added++; offset += raw.length; pending = pending.subarray(cut + 1)
         }
         if (pending.length > 4 * 1024 * 1024) throw new Error('Individual JSONL line exceeds 4 MiB')
       }
-      if (kind === 'text' && pending.length) { this.#addEvent(session,ordinal,offset,offset+pending.length,pending,kind);added++;offset+=pending.length }
+      if (kind === 'text' && pending.length) { if (copy !== null) writeSync(copy, pending, 0, pending.length, offset); this.#addEvent(session,ordinal,offset,offset+pending.length,pending,kind);added++;offset+=pending.length }
       return { session, added, offset, ...(pending.length && kind==='jsonl' ? { warning: 'Trailing partial line not indexed yet' } : {}) }
-    } finally { closeSync(fd) }
+    } finally { closeSync(fd); if (copy !== null) closeSync(copy) }
+  }
+  // Private copy of every indexed byte, so originals survive the host moving or deleting its transcript.
+  // The copy is exactly source bytes [0, offset), so event offsets address it unchanged.
+  archivePath(session) { return join(this.dir, 'originals', hash(String(session)).slice(0, 40) + '.raw') }
+  #archiveWriter(session, offset) {
+    const path = this.archivePath(session)
+    if (offset > 0 && !(existsSync(path) && statSync(path).size >= offset)) return null
+    ensurePrivate(dirname(path))
+    const fd = openSync(path, existsSync(path) ? 'r+' : 'w', 0o600)
+    if (fstatSync(fd).size > offset) ftruncateSync(fd, offset) // bytes from an append whose index write never committed
+    return fd
+  }
+  // Hosts move finished transcripts; Codex archives rollouts from sessions/YYYY/MM/DD/ into archived_sessions/.
+  #moved(path) {
+    const candidate = path.replace(/([\\/])sessions[\\/]\d{4}[\\/]\d{2}[\\/]\d{2}[\\/]/, '$1archived_sessions$1')
+    return candidate !== path && existsSync(candidate) ? candidate : null
+  }
+  // Build or complete the private copy from the source, keeping it only if every indexed record verifies.
+  archive(session) {
+    const src = this.source(session)
+    if (!src) throw new Error('Unknown session')
+    const target = this.archivePath(session)
+    if (existsSync(target) && statSync(target).size >= src.offset) return { session, archived: true, copied: 0 }
+    const path = existsSync(src.path) ? src.path : this.#moved(src.path)
+    if (!path) return { session, archived: false, error: 'Original transcript is missing' }
+    const rows = this.db.prepare('SELECT ordinal,start,end,digest FROM events WHERE session=? ORDER BY ordinal').all(session)
+    ensurePrivate(dirname(target))
+    const tmp = target + '.tmp', input = openSync(path, 'r')
+    let ok = false
+    try {
+      if (fstatSync(input).size < src.offset) return { session, archived: false, error: 'Original transcript is shorter than what was indexed' }
+      const out = openSync(tmp, 'w', 0o600), chunk = Buffer.alloc(1024 * 1024)
+      try { for (let at = 0; at < src.offset;) { const n = readSync(input, chunk, 0, Math.min(chunk.length, src.offset - at), at); if (!n) break; writeSync(out, chunk, 0, n, at); at += n } } finally { closeSync(out) }
+      const check = openSync(tmp, 'r'), size = src.offset
+      try { ok = rows.every(row => this.#readRange(check, row.start, row.end, size)?.digest === row.digest) } finally { closeSync(check) }
+      if (!ok) return { session, archived: false, error: 'Original transcript no longer matches the index' }
+      renameSync(tmp, target)
+      return { session, archived: true, copied: src.offset, ...(path !== src.path ? { found_at: path } : {}) }
+    } finally { closeSync(input); if (!ok && existsSync(tmp)) unlinkSync(tmp) }
+  }
+  archiveAll() { return this.db.prepare('SELECT session FROM sources ORDER BY session').all().map(r => this.archive(r.session)) }
+  // Readable copies in preference order: private archive first, then the host's transcript.
+  #originals(session) {
+    const src = this.source(session), archive = this.archivePath(session)
+    if (!(existsSync(archive) && statSync(archive).size >= src.offset)) this.archive(session)
+    return [archive, src.path, this.#moved(src.path)].filter(p => p && existsSync(p))
   }
   #addEvent(session, ordinal, start, end, raw, kind) {
     const preview = extract(raw, kind)
@@ -355,12 +403,16 @@ export class ClaudeStore {
     const event = this.db.prepare('SELECT * FROM events WHERE session=? AND ordinal=?').get(session, ordinal)
     const source = this.source(session)
     if (!event || !source) throw new Error('Unknown source event')
-    const fd = openSync(source.path, 'r')
-    try {
-      const actual = this.#readRange(fd, event.start, event.end, fstatSync(fd).size)
-      if (!actual || actual.digest !== event.digest) throw new Error('Raw transcript changed: exact expansion refused')
-      return actual.raw.toString('utf8')
-    } finally { closeSync(fd) }
+    const copies = this.#originals(session)
+    if (!copies.length) throw new Error('Original transcript is missing and no archived copy exists')
+    for (const path of copies) {
+      const fd = openSync(path, 'r')
+      try {
+        const actual = this.#readRange(fd, event.start, event.end, fstatSync(fd).size)
+        if (actual && actual.digest === event.digest) return actual.raw.toString('utf8')
+      } finally { closeSync(fd) }
+    }
+    throw new Error('Raw transcript changed: exact expansion refused')
   }
   readEvent(session, ordinal, charOffset = 0, maxChars = 12000) {
     if (!Number.isSafeInteger(ordinal) || ordinal < 0) throw new Error('Invalid event ordinal')
@@ -434,12 +486,17 @@ export class ClaudeStore {
     const src = this.source(session)
     if (!src) throw new Error('Unknown session')
     const rows = this.db.prepare('SELECT ordinal,start,end,digest FROM events WHERE session=? ORDER BY ordinal').all(session)
-    const issues = [], fd = openSync(src.path,'r')
-    try {
-      const size = fstatSync(fd).size
-      for (const row of rows) if (this.#readRange(fd,row.start,row.end,size)?.digest !== row.digest) issues.push(`bad source pointer ${row.ordinal}`)
-      if (size < src.offset) issues.push('source truncated')
-    } finally { closeSync(fd) }
+    const issues = [], [path] = this.#originals(session)
+    if (!path) issues.push('original transcript missing and not archived')
+    else {
+      if (path !== this.archivePath(session)) issues.push('no archived copy yet')
+      const fd = openSync(path,'r')
+      try {
+        const size = fstatSync(fd).size
+        for (const row of rows) if (this.#readRange(fd,row.start,row.end,size)?.digest !== row.digest) issues.push(`bad source pointer ${row.ordinal}`)
+        if (size < src.offset) issues.push('source truncated')
+      } finally { closeSync(fd) }
+    }
     const nodes = this.db.prepare('SELECT id,first,last,children FROM nodes WHERE session=?').all(session)
     for (const n of nodes) {
       if (n.first > n.last || n.first < 0 || n.last >= rows.length) issues.push(`bad node range ${n.id}`)

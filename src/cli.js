@@ -93,4 +93,9 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     else result=store.overview(rest[0])
     if (command!=='hook' && command!=='codex-hook') process.stdout.write(JSON.stringify(result)+'\n')
   } catch(error) {process.stderr.write(`SuperLcm: ${error.message}\n`);process.exitCode=1} finally {store.close()}
-} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|doctor-local|setup <codex|claude-code> [--apply]|hook|codex-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }
+} else if (command==='archive') {
+  // Copy every conversation's indexed originals into the private archive (safe to repeat).
+  const store=new ClaudeStore()
+  try { const results=store.archiveAll(); for(const r of results)if(!r.archived||r.copied||r.found_at)process.stdout.write(JSON.stringify(r)+'\n'); process.stdout.write(`archived ${results.filter(r=>r.archived).length}/${results.length} conversations\n`); if(results.some(r=>!r.archived))process.exitCode=1 }
+  finally { store.close() }
+} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|archive|doctor-local|setup <codex|claude-code> [--apply]|hook|codex-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }

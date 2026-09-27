@@ -60,9 +60,28 @@ test('reject source changes, enforce private exact source, import text',fixture(
   assert.equal(store.exact('desktop-1',2),'third line')
   const imported=store.source('desktop-1').path
   writeFileSync(imported,'tampered')
+  assert.equal(store.exact('desktop-1',0),'first line\n','the private archive keeps the original after the source changes')
+  writeFileSync(store.archivePath('desktop-1'),'tampered too')
   assert.throws(()=>store.exact('desktop-1',0),/changed/)
   assert.ok(store.doctor('desktop-1').issues.length)
   assert.throws(()=>store.ingest('desktop-1',src,'text'),/different source/)
+}))
+test('originals survive the host moving or deleting its transcript',fixture(async ({dir,store})=>{
+  const day=join(dir,'codex','sessions','2026','09','23');mkdirSync(day,{recursive:true})
+  const file=join(day,'rollout-a.jsonl'),line=i=>JSON.stringify({role:i%2?'assistant':'user',content:'kept decision '+i})+'\n'
+  writeFileSync(file,[0,1,2].map(line).join(''));store.ingest('codex-a',file)
+  assert.equal(readFileSync(store.archivePath('codex-a'),'utf8'),readFileSync(file,'utf8'),'archive mirrors indexed bytes')
+  appendFileSync(file,line(3)+'{"partial":');store.ingest('codex-a',file)
+  assert.equal(statSync(store.archivePath('codex-a')).size,store.source('codex-a').offset,'only complete records are archived')
+  const archived=join(dir,'codex','archived_sessions');mkdirSync(archived);const moved=join(archived,'rollout-a.jsonl')
+  writeFileSync(moved,readFileSync(file));rmSync(file)
+  assert.match(store.exact('codex-a',3),/kept decision 3/)
+  rmSync(store.archivePath('codex-a'))
+  assert.equal(store.archive('codex-a').found_at,realpathSync(moved),'a transcript moved into archived_sessions is found and re-archived')
+  rmSync(moved);assert.match(store.exact('codex-a',0),/kept decision 0/)
+  assert.deepEqual(store.doctor('codex-a').issues,[])
+  const other=join(dir,'gone.jsonl');writeFileSync(other,line(0));store.ingest('gone',other);rmSync(other);rmSync(store.archivePath('gone'))
+  assert.equal(store.archive('gone').archived,false);assert.throws(()=>store.exact('gone',0),/missing/)
 }))
 test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,dir})=>{
   const input=new PassThrough(),output=new PassThrough(),received=[]
@@ -293,7 +312,7 @@ test('main-agent summary mode requires explicit opt-in and exact unchanged sourc
   await assert.rejects(call(store,'lcm_summary_submit',{conversation:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'}),/Stale/)
   const another=join(dir,'tamper.txt');writeFileSync(another,Array.from({length:8},(_,i)=>'before '+i+'\n').join(''));importFile(store,another,'tamper-A','codex')
   const pending=(await call(store,'lcm_summary_task',{conversation:'tamper-A'})).work
-  const bound=store.source('tamper-A').path;const bytes=readFileSync(bound);bytes[3]=bytes[3]===65?66:65;writeFileSync(bound,bytes)
+  for(const bound of [store.source('tamper-A').path,store.archivePath('tamper-A')]){const bytes=readFileSync(bound);bytes[3]=bytes[3]===65?66:65;writeFileSync(bound,bytes)}
   await assert.rejects(call(store,'lcm_summary_submit',{conversation:'tamper-A',batch_id:pending.batch_id,summary:'This should not persist with a changed original.'}),/changed/)
 }))
 test('Codex CLI backend strips API credentials and captures final JSONL item',fixture(async ({dir})=>{
@@ -434,7 +453,7 @@ const fs=require('node:fs');let input='';process.stdin.on('data',c=>input+=c);pr
 test('background summary refuses changed original before any model call',fixture(async ({dir,store})=>{
   const src=join(dir,'changed.jsonl');writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
   store.ingest('changed-session',src)
-  writeFileSync(src,Array.from({length:8},(_,i)=>line(i).replace('alpha','omega')).join(''))
+  for(const file of [src,store.archivePath('changed-session')])writeFileSync(file,Array.from({length:8},(_,i)=>line(i).replace('alpha','omega')).join(''))
   let called=false
   await assert.rejects(buildHierarchy(store,'changed-session',{model:'claude-cli:sonnet',summarize:async()=>{called=true;return 'must never save'}}),/changed/)
   assert.equal(called,false)

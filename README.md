@@ -6,7 +6,7 @@
 
 Claude Code and Codex compact long conversations and lose detail. SuperLcm keeps every original record in a local index, builds a layered summary tree over it, and gives the AI in any connected tool six MCP tools to navigate that tree and read the exact originals. Native compaction stays in charge of the live context; SuperLcm makes sure nothing it drops is gone.
 
-- **Lossless.** Every message is stored with byte offsets and SHA-256 hashes; `lcm_read` returns the exact original text, verified against the source file.
+- **Lossless.** Every indexed record is copied byte for byte into SuperLcm's own archive and checked with SHA-256, so originals stay readable even after Claude Code or Codex moves or deletes its transcript. `lcm_read` returns the exact original text.
 - **Layered summaries.** First-level summaries cover segments of the conversation (about 12,000 characters each, adjustable); every 4 adjacent summaries merge into one higher level, so a very long conversation still fits in a short outline.
 - **Switch tools mid-task.** Out of Claude quota, or want a second opinion? Open Codex and say `通过 SuperLcm 接续对话 #6e94e`. `lcm_continue` hands over the outline plus the most recent messages, and the new conversation can read any earlier detail on demand.
 - **Chinese and English interface**, following the browser language; switch under Settings. Translations live in `src/web-i18n.js`, and a test fails if any Chinese string lacks an English entry.

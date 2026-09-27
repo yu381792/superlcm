@@ -2,6 +2,7 @@
 
 ## 0.2.0-alpha.1
 
+- Keep a private byte-for-byte archive of every indexed record under `originals/`, so originals survive the host moving or deleting its transcript; `node src/cli.js archive` backfills existing conversations and recovers Codex rollouts moved into `archived_sessions/`.
 - Chinese and English interface, following the browser language with a switch in Settings; a test checks every Chinese string has an English translation.
 - Redesign the console into three views: 对话 (list, search, summary-level strip, summary tree, original-record drawer, continue-in-another-tool, rename), 接入 (evidence-based status, guided setup dialog, local import) and 设置 (summary writer, granularity, per-tool overrides, palette and theme). Real tool logos; phone layout; dark mode.
 - Replace 18 MCP tools with 6: `lcm_continue`, `lcm_find`, `lcm_outline`, `lcm_read`, plus `lcm_summary_task` / `lcm_summary_submit`, which only appear when in-conversation summaries are enabled.
