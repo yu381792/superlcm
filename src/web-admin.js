@@ -1,8 +1,7 @@
 // Connect view (setup + local import), status pill, settings, appearance and boot().
 const WRITERS = [
   ['agent', t('对话模型生成'), t('正在聊天的 AI 凭记忆顺手写，几乎不多花钱')],
-  ['cli', t('Claude 订阅'), t('后台单独写 · 调用 Claude CLI')],
-  ['codex-cli', t('Codex 订阅'), t('后台单独写 · 调用 Codex CLI')],
+  ['cli', t('本工具后台写'), t('另起一个该工具的进程来写，用它已配置的模型，不占用正在聊的对话')],
   ['api', t('自定义 API'), t('后台单独写 · 使用你的 API 密钥')],
   ['off', t('关闭（摘要方式）'), t('不生成摘要，原文照常保存')]
 ]
@@ -50,6 +49,16 @@ function renderTools() {
     await api('/api/settings', { scope: 'harness', harness: select.dataset.tool, mode: select.value, model: x?.mode === select.value ? x.model : null })
     await loadSettings(); toast(t('已保存'))
   }, select)
+  for (const select of $('#tools').querySelectorAll('select[data-model]')) {
+    const harness = select.dataset.model, x = admin.settings.settings.find(y => y.harness === harness)
+    fillModels(select, harness, x?.model || null)
+    select.onchange = () => act(async () => {
+      let model = select.value || null
+      if (model === '__other') { model = (prompt(t('输入 {tool} 能用的模型 ID', { tool: toolName(harness) })) || '').trim() || null; if (!model) return renderTools() }
+      await api('/api/settings', { scope: 'harness', harness, mode: 'cli', model })
+      await loadSettings(); toast(t('已保存'))
+    }, select)
+  }
 }
 
 // Setup: preview what changes → user confirms → write config → check it loads.
@@ -144,7 +153,7 @@ function renderWriter() {
   for (const b of $('#writer').querySelectorAll('.opt')) b.onclick = () => { admin.writer = b.dataset.w; renderWriter() }
   const g = admin.settings.global, same = g.mode === admin.writer, mode = admin.writer
   let html = ''
-  if (mode === 'cli' || mode === 'codex-cli') html = '<label class="field">' + t('模型') + '<select id="wModel"><option value="">' + t('使用 CLI 默认模型') + '</option>' + (same && g.model ? '<option value="' + esc(g.model) + '" selected>' + esc(g.model) + '</option>' : '') + '</select></label>'
+  if (mode === 'cli') html = '<p class="muted" style="margin:0">' + t('每个工具用它自己当前的模型。想换模型，到「接入」页在该工具卡片上选。') + '</p>'
   if (mode === 'api') html = '<label class="field">' + t('接口协议') + '<select id="wProvider"><option value="anthropic">Anthropic Messages</option><option value="openai"' + (same && g.api_provider === 'openai' ? ' selected' : '') + '>' + t('OpenAI 兼容') + '</option></select></label>' +
     '<label class="field">' + t('接口地址') + '<input id="wUrl" type="url" value="' + esc(same && g.api_url || 'https://api.anthropic.com/v1/messages') + '"></label>' +
     '<label class="field">' + t('模型 ID') + '<input id="wModelId" value="' + esc(same && g.model || '') + '" placeholder="' + t('例如 claude-sonnet-5') + '"></label>' +
@@ -153,20 +162,19 @@ function renderWriter() {
   $('#writerSaved').textContent = ''
   const provider = $('#wProvider')
   if (provider) provider.onchange = () => { const url = $('#wUrl'); if (/api\.(anthropic|openai)\.com/.test(url.value) || !url.value) url.value = provider.value === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://api.anthropic.com/v1/messages' }
-  if ($('#wModel')) fillModels(mode, same ? g.model : null)
 }
-async function fillModels(mode, current) {
+// A tool card's model list for 本工具后台写: that tool's own catalog, plus any model typed in earlier.
+async function fillModels(select, harness, current) {
   try {
-    admin.catalog[mode] ||= await api('/api/models?backend=' + q(mode))
-    const select = $('#wModel'); if (!select || admin.writer !== mode) return
-    select.innerHTML = '<option value="">' + t('使用 CLI 默认模型') + '</option>' + admin.catalog[mode].models.map(m => '<option value="' + esc(m.id) + '">' + esc(m.label) + '</option>').join('') +
-      (current && !admin.catalog[mode].models.some(m => m.id === current) ? '<option value="' + esc(current) + '">' + esc(current) + '</option>' : '')
+    admin.catalog[harness] ||= await api('/api/models?backend=' + q(harness))
+    const models = admin.catalog[harness].models
+    select.innerHTML = '<option value="">' + t('跟随 {tool} 当前模型', { tool: toolName(harness) }) + '</option>' + models.map(m => '<option value="' + esc(m.id) + '">' + esc(m.label) + '</option>').join('') +
+      (current && !models.some(m => m.id === current) ? '<option value="' + esc(current) + '">' + esc(current) + '</option>' : '') + '<option value="__other">' + t('其他模型…') + '</option>'
     select.value = current || ''
-  } catch { /* the default model still works */ }
+  } catch { /* following the tool's own model still works */ }
 }
 $('#saveWriter').onclick = () => act(async () => {
   const mode = admin.writer, payload = { scope: 'global', mode, model: null }
-  if (mode === 'cli' || mode === 'codex-cli') payload.model = $('#wModel').value || null
   if (mode === 'api') { payload.api_provider = $('#wProvider').value; payload.api_url = $('#wUrl').value.trim(); payload.model = $('#wModelId').value.trim() || null; const key = $('#wKey').value; if (key) payload.api_key = key }
   await api('/api/settings', payload)
   await api('/api/tuning', pickedTuning())
@@ -179,8 +187,10 @@ function writerPicker(h) {
   if (!s) return ''
   const x = s.settings.find(y => y.harness === h.harness)
   if (!h.supported && !h.detected && !x) return ''
+  const mode = x ? x.mode : s.global.mode
   return '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('默认（{w}）', { w: writerLabel(s.global.mode) }) + '</option>' +
-    WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>'
+    WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>' +
+    (mode === 'cli' && h.bin ? '<select aria-label="' + t('模型') + '" data-model="' + esc(h.harness) + '"><option value="' + esc(x?.model || '') + '">' + esc(x?.model || t('跟随 {tool} 当前模型', { tool: toolName(h.harness) })) + '</option></select>' : '')
 }
 function renderTuning(tuning) {
   for (const [id, value, label] of [['#segSize', tuning.target_chars, v => t('约 {n} 字', { n: fmt(v) })], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {

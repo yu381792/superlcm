@@ -89,6 +89,16 @@ export class ClaudeStore {
       for(const row of this.db.prepare('SELECT session,path FROM sources').all()){let ms=null;try{ms=Math.round(statSync(row.path).mtimeMs)}catch{}this.db.prepare('UPDATE sources SET updated_ms=? WHERE session=?').run(ms,row.session)}
     }
     for(const table of ['global_summary_settings','harness_summary_settings']){const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name));for(const column of ['api_provider','api_url'])if(!names.has(column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)}
+    // v1: background writing is "the conversation's own tool" ('cli'), no longer a chosen Claude or Codex CLI.
+    // A model picked for one CLI moves to that tool's own setting; anywhere else it no longer applies.
+    if(this.db.prepare('PRAGMA user_version').get().user_version<1){
+      this.db.exec('BEGIN')
+      const owner={cli:'claude-code','codex-cli':'codex'},g=this.globalSetting()
+      if(owner[g?.mode]&&g.model)this.db.prepare("INSERT OR IGNORE INTO harness_summary_settings(harness,mode,model) VALUES(?,'cli',?)").run(owner[g.mode],g.model)
+      this.db.exec("UPDATE global_summary_settings SET mode='cli',model=NULL WHERE mode IN ('cli','codex-cli')")
+      for(const x of this.harnessSettings())if(owner[x.mode])this.db.prepare("UPDATE harness_summary_settings SET mode='cli',model=? WHERE harness=?").run(owner[x.mode]===x.harness?x.model:null,x.harness)
+      this.db.exec('PRAGMA user_version=1');this.db.exec('COMMIT')
+    }
   }
   close() { this.db.close() }
   setStatus(session,status) { this.db.prepare('UPDATE sources SET status=? WHERE session=?').run(status,session) }
@@ -105,7 +115,7 @@ export class ClaudeStore {
   preference(session) {return this.db.prepare('SELECT mode,model FROM summary_preferences WHERE session=?').get(session)||{mode:'auto',model:null}}
   // Legacy conversation preferences remain in SQLite for migration; routing ignores them.
   validateSetting(mode,model,apiProvider=null,apiURL=null) {
-    if (!['off','cli','codex-cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !validModel(model)))) throw new Error('Invalid summary setting or model ID')
+    if (!['off','cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !validModel(model)))) throw new Error('Invalid summary setting or model ID')
     if(mode==='api') {if(!model)throw new Error('Custom API requires an explicit model ID');return {api_provider:apiProvider,api_url:normalizeApiEndpoint(apiProvider,apiURL)}}
     if (['off','agent'].includes(mode) && model!==null) throw new Error('This summary mode does not use a model')
     return {api_provider:null,api_url:null}
@@ -143,7 +153,11 @@ export class ClaudeStore {
     const harness=this.metadata(session).harness
     const specific=harness!=='legacy'?this.harnessSetting(harness):null
     const choice=specific||this.globalSetting()
-    return choice ? {...choice,scope:specific?'harness':'global',harness} : {mode:summaryMode(env),model:null,api_provider:null,api_url:null,scope:'environment',harness}
+    const r=choice ? {...choice,scope:specific?'harness':'global',harness} : {mode:summaryMode(env),model:null,api_provider:null,api_url:null,scope:'environment',harness}
+    // A model belongs to one tool's CLI, so only a tool's own setting (or the environment) names one.
+    if(r.mode==='codex-cli')r.mode='cli'
+    if(r.mode==='cli'&&r.scope==='global')r.model=null
+    return r
   }
   apiCredential(session,env=process.env) {
     const chosen=this.effectiveSetting(session,env)

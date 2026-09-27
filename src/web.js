@@ -17,6 +17,7 @@ import { summaryMode } from './mode.js'
 import { saveApiKey } from './api-credentials.js'
 import { findCli } from './runtime.js'
 import { summaryEstimate } from './summarize.js'
+import { writerTool } from './cli-writers.js'
 import { openInTerminal } from './open-terminal.js'
 export { probeMcp } from './mcp-probe.js'
 
@@ -42,10 +43,10 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local Web port')
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
   // One-off catch-up methods this computer can actually run for a conversation.
-  const backends = id => [...(findCli('claude', env) ? ['cli'] : []), ...(findCli('codex', env) ? ['codex-cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
+  const backends = id => [...(writerTool(store.metadata(id).harness, env) ? ['cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
   const routes = {
     'GET /api/conversations': url => ({ ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() }),
-    'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id), estimate: summaryEstimate(store, id) } },
+    'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), writer_tool: writerTool(store.metadata(id).harness, env), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id), estimate: summaryEstimate(store, id) } },
     'GET /api/outline': url => store.outline(session(url), url.searchParams.get('node') || undefined),
     'GET /api/events': url => { const id = session(url); return { source: store.metadata(id), events: store.eventPreviews(id, int(url.searchParams.get('from'), 0), int(url.searchParams.get('to'), 0)) } },
     'GET /api/search': url => store.find(url.searchParams.get('q') || '', { harness: url.searchParams.get('harness') || undefined, limit: 30 }),

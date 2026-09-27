@@ -14,7 +14,7 @@ export function paths(env=process.env) {
   return {home,codex:resolve(env.CODEX_HOME || join(home,'.codex')),claude:resolve(env.CLAUDE_CONFIG_DIR || join(home,'.claude'))}
 }
 export function findCli(name,env=process.env) {
-  const override=name==='codex'?env.SUPERLCM_CODEX_CLI_BIN:name==='claude'?env.SUPERLCM_CLAUDE_CLI_BIN:name==='hermes'?env.SUPERLCM_HERMES_BIN:null
+  const override=name==='codex'?env.SUPERLCM_CODEX_CLI_BIN:name==='claude'?env.SUPERLCM_CLAUDE_CLI_BIN:name==='hermes'?env.SUPERLCM_HERMES_BIN:name==='pi'?env.SUPERLCM_PI_BIN:null
   const candidate=override||name
   const home=paths(env).home
   const dirs=(env.PATH||'').split(delimiter).filter(Boolean).concat([join(home,'.local','bin'),join(home,'.npm-global','bin'),'/opt/homebrew/bin','/usr/local/bin',...(env.APPDATA?[join(env.APPDATA,'npm')]:[])])
@@ -22,6 +22,9 @@ export function findCli(name,env=process.env) {
   for(const file of files)try{accessSync(file,constants.X_OK);return file}catch{}
   return null
 }
+// Background summary runs use a tool exactly as the user configured it (account, provider, model). The marker
+// makes SuperLcm's own hooks skip that run, so a summary job is never captured as a conversation.
+export function workerEnv(env=process.env){const clean={...env,SUPERLCM_CLI_WORKER:'1'};delete clean.SUPERLCM_ANTHROPIC_API_KEY;return clean}
 export const commandOptions = env => ({env,timeout:12000,maxBuffer:2*1024*1024,windowsHide:true})
 
 // Node that the connected tools should launch SuperLcm with. Prefer one that no AI tool ships inside its

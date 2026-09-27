@@ -2,8 +2,7 @@
 import { ClaudeStore, claudeTranscript } from './store.js'
 import { codexTranscript, codexNativeName, codexSessionKey } from './codex.js'
 import { buildHierarchy, summaryWork } from './summarize.js'
-import { summarizeWithClaudeCli } from './claude-cli.js'
-import { summarizeWithCodexCli } from './codex-cli.js'
+import { summarizeWith, writerTool, WRITER_CLI } from './cli-writers.js'
 import { startServer } from './mcp.js'
 import { startWeb, defaultPort } from './web.js'
 import { spawn } from 'node:child_process'
@@ -14,7 +13,7 @@ if(homeFlag>=0){if(!rest[homeFlag+1])throw Error('--home requires a path');proce
 const effective=(store,session)=>store.effectiveSetting(session)
 const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>resolve(JSON.parse(text)))})
 function scheduleSummary(store,session,mode,model) {
-  if (!['cli','codex-cli','api'].includes(mode) || !summaryWork(store,session)) return
+  if (!['cli','api'].includes(mode) || !summaryWork(store,session)) return
   if (mode==='api' && (!(model||process.env.SUPERLCM_CLAUDE_MODEL) || !store.apiCredential(session))) {
     store.setStatus(session,'summary_unconfigured')
     process.stderr.write('SuperLcm: api mode needs a model ID and a configured scoped API key\n')
@@ -44,6 +43,8 @@ else if (command==='hermes-hook' || command==='pi-hook') {
   let reply={}
   try {
     const input=await readHook(),event=input.hook_event_name
+    // A background summary run (SUPERLCM_CLI_WORKER) is never captured as a conversation.
+    if(process.env.SUPERLCM_CLI_WORKER==='1')throw Object.assign(new Error('skip'),{quiet:true})
     const {captureHermes}=await import('./hermes.js'),{capturePi}=await import('./pi.js')
     const result=hermes?captureHermes(store,input.session_id,{automatic:true}):capturePi(store,input,{automatic:true})
     if(!result.skipped&&store.source(result.session)){
@@ -55,7 +56,7 @@ else if (command==='hermes-hook' || command==='pi-hook') {
       // Hermes pre_llm_call / Pi before_agent_start: the only moments a note can reach the AI this turn.
       if(['pre_llm_call','before_agent_start'].includes(event)&&mode==='agent'){const note=summaryNudge(store,result.session);if(note)reply={context:note}}
     }
-  } catch(error) { process.stderr.write('SuperLcm: '+error.message+'\n') }
+  } catch(error) { if(!error.quiet)process.stderr.write('SuperLcm: '+error.message+'\n') }
   finally { store.close() }
   process.stdout.write(JSON.stringify(reply)+'\n')
 }
@@ -107,7 +108,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if (!store.source(rest[0])) throw new Error('Unknown session')
       // --backend runs one explicit subscription pass (console "generate now"), independent of the saved mode.
       const backendFlag=rest.indexOf('--backend'),backend=backendFlag>=0?rest[backendFlag+1]:null
-      if (backend!==null && !['cli','codex-cli','api'].includes(backend)) throw new Error('--backend must be cli, codex-cli or api')
+      if (backend!==null && !['cli','api'].includes(backend)) throw new Error('--backend must be cli or api')
       const oneOffApi=backend==='api'?store.apiConfig(rest[0]):null
       if (backend==='api' && !oneOffApi) throw new Error('No saved custom API; configure one in Settings first')
       try {
@@ -116,9 +117,13 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
         result=mode==='api'
           ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?.apiKey||store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL})
-          : mode==='codex-cli'
-            ? await buildHierarchy(store,rest[0],{model:`codex-cli:${model||process.env.SUPERLCM_CODEX_CLI_MODEL||'configured'}`,summarize:text=>summarizeWithCodexCli(text,{model:model||process.env.SUPERLCM_CODEX_CLI_MODEL||''})})
-            : await buildHierarchy(store,rest[0],{model:`claude-cli:${model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||'sonnet'}`,summarize:text=>summarizeWithClaudeCli(text,{model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||'sonnet'})})
+          : await (async()=>{
+            // 本工具后台写: this conversation's own tool (or, for an imported one, any installed tool), as configured.
+            const tool=writerTool(store.metadata(rest[0]).harness)
+            if (!tool) throw new Error('No installed tool can write summaries')
+            const chosen=model||(tool==='claude-code'?process.env.SUPERLCM_CLAUDE_CLI_MODEL:tool==='codex'?process.env.SUPERLCM_CODEX_CLI_MODEL:'')||''
+            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:text=>summarizeWith(tool,text,{model:chosen})})
+          })()
         if (!result.busy) store.setStatus(rest[0],'ok')
       }
       catch(error) {store.setStatus(rest[0],'summary_error');throw error}

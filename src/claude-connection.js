@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { findCli } from './runtime.js'
 import { mcpRegistration, matchingMcp } from './harness.js'
-import { subscriptionEnv } from './claude-cli.js'
+import { workerEnv } from './runtime.js'
 // Real Claude initialization + mcp_status, not our own standalone server handshake.
 // No user message, persisted conversation, tools execution or model inference.
 export async function probeClaudeConnection(store,{env=process.env,registration,spawnProcess=spawn,timeoutMs=15000}={}) {
@@ -13,7 +13,7 @@ export async function probeClaudeConnection(store,{env=process.env,registration,
   const args=['--print','--input-format','stream-json','--output-format','stream-json','--verbose','--no-session-persistence','--strict-mcp-config','--mcp-config',JSON.stringify({mcpServers:{superlcm:server}}),'--settings','{"disableAllHooks":true}','--tools','']
   let child,poll,timer,done=false,text='',bytes=0,lastStatus='initializing'
   const finish=value=>{if(done)return;done=true;clearTimeout(timer);clearTimeout(poll);child?.stdin.end();if(child?.exitCode===null)child.kill('SIGTERM');resolve({...value,scope:'claude-runtime-probe',existing_session_verified:false})}
-  try{child=spawnProcess(findCli('claude',env)||'claude',args,{env:subscriptionEnv(env),cwd:tmpdir(),stdio:['pipe','pipe','pipe'],windowsHide:true})}catch{return finish({ok:false,status:'launch_failed',message:'无法启动 Claude CLI'})}
+  try{child=spawnProcess(findCli('claude',env)||'claude',args,{env:workerEnv(env),cwd:tmpdir(),stdio:['pipe','pipe','pipe'],windowsHide:true})}catch{return finish({ok:false,status:'launch_failed',message:'无法启动 Claude CLI'})}
   const send=(request_id,subtype)=>{if(!done)child.stdin.write(JSON.stringify({type:'control_request',request_id,request:{subtype}})+'\n')}
   timer=setTimeout(()=>finish({ok:false,status:'timeout',message:'Claude 连接验证超时（最后状态：'+lastStatus+'）；检查 CLI 登录状态或服务器路径。'}),timeoutMs)
   child.stdin.on('error',()=>{});child.stderr.resume()

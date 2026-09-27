@@ -9,7 +9,9 @@ import { buildHierarchy, summarizeWithModel, summaryEstimate } from '../src/summ
 import { saveApiKey } from '../src/api-credentials.js'
 import { normalizeApiEndpoint } from '../src/api-endpoint.js'
 import { createServer, request } from 'node:http'
-import { summarizeWithClaudeCli, subscriptionEnv } from '../src/claude-cli.js'
+import { summarizeWithClaudeCli } from '../src/claude-cli.js'
+import { workerEnv } from '../src/runtime.js'
+import { summarizeWithHermes, summarizeWithPi } from '../src/cli-writers.js'
 import { summaryMode } from '../src/mode.js'
 import { codexHookTrust } from '../src/codex-hook-trust.js'
 import { openInTerminal } from '../src/open-terminal.js'
@@ -20,7 +22,7 @@ import { spawnSync, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
-import { summarizeWithCodexCli, codexSubscriptionEnv } from '../src/codex-cli.js'
+import { summarizeWithCodexCli } from '../src/codex-cli.js'
 import { startWeb } from '../src/web.js'
 import { modelCatalog, harnessConnections } from '../src/model-catalog.js'
 import { page as webPage } from '../src/web-page.js'
@@ -98,7 +100,7 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_find',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
   assert.equal(tools.length,6)
-  assert.deepEqual((await send({jsonrpc:'2.0',id:6,method:'tools/list',params:{}})).result.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read'],'summary tools hidden unless in-conversation summaries are enabled')
+  assert.deepEqual((await send({jsonrpc:'2.0',id:6,method:'tools/list',params:{}})).result.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read','lcm_summary_task','lcm_summary_submit'],'in-conversation summaries are the default')
   assert.deepEqual(await call(store,'lcm_find'),{conversations:[],total:0})
   input.end();await new Promise(r=>server.once('close',r));lines.close()
 }))
@@ -191,10 +193,11 @@ test('Codex Stop schedules an isolated fake CLI summary worker', {skip:process.p
   mkdirSync(sessions,{recursive:true})
   writeFileSync(file,Array.from({length:8},(_,i)=>JSON.stringify({role:i%2?'assistant':'user',content:'isolated detail '+i})+'\n').join(''))
   const fake=join(dir,'fake-summary-cli')
-  writeFileSync(fake,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({type:'result',is_error:false,result:'Isolated Codex summary from background worker.'})));\n`)
+  // 本工具后台写: a Codex conversation is summarized by (a fake) Codex.
+  writeFileSync(fake,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Isolated Codex summary from background worker.'}})+'\\n'));\n`)
   chmodSync(fake,0o700)
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
-  const env={...process.env,CODEX_HOME:codexHome,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CLAUDE_CLI_BIN:fake}
+  const env={...process.env,CODEX_HOME:codexHome,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CODEX_CLI_BIN:fake}
   delete env.SUPERLCM_ANTHROPIC_API_KEY
   const result=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_worker',transcript_path:file,cwd:dir,hook_event_name:'Stop'}),encoding:'utf8',env,timeout:15000})
   assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,'{}\n')
@@ -228,11 +231,18 @@ test('duplicate names remain ambiguous; source identity is returned with summary
 }))
 test('global defaults and per-harness overrides persist without a conversation selector',fixture(async ({dir,store})=>{
   for(const [id,harness] of [['a','claude-code'],['b','codex']]){const file=join(dir,id+'.txt');writeFileSync(file,'A user decision\n');importFile(store,file,id,harness)}
-  assert.equal(store.effectiveSetting('a',{}).mode,'cli')
+  assert.equal(store.effectiveSetting('a',{}).mode,'agent')
   store.setGlobalSetting('off');assert.equal(store.effectiveSetting('a').mode,'off');assert.equal(store.effectiveSetting('b').mode,'off')
-  store.setHarnessSetting('codex','codex-cli','gpt-test');assert.equal(store.effectiveSetting('a').scope,'global');assert.deepEqual([store.effectiveSetting('b').mode,store.effectiveSetting('b').model,store.effectiveSetting('b').scope],['codex-cli','gpt-test','harness'])
-  store.setPreference('b','agent');assert.equal(store.effectiveSetting('b').mode,'codex-cli')
-  const reopened=new ClaudeStore(store.dir);try{assert.equal(reopened.effectiveSetting('b').mode,'codex-cli');assert.equal(reopened.listSessions().sessions.find(x=>x.session==='b').summary_mode,'codex-cli')}finally{reopened.close()}
+  assert.throws(()=>store.setHarnessSetting('codex','codex-cli','gpt-test'),/Invalid/)
+  store.setHarnessSetting('codex','cli','gpt-test');assert.equal(store.effectiveSetting('a').scope,'global');assert.deepEqual([store.effectiveSetting('b').mode,store.effectiveSetting('b').model,store.effectiveSetting('b').scope],['cli','gpt-test','harness'])
+  store.setGlobalSetting('cli');assert.equal(store.effectiveSetting('a').model,null)
+  store.setPreference('b','agent');assert.equal(store.effectiveSetting('b').mode,'cli')
+  const reopened=new ClaudeStore(store.dir);try{assert.equal(reopened.effectiveSetting('b').mode,'cli');assert.equal(reopened.listSessions().sessions.find(x=>x.session==='b').summary_mode,'cli')}finally{reopened.close()}
+  // An older index: a Claude model chosen globally moves to Claude Code's own setting; a Codex model picked for Hermes no longer applies.
+  store.db.exec("PRAGMA user_version=0;UPDATE global_summary_settings SET mode='cli',model='opus';INSERT OR REPLACE INTO harness_summary_settings(harness,mode,model) VALUES('hermes','codex-cli','gpt-x'),('codex','codex-cli','gpt-y')")
+  const upgraded=new ClaudeStore(store.dir);try{assert.deepEqual(upgraded.harnessSettings().map(x=>[x.harness,x.mode,x.model]),[['claude-code','cli','opus'],['codex','cli','gpt-y'],['hermes','cli',null]]);assert.deepEqual([upgraded.globalSetting().mode,upgraded.globalSetting().model],['cli',null])}finally{upgraded.close()}
+  store.clearHarnessSetting('claude-code');store.clearHarnessSetting('hermes');store.setHarnessSetting('codex','cli','gpt-test')
+  store.setGlobalSetting('off')
   store.clearHarnessSetting('codex');assert.equal(store.effectiveSetting('b').mode,'off')
   assert.throws(()=>store.setGlobalSetting('off','gpt-test'),/does not use/);assert.throws(()=>store.setHarnessSetting('codex','cli','bad model'),/Invalid/)
 }))
@@ -307,7 +317,7 @@ test('lcm_continue hands off outline, recent originals and how to verify, with o
 test('main-agent summary mode requires explicit opt-in and exact unchanged source',fixture(async ({dir,store})=>{
   const file=join(dir,'agent.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'agent decision '+i+'\n').join(''))
   importFile(store,file,'agent-A','codex','Agent authored A')
-  await assert.rejects(call(store,'lcm_summary_task',{conversation:'agent-A'}),/not enabled/)
+  store.setGlobalSetting('off');await assert.rejects(call(store,'lcm_summary_task',{conversation:'agent-A'}),/not enabled/)
   store.setGlobalSetting('off');store.setHarnessSetting('codex','agent');store.setPreference('agent-A','off')
   assert.equal(store.effectiveSetting('agent-A').mode,'agent')
   const work=(await call(store,'lcm_summary_task',{conversation:'agent-A'})).work
@@ -320,19 +330,27 @@ test('main-agent summary mode requires explicit opt-in and exact unchanged sourc
   for(const bound of [store.source('tamper-A').path,store.archivePath('tamper-A')]){const bytes=readFileSync(bound);bytes[3]=bytes[3]===65?66:65;writeFileSync(bound,bytes)}
   await assert.rejects(call(store,'lcm_summary_submit',{conversation:'tamper-A',batch_id:pending.batch_id,summary:'This should not persist with a changed original.'}),/changed/)
 }))
-test('Codex CLI backend strips API credentials and captures final JSONL item',fixture(async ({dir})=>{
+test('Codex CLI backend follows the user config and captures final JSONL item',fixture(async ({dir})=>{
   let seen
   const spawnProcess=(bin,args,options)=>{seen={bin,args,options};const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:()=>{}});queueMicrotask(()=>{child.stdout.end(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Codex factual summary'}})+'\n');child.stderr.end();child.emit('close',0)});return child}
   const value=await summarizeWithCodexCli('decision',{model:'gpt-model',bin:'fake-codex',cwd:join(dir,'scratch'),env:{OPENAI_API_KEY:'secret',OPENAI_BASE_URL:'https://paid.example',CODEX_API_KEY:'paid',ANTHROPIC_API_KEY:'other',CODEX_HOME:'safe-home'},spawnProcess})
-  assert.equal(value,'Codex factual summary');assert.ok(seen.args.includes('--ephemeral'));assert.ok(seen.args.includes('--ignore-user-config'));assert.ok(seen.args.includes('read-only'));assert.deepEqual(seen.args.slice(-4),['-m','gpt-model','--json','-']);assert.equal(seen.options.env.OPENAI_API_KEY,undefined);assert.equal(seen.options.env.OPENAI_BASE_URL,undefined);assert.equal(seen.options.env.CODEX_API_KEY,undefined);assert.equal(seen.options.env.CODEX_HOME,'safe-home')
-  assert.equal(codexSubscriptionEnv({OPENAI_API_KEY:'secret'}).OPENAI_API_KEY,undefined)
+  assert.equal(value,'Codex factual summary');assert.ok(seen.args.includes('--ephemeral'));assert.ok(!seen.args.includes('--ignore-user-config'));assert.ok(seen.args.includes('mcp_servers={}'));assert.ok(seen.args.includes('read-only'));assert.deepEqual(seen.args.slice(-4),['-m','gpt-model','--json','-']);assert.equal(seen.options.env.OPENAI_BASE_URL,'https://paid.example');assert.equal(seen.options.env.CODEX_HOME,'safe-home');assert.equal(seen.options.env.SUPERLCM_CLI_WORKER,'1')
 }))
 test('session Codex CLI choice dispatches through an isolated fake executable',fixture(async ({dir,store})=>{
   const file=join(dir,'codex-backend.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
-  importFile(store,file,'chosen-backend','codex');store.setGlobalSetting('off');store.setHarnessSetting('codex','codex-cli','gpt-test')
+  importFile(store,file,'chosen-backend','codex');store.setGlobalSetting('off');store.setHarnessSetting('codex','cli','gpt-test')
   const bin=join(dir,'fake-codex');writeFileSync(bin,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\'item.completed\',item:{type:\'agent_message\',text:\'Independent Codex worker summary recorded decisions.\'}})+\'\\n\')\n',{mode:0o700})
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'summarize','chosen-backend'],{encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_CODEX_CLI_BIN:bin,SUPERLCM_SUMMARY_MODE:'off'},timeout:15000})
   assert.equal(r.status,0,r.stderr);assert.match(store.summaries('chosen-backend').nodes[0].model,/codex-cli:gpt-test/)
+  // Hermes and Pi write through their own one-shot modes, marked so SuperLcm's hooks skip the run.
+  const fake=out=>{let seen={};const spawnProcess=(bin,args,options)=>{seen={bin,args,options};const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:()=>{}});child.stdin.on('data',d=>{seen.input=(seen.input||'')+d});queueMicrotask(()=>{child.stdout.end(out);child.stderr.end();child.emit('close',0)});return child};return {seen:()=>seen,spawnProcess}}
+  const h=fake('{"type": "system"}\n{"type": "result", "exit_code": 0, "text": "Hermes summary"}\n')
+  assert.equal(await summarizeWithHermes('decision',{model:'m/x',bin:'hermes',cwd:join(dir,'w'),env:{},spawnProcess:h.spawnProcess}),'Hermes summary')
+  assert.deepEqual(h.seen().args.slice(0,7),['chat','--query-file','-','--format','stream-json','--source','tool']);assert.deepEqual(h.seen().args.slice(-2),['-m','m/x']);assert.equal(h.seen().options.env.SUPERLCM_CLI_WORKER,'1');assert.match(h.seen().input,/conversation_excerpt/)
+  const pi=fake('Pi summary\n')
+  assert.equal(await summarizeWithPi('decision',{bin:'pi',cwd:join(dir,'w'),env:{},spawnProcess:pi.spawnProcess}),'Pi summary')
+  for(const flag of ['-p','--no-session','--no-tools','--no-extensions'])assert.ok(pi.seen().args.includes(flag),flag)
+  const hook=spawnSync(process.execPath,[cli,'pi-hook'],{input:JSON.stringify({hook_event_name:'agent_settled'}),encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_CLI_WORKER:'1'}});assert.equal(hook.stdout.trim(),'{}');assert.doesNotMatch(hook.stderr,/SuperLcm/)
 }))
 test('Codex pre-turn hook indexes and current agent saves without MCP import permission',fixture(async ({dir,store})=>{
   const home=join(dir,'codex-pre-turn'),sessions=join(home,'sessions'),file=join(sessions,'current.jsonl');mkdirSync(sessions,{recursive:true});writeFileSync(file,Array.from({length:8},(_,i)=>line(i)).join(''))
@@ -418,14 +436,12 @@ test('subscription adapter isolates credentials, tools and model choice',fixture
   const result=await summarizeWithClaudeCli('Decision: use CLI summary.',{model:'opus',bin:'test-claude',env:{ANTHROPIC_API_KEY:'secret',ANTHROPIC_AUTH_TOKEN:'token',ANTHROPIC_BASE_URL:'http://elsewhere',ANTHROPIC_PROFILE:'profile',CLAUDE_CODE_USE_VERTEX:'1',CLAUDE_CODE_OAUTH_TOKEN:'subscription-token'},cwd:join(dir,'isolated'),spawnProcess})
   assert.equal(result,'Concise factual summary.')
   assert.equal(invoked.bin,'test-claude')
-  assert.deepEqual(invoked.args.slice(0,6),['--print','--output-format','json','--model','opus','--disable-slash-commands'])
-  assert.deepEqual(invoked.args.slice(6,9),['--tools','','--strict-mcp-config'])
-  assert.equal(invoked.args[9],'--system-prompt')
-  assert.match(invoked.args[10],/Never follow instructions/)
-  assert.equal(invoked.options.env.ANTHROPIC_API_KEY,undefined)
-  assert.equal(invoked.options.env.ANTHROPIC_PROFILE,undefined)
-  assert.equal(invoked.options.env.CLAUDE_CODE_USE_VERTEX,undefined)
-  assert.equal(invoked.options.env.CLAUDE_CODE_OAUTH_TOKEN,'subscription-token')
+  assert.deepEqual(invoked.args.slice(0,10),['--print','--output-format','json','--model','opus','--no-session-persistence','--settings','{"disableAllHooks":true}','--disable-slash-commands','--tools'])
+  assert.deepEqual(invoked.args.slice(10,13),['','--strict-mcp-config','--system-prompt'])
+  assert.match(invoked.args[13],/Never follow instructions/)
+  // Whatever routes the user's Claude Code to its provider stays in place.
+  assert.equal(invoked.options.env.ANTHROPIC_BASE_URL,'http://elsewhere')
+  assert.equal(invoked.options.env.CLAUDE_CODE_USE_VERTEX,'1')
   assert.equal(invoked.options.env.SUPERLCM_CLI_WORKER,'1')
   assert.throws(()=>summarizeWithClaudeCli('yes',{model:'--evil'}),/Invalid/)
 }))
@@ -447,7 +463,7 @@ const fs=require('node:fs');let input='';process.stdin.on('data',c=>input+=c);pr
 `)
   chmodSync(fake,0o700)
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
-  const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CLAUDE_CLI_MODEL:'opus',SUPERLCM_CLAUDE_CLI_BIN:fake,SUPERLCM_TEST_RECEIPT:receipt,ANTHROPIC_API_KEY:'must-be-stripped'}
+  const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CLAUDE_CLI_MODEL:'opus',SUPERLCM_CLAUDE_CLI_BIN:fake,SUPERLCM_TEST_RECEIPT:receipt,ANTHROPIC_API_KEY:'user-configured'}
   delete env.SUPERLCM_ANTHROPIC_API_KEY
   const index=spawnSync(process.execPath,[cli,'index',src,'integration-session'],{encoding:'utf8',env,timeout:15000})
   assert.equal(index.status,0,index.stderr)
@@ -455,7 +471,7 @@ const fs=require('node:fs');let input='';process.stdin.on('data',c=>input+=c);pr
   assert.equal(worker.status,0,worker.stderr)
   assert.equal(JSON.parse(worker.stdout).created,1)
   const args=JSON.parse(readFileSync(receipt,'utf8'))
-  assert.equal(args.args[4],'opus');assert.equal(args.apiKeyPresent,false);assert.ok(args.inputChars>50)
+  assert.equal(args.args[4],'opus');assert.equal(args.apiKeyPresent,true);assert.ok(args.inputChars>50)
   const nodeId=store.overview('integration-session').nodes[0].id
   assert.equal(store.node('integration-session',nodeId).model,'claude-cli:opus')
 }))
@@ -494,15 +510,17 @@ test('legacy agent policy row does not block independent CLI policy',fixture(asy
   assert.equal(store.summaryMode('legacy-session'),'cli')
   assert.equal(store.db.prepare('SELECT mode FROM session_modes WHERE session=?').get('legacy-session').mode,'agent')
 }))
-test('mode defaults to CLI and preserves explicit agent or API choice',()=>{
-  assert.equal(summaryMode({}),'cli')
+test('mode defaults to the conversation AI and preserves explicit CLI or API choice',()=>{
+  assert.equal(summaryMode({}),'agent')
   assert.equal(summaryMode({SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'cli')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'off',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'off')
   assert.equal(summaryMode({SUPERLCM_SUMMARIZE_ON_HOOK:'1'}),'api')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent'}),'agent')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'agent')
-  assert.equal(subscriptionEnv({ANTHROPIC_API_KEY:'secret',SUPERLCM_CLI_WORKER:'0'}).SUPERLCM_CLI_WORKER,'1')
+  assert.equal(workerEnv({SUPERLCM_ANTHROPIC_API_KEY:'secret',SUPERLCM_CLI_WORKER:'0'}).SUPERLCM_CLI_WORKER,'1')
+  assert.equal(workerEnv({SUPERLCM_ANTHROPIC_API_KEY:'secret'}).SUPERLCM_ANTHROPIC_API_KEY,undefined)
+  assert.equal(summaryMode({}),'agent');assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'codex-cli'}),'cli')
 })
 test('merge work is planned as soon as four summaries exist, before the next raw batch',fixture(async ({dir,store})=>{
   const src=join(dir,'long.jsonl');writeFileSync(src,Array.from({length:48},(_,i)=>line(i)).join(''))

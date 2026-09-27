@@ -3,14 +3,14 @@ import { readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runCommand as run, paths, findCli, commandOptions, validModel } from './runtime.js'
-import { subscriptionEnv } from './claude-cli.js'
+import { workerEnv } from './runtime.js'
 export { harnessConnections } from './harness.js'
 
 // Initialize-only control protocol: no user message, inference, tools, hooks or persisted session.
 export function claudeModels({env=process.env,spawnProcess=spawn,timeoutMs=15000}={}) {
   return new Promise((resolve,reject)=>{
     const args=['--print','--input-format','stream-json','--output-format','stream-json','--verbose','--no-session-persistence','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--settings','{"disableAllHooks":true}','--tools','']
-    const child=spawnProcess(findCli('claude',env)||env.SUPERLCM_CLAUDE_CLI_BIN||'claude',args,{env:subscriptionEnv(env),cwd:tmpdir(),stdio:['pipe','pipe','pipe'],windowsHide:true})
+    const child=spawnProcess(findCli('claude',env)||env.SUPERLCM_CLAUDE_CLI_BIN||'claude',args,{env:workerEnv(env),cwd:tmpdir(),stdio:['pipe','pipe','pipe'],windowsHide:true})
     let settled=false,text='',bytes=0
     const finish=(err,value)=>{if(settled)return;settled=true;clearTimeout(timer);child.stdin.end();if(child.exitCode===null||child.exitCode===undefined)child.kill('SIGTERM');err?reject(err):resolve(value)}
     const timer=setTimeout(()=>finish(new Error('Claude 初始化目录读取超时')),timeoutMs)
@@ -30,14 +30,32 @@ export function claudeModels({env=process.env,spawnProcess=spawn,timeoutMs=15000
     child.stdin.write(JSON.stringify({type:'control_request',request_id:'superlcm-models',request:{subtype:'initialize'}})+'\n')
   })
 }
-export async function modelCatalog(kind,{env=process.env,runCommand=run,readClaude=claudeModels}={}) {
+// Hermes reports only the model it is set to use; any other model ID can be typed in.
+export async function hermesModels(env=process.env) {
+  const {runPython}=await import('./hermes-config.js')
+  return runPython(env,'import json\nfrom hermes_cli.config import load_config_readonly\nm=load_config_readonly().get("model") or {}\nm=m if isinstance(m,dict) else {"default":m}\nprint("SUPERLCM_JSON "+json.dumps({"model":m.get("default"),"provider":m.get("provider")}))',{})
+}
+const KINDS={'claude-code':'cli',codex:'codex-cli'}
+export async function modelCatalog(kind,{env=process.env,runCommand=run,readClaude=claudeModels,readHermes=hermesModels}={}) {
+  kind=KINDS[kind]||kind
   const fetched=new Date().toISOString()
+  if(kind==='pi') {
+    try {
+      const out=(await runCommand(findCli('pi',env)||'pi',['--list-models'],commandOptions(workerEnv(env)))).stdout
+      const models=out.split('\n').slice(1).map(line=>line.trim().split(/\s+/)).filter(c=>c.length>=2).map(([provider,id])=>provider+'/'+id).filter(validModel).slice(0,200).map(id=>({id,label:id,description:''}))
+      return {kind,models,source:'Pi CLI · --list-models',updated_at:fetched,status:models.length?'live':'unavailable',stale:false}
+    } catch { return {kind,models:[],source:'Pi CLI · --list-models',updated_at:null,status:'unavailable',stale:false,error:'未能读取 Pi 的模型列表'} }
+  }
+  if(kind==='hermes') {
+    try {const m=await readHermes(env);const models=validModel(m.model||'')?[{id:m.model,label:m.model+(m.provider?' · '+m.provider:''),description:''}]:[];return {kind,models,source:'Hermes config.yaml · model',updated_at:fetched,status:models.length?'live':'unavailable',stale:false}}
+    catch {return {kind,models:[],source:'Hermes config.yaml · model',updated_at:null,status:'unavailable',stale:false,error:'未能读取 Hermes 的模型设置'}}
+  }
   if(kind==='codex-cli') {
     let cache,source='Codex CLI · debug models',stale=false,error=null,updated=fetched
     try {const result=await runCommand(findCli('codex',env)||'codex',['debug','models'],commandOptions(env));cache=JSON.parse(result.stdout);if(!Array.isArray(cache.models))throw Error('missing catalog')}
     catch {stale=true;error='实时 CLI 目录读取失败';source='Codex CLI · models_cache.json（缓存回退）';try{const file=join(paths(env).codex,'models_cache.json');if(statSync(file).size>2*1024*1024)throw Error('too large');cache=JSON.parse(readFileSync(file,'utf8'));updated=cache.fetched_at||null}catch{cache={models:[]};updated=null}}
     const models=(cache.models||[]).filter(m=>m.visibility!=='hide'&&validModel(m.slug)).sort((a,b)=>(a.priority??999)-(b.priority??999)).slice(0,100).map(m=>({id:m.slug,label:String(m.display_name||m.slug).slice(0,100),description:String(m.description||'').slice(0,250)}))
-    return {kind,models,source,stale,error,updated_at:updated,status:models.length?(stale?'cached':'live'):'unavailable',note:'来自本机 CLI 的真实目录；不是订阅调用成功证明。自定义 provider 模型还依赖其配置，独立 worker 不继承用户配置。'}
+    return {kind,models,source,stale,error,updated_at:updated,status:models.length?(stale?'cached':'live'):'unavailable',note:'来自本机 Codex 的模型目录；后台写摘要时沿用你在 Codex 里的配置。'}
   }
   if(kind==='cli') {
     try {const raw=await readClaude({env});const models=raw.filter(m=>validModel(m.value)).slice(0,100).map(m=>({id:m.value,label:String(m.displayName||m.value).slice(0,100),resolved_model:m.resolvedModel||null,description:String(m.description||'').slice(0,250)}));return {kind,models,source:'Claude CLI · initialize.models',updated_at:fetched,status:models.length?'live':'unavailable',stale:false,note:'CLI 初始化真实选项（无推理）；resolvedModel 显示别名当前指向，不保证账户可调用。'}}

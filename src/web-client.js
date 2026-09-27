@@ -182,8 +182,7 @@ function stripHtml(d) {
 // One clear action; the method (and whose quota it spends) is chosen in a confirmation dialog.
 // Only methods this computer can run are offered: installed CLIs and a saved custom API.
 const BACKENDS = {
-  cli: ['Claude 订阅', '在后台调用本机 claude 命令，消耗你的 Claude 订阅额度。'],
-  'codex-cli': ['Codex 订阅', '在后台调用本机 codex 命令，消耗你的 Codex / ChatGPT 订阅额度。'],
+  cli: ['{tool} 后台写', '另起一个 {tool} 进程，用你在 {tool} 里配置的账号和模型来写，额度或计费也算在那边；不占用正在聊的对话。'],
   api: ['自定义 API', '使用设置里保存的接口和密钥，按服务商价格计费。']
 }
 function generateButton(label, cls = 'btn small') {
@@ -195,7 +194,7 @@ function generateButton(label, cls = 'btn small') {
 function openGenerate() {
   const d = state.detail, e = d.estimate, list = d.backends
   let pick = list[0]
-  const opts = () => list.map(b => '<button type="button" class="target" data-b="' + b + '" aria-pressed="' + (b === pick) + '"><span class="t1">' + t(BACKENDS[b][0]) + '</span><span class="t2">' + t(BACKENDS[b][1]) + '</span></button>').join('')
+  const opts = () => list.map(b => '<button type="button" class="target" data-b="' + b + '" aria-pressed="' + (b === pick) + '"><span class="t1">' + t(BACKENDS[b][0], { tool: toolName(d.writer_tool) }) + '</span><span class="t2">' + t(BACKENDS[b][1], { tool: toolName(d.writer_tool) }) + '</span></button>').join('')
   overlay('<div class="modal" role="dialog" aria-labelledby="gtitle"><div class="card" style="width:min(520px,100%)"><div class="card-h"><h3 id="gtitle">' + t('生成摘要') + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
     '<p style="margin:0">' + t('把尚未摘要的 {n} 条原文整理成分层摘要，方便浏览和接续。原文不会改动。', { n: fmt(e.records) }) + '</p>' +
     '<p class="muted" style="margin:0">' + t('预计调用模型约 {c} 次，在后台运行，可以关掉此页。', { c: fmt(e.calls) }) + (e.tail_chars ? t('最后约 {n} 字还不够一段，暂时只保留原文。', { n: fmt(e.tail_chars) }) : '') + '</p>' +

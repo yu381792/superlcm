@@ -35,7 +35,7 @@ export function hermesRuntime(env = process.env) {
   return python ? { python, args: [], prelude: '' } : null
 }
 export const hermesPython = (env = process.env) => hermesRuntime(env)?.python || null
-function runPython(env, code, input) {
+export function runPython(env, code, input) {
   const runtime = hermesRuntime(env)
   if (!runtime) return Promise.reject(new Error('Hermes Python not found'))
   return new Promise((resolve, reject) => {

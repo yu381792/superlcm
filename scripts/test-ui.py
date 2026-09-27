@@ -104,10 +104,13 @@ try:
   page.locator('.nav [data-view="settings"]').click()
   assert page.locator('#setNav button').all_inner_texts()==['外观','存储','摘要','MCP 工具']
   page.locator('#setNav [data-sec="summary"]').click()
-  page.locator('#writer .opt[data-w="codex-cli"]').click()
-  page.wait_for_function("() => document.querySelectorAll('#wModel option').length>1",timeout=30000)
+  page.locator('#writer .opt[data-w="cli"]').click();page.wait_for_selector('#writerFields:has-text("每个工具用它自己当前的模型")')
   with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as saved:page.click('#saveWriter')
   assert saved.value.status==200;page.wait_for_selector('#writerSaved:has-text("已保存")')
+  # 本工具后台写: each tool card offers that tool's own real model list.
+  page.locator('.nav [data-view="connect"]').click()
+  page.wait_for_function("() => document.querySelectorAll('select[data-model=\"codex\"] option').length>2",timeout=30000)
+  page.locator('.nav [data-view="settings"]').click();page.locator('#setNav [data-sec="summary"]').click()
   page.select_option('#fanout','6');page.wait_for_selector('#writerSaved:has-text("未保存")')
   with page.expect_response(lambda r:'/api/tuning' in r.url) as tuned:page.click('#saveWriter')
   assert tuned.value.json()['fanout']==6;page.wait_for_selector('#writerSaved:has-text("已保存")')
