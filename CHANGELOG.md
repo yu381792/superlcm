@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0-alpha.1
+
+- Redesign the console into three views: 对话 (list, search, summary-level strip, summary tree, original-record drawer, continue-in-another-tool, rename), 接入 (evidence-based status, guided setup dialog, local import) and 设置 (summary writer, granularity, per-tool overrides, palette and theme). Real tool logos; phone layout; dark mode.
+- Replace 18 MCP tools with 6: `lcm_continue`, `lcm_find`, `lcm_outline`, `lcm_read`, plus `lcm_summary_task` / `lcm_summary_submit`, which only appear when in-conversation summaries are enabled.
+- Summaries now merge before new text is summarized, so higher levels actually form; first-level segments default to about 12,000 characters / 32 messages and merge 4 at a time, all adjustable.
+- Conversations get a short `#code`, track last activity, and sort newest first. Continuing elsewhere is one line: `通过 SuperLcm 接续对话 #code`.
+- Remove the queued cross-conversation delivery flow (the target now pulls context with `lcm_continue`); old delivery tables are left untouched.
+- Relicense from MIT to Apache-2.0.
+- One-click background catch-up with the Claude or Codex subscription CLI from a conversation's page.
+
 ## 0.1.0-alpha.12
 
 - Correct import to indexed-source → target context; move native collection into lazy index management and eliminate automatic page-load scans.

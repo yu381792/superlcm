@@ -4,3 +4,4 @@ node_modules/
 *.sqlite-wal
 *.tgz
 .DS_Store
+.trash/

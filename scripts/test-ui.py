@@ -2,7 +2,7 @@
 Writes only a temporary fixture index and temporary CLI configuration.
 Queries actual model catalogs without sending a model prompt.
 """
-import json,os,pathlib,subprocess,sys,time,hashlib
+import json,os,pathlib,subprocess,sys,hashlib
 from playwright.sync_api import sync_playwright
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 config_paths=[pathlib.Path.home()/'.codex/config.toml',pathlib.Path.home()/'.codex/hooks.json',pathlib.Path.home()/'.claude.json',pathlib.Path.home()/'.claude/settings.json']
@@ -20,88 +20,88 @@ def hashes():
  return result
 before=hashes()
 server=subprocess.Popen(['node',str(ROOT/'test/ui-fixture.mjs')],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,cwd=ROOT)
+shots=pathlib.Path(os.environ.get('SUPERLCM_TEST_SHOTS','/tmp'))
 try:
  info=json.loads(server.stdout.readline());url=info['url']
  with sync_playwright() as p:
   chrome=os.environ.get('SUPERLCM_TEST_CHROME') or ('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' if sys.platform=='darwin' else None)
   browser=p.chromium.launch(**({'executable_path':chrome} if chrome else {}),headless=True)
-  page=browser.new_page(viewport={'width':1440,'height':1080},color_scheme='light');errors=[];requests=[];expected_failure=[False]
-  page.on('request',lambda request:requests.append(request.url))
+  context=browser.new_context(viewport={'width':1440,'height':1000},color_scheme='light')
+  context.grant_permissions(['clipboard-read','clipboard-write'])
+  page=context.new_page();errors=[];expected_failure=[False]
   page.on('pageerror',lambda error:errors.append(str(error)))
-  page.on('response',lambda response:errors.append('HTTP '+str(response.status)+' '+response.url) if response.status>=400 and not expected_failure[0] else None)
-  page.goto(url);page.wait_for_selector('[data-detail="codex-source"]');page.wait_for_selector('#harnessRows [data-test="codex"]',state='attached')
-  assert page.locator('[data-view-panel]:visible').count()==1
-  page.locator('[data-detail="codex-source"]').click();page.wait_for_selector('#summaryNodes .pre');assert 'Fixture:' in page.locator('#summaryNodes').inner_text()
-  page.screenshot(path='/tmp/superlcm-redesign-index.png',full_page=True)
-  page.locator('[data-use-source="codex-source"]').click()
-  page.wait_for_function("() => document.getElementById('source').value==='codex-source' && document.getElementById('previewtext').textContent.includes('Fixture:')")
-  assert page.locator('#view-delivery #localSessions').count()==0
-  assert not any('/api/local-conversations' in x or '/api/index-local' in x for x in requests),requests
-  page.select_option('#sourceHarness','codex');page.wait_for_selector('#source option[value="codex-source"]',state='attached');page.select_option('#source','codex-source')
-  assert '待导入本地记录' not in page.locator('#source').inner_text()
-  page.select_option('#targetHarness','claude-code');page.wait_for_selector('#target option[value="target"]',state='attached');page.select_option('#target','target');page.select_option('#deliveryRoute','mcp')
-  page.click('#preview');page.wait_for_function("() => document.getElementById('previewtext').textContent.includes('Fixture:')")
-  assert 'lcm_context' in page.locator('#directInstruction').inner_text()
-  page.click('#send');page.wait_for_function("() => document.getElementById('deliveryFeedback').textContent.includes('待领取')")
-  assert '待目标 MCP 领取' in page.locator('#deliveries').inner_text()
-  messages=[{'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','clientInfo':{'name':'claude-code-browser-fixture'}}},{'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'lcm_receive_context','arguments':{'target':'target'}}}]
-  received=subprocess.run(['node',str(ROOT/'src/cli.js'),'mcp'],input='\n'.join(json.dumps(x) for x in messages)+'\n',text=True,capture_output=True,env={**os.environ,'SUPERLCM_HOME':str(pathlib.Path(info['dir'])/'index')},timeout=10)
-  assert received.returncode==0,received.stderr
-  result=next(x for x in map(json.loads,received.stdout.splitlines()) if x.get('id')==2);assert not result['result'].get('isError'),result
-  packet=json.loads(result['result']['content'][0]['text']);assert 'Fixture:' in packet['packets'][0]['content'];assert packet['target']['session']=='target'
-  page.click('#refreshDeliveries');page.wait_for_function("() => document.getElementById('deliveries').textContent.includes('MCP 已领取')")
-  assert '目标 MCP 已领取' in page.locator('#deliveryFeedback').inner_text()
-  page.screenshot(path='/tmp/superlcm-redesign-import.png',full_page=True)
-  page.locator('[data-view="summary"]').click()
-  mode='[data-role="mode"][data-key="global"]';picker='[data-role="model-choice"][data-key="global"]'
-  page.select_option(mode,'codex-cli');page.wait_for_function("() => document.querySelector('[data-role=hint][data-key=global]').textContent.includes('实时读取')",timeout=30000)
-  ids=page.locator(picker+' option').evaluate_all('(nodes)=>nodes.map(n=>n.value)');assert any('/' in x for x in ids),ids
-  chosen=next(x for x in ids if '/' in x);page.select_option(picker,chosen)
-  with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as saved:page.locator('[data-role="save"][data-key="global"]').click()
-  assert saved.value.status==200
-  page.wait_for_function("() => document.querySelector('[data-role=status][data-key=global]').textContent==='已保存'")
-  page.select_option(mode,'cli');page.wait_for_function("() => document.querySelector('[data-role=hint][data-key=global]').textContent.includes('initialize.models')",timeout=30000)
-  ids=page.locator(picker+' option').evaluate_all('(nodes)=>nodes.map(n=>n.value)');assert 'opus[1m]' in ids,ids
-  page.select_option(picker,'opus[1m]')
-  with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as saved:page.locator('[data-role="save"][data-key="global"]').click()
-  assert saved.value.status==200
-  page.wait_for_function("() => document.querySelector('[data-role=status][data-key=global]').textContent==='已保存'")
-  page.screenshot(path='/tmp/superlcm-redesign-models.png',full_page=True)
-  page.locator('[data-view="connection"]').click()
+  page.on('console',lambda m:errors.append('console '+m.text) if m.type=='error' and not expected_failure[0] else None)
+  page.on('response',lambda r:errors.append('HTTP '+str(r.status)+' '+r.url) if r.status>=400 and not expected_failure[0] else None)
+  page.goto(url);page.wait_for_selector('#rows .row')
+
+  # Conversations: the summarized source is selected, shows a merged level and a navigable tree.
+  page.locator('#rows .row',has_text='Codex 架构来源').click()
+  page.wait_for_selector('#detail h1:has-text("Codex 架构来源")')
+  assert page.locator('#detail .seg.l1').count()==1,'merged second-level band missing'
+  page.locator('#detail .seg.l1').click();page.wait_for_selector('#detail .node[aria-expanded="true"] .children .node')
+  assert page.locator('#detail .node .lv.l0').count()>=4
+  page.locator('#detail .children .node-h').first.click();page.locator('#detail .raw-link button').first.click()
+  page.wait_for_selector('.drawer .ev');assert 'decision 0' in page.locator('.drawer-b').inner_text()
+  page.keyboard.press('Escape');assert page.locator('.drawer').count()==0
+  page.screenshot(path=str(shots/'superlcm-conversation.png'),full_page=True)
+
+  # Continue in another tool: the handoff line carries the short code and the packet has the outline.
+  page.click('#continue');page.wait_for_selector('.modal .targets')
+  page.locator('.target[data-t="claude-code"]').click()
+  code=page.locator('#detail .tag').inner_text()
+  body=page.locator('.modal').inner_text();assert code in body or '接入 Claude Code' in body,body
+  page.locator('.modal [data-close]').first.click()
+
+  # Rename and search.
+  page.click('#rename');page.fill('#newName','Renamed 来源');page.locator('#renameForm button[type=submit]').click()
+  page.wait_for_selector('#detail h1:has-text("Renamed 来源")')
+  page.fill('#q','decision 3');page.wait_for_selector('#rows .hit')
+  page.locator('#rows .hit').first.click();page.wait_for_selector('.drawer .ev.focus, #detail .node.flash',timeout=5000)
+  page.keyboard.press('Escape');page.fill('#q','');page.wait_for_selector('#rows .row')
+
+  # Connect: errors are visible, local import works, setup writes only the temporary homes.
+  page.locator('.nav [data-view="connect"]').click();page.wait_for_selector('#tools .tool')
   expected_failure[0]=True
   page.route('**/api/setup-preview',lambda route:route.fulfill(status=503,content_type='application/json',body=json.dumps({'error':'fixture config unavailable'})))
-  page.locator('[data-setup="claude-code"]').click();page.wait_for_function("() => document.getElementById('setupFeedback').textContent.includes('fixture config unavailable')")
-  assert page.locator('#setupDialog').is_visible();assert page.locator('#setupFeedback').is_visible();assert page.locator('#applySetup').is_disabled()
-  page.click('#closeSetup');page.unroute('**/api/setup-preview');expected_failure[0]=False
+  page.locator('[data-setup="claude-code"]').click();page.wait_for_selector('.modal .notice.bad:has-text("fixture config unavailable")')
+  assert page.locator('#applySetup').is_disabled()
+  page.locator('.modal [data-close]').first.click();page.unroute('**/api/setup-preview');expected_failure[0]=False
+  page.locator('#importTools [data-import="codex"]').click();page.wait_for_selector('.local-row')
+  page.locator('.local-row',has_text='待导入本地记录').locator('button').click()
+  page.wait_for_selector('.local-row:has-text("待导入本地记录") [data-open]');page.locator('.modal [data-close]').first.click()
   for harness in ['codex','claude-code']:
    page.locator('[data-setup="'+harness+'"]').click()
-   assert page.locator('#setupDialog').is_visible()
-   page.wait_for_function("() => !document.getElementById('applySetup').disabled")
-   box=page.locator('#setupDialog').bounding_box();assert 0<=box['y']<1080,box
+   page.wait_for_function("() => document.getElementById('applySetup') && !document.getElementById('applySetup').disabled",timeout=30000)
    with page.expect_response(lambda r:'/api/setup-apply' in r.url) as setup:page.click('#applySetup')
-   result=setup.value.json();assert setup.value.status==200,result;assert result['saved'];assert result['configuration_verified'];assert not result['trust_granted']
-   page.wait_for_function("() => !document.getElementById('setupNext').hidden",timeout=30000)
-   if harness=='claude-code':
-    assert 'Claude CLI 连接验证通过' in page.locator('#setupFeedback').inner_text(),page.locator('#setupFeedback').inner_text()
-    page.screenshot(path='/tmp/superlcm-claude-connect-dialog.png',full_page=True)
-   assert not page.locator('#verifyConnection').is_hidden()
-   page.click('#closeSetup')
-   with page.expect_response(lambda r:'/api/connection-check' in r.url) as checked:page.locator('[data-test="'+harness+'"]').click()
-   diagnostic=checked.value.json();print('row-check',harness,json.dumps(diagnostic,ensure_ascii=False),flush=True);assert checked.value.status==200,diagnostic
-   if harness=='claude-code':assert diagnostic['ok'] and diagnostic['scope']=='claude-runtime-probe' and not diagnostic['existing_session_verified'],diagnostic
-   else:assert diagnostic['protocol']['ok'] and diagnostic['hook']['adapter']['ok'],diagnostic
-  page.screenshot(path='/tmp/superlcm-redesign-connections.png',full_page=True)
+   result=setup.value.json();assert setup.value.status==200,result;assert result['saved'] and result['configuration_verified'] and not result['trust_granted'],result
+   page.wait_for_selector('.modal .steps li:nth-child(3).done, .modal .steps li:nth-child(3).fail',timeout=60000)
+   note=page.locator('.modal .notice').inner_text();print('setup',harness,note,flush=True)
+   assert page.locator('.modal .steps li:nth-child(3).done').count()==1,note
+   page.screenshot(path=str(shots/('superlcm-setup-'+harness+'.png')))
+   page.locator('.modal [data-close]').first.click()
+  assert page.locator('#statusText').inner_text().startswith('已接入')
+
+  # Settings: real CLI catalogs, saving, granularity and appearance.
+  page.locator('.nav [data-view="settings"]').click()
+  page.locator('#writer .opt[data-w="codex-cli"]').click()
+  page.wait_for_function("() => document.querySelectorAll('#wModel option').length>1",timeout=30000)
+  with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as saved:page.click('#saveWriter')
+  assert saved.value.status==200;page.wait_for_selector('#writerSaved:has-text("已保存")')
+  page.select_option('#fanout','6');page.wait_for_selector('#toast:not([hidden])')
+  page.locator('.sw[data-pal="teal"]').click();assert page.evaluate("document.documentElement.dataset.palette")=='teal'
+  page.screenshot(path=str(shots/'superlcm-settings.png'),full_page=True)
+
   for width in [1440,390]:
-   page.set_viewport_size({'width':width,'height':1000})
-   for view in ['assets','delivery','summary','connection']:
-    page.locator('[data-view="'+view+'"]').click();assert page.locator('[data-view-panel]:visible').count()==1
+   page.set_viewport_size({'width':width,'height':900})
+   for view in ['conversations','connect','settings']:
+    page.evaluate("v => location.hash = v",view);page.wait_for_selector('#view-'+view+':not([hidden])')
     assert page.evaluate('() => document.documentElement.scrollWidth<=innerWidth'),(width,view)
-   if width==390:page.screenshot(path='/tmp/superlcm-redesign-mobile.png',full_page=True)
+   if width==390:page.screenshot(path=str(shots/'superlcm-mobile.png'),full_page=True)
   assert not errors,errors
   assert page.locator('#error').is_hidden(),page.locator('#error').inner_text()
   browser.close()
  assert before==hashes(),'Real user configurations changed'
- print(json.dumps({'ok':True,'pages':4,'indexed_import_to_target_mcp':True,'claude_runtime_loaded':True,'visible_error_feedback':True,'native_collection_requests':0,'real_catalogs':['codex','claude'],'fixture_install':['codex','claude-code'],'real_user_settings_unchanged':True,'native_cli_cache_fields_excluded':['cachedGrowthBookFeatures','cachedGrowthBookFeaturesAt','cachedExperimentData'],'browser_errors':errors},ensure_ascii=False))
+ print(json.dumps({'ok':True,'views':3,'merged_levels':True,'continue':True,'local_import':True,'fixture_setup':['codex','claude-code'],'real_catalog':'codex','real_user_settings_unchanged':True},ensure_ascii=False))
 finally:
  server.terminate()
  try:server.wait(8)

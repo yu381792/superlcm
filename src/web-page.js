@@ -1,9 +1,116 @@
 import { readFileSync } from 'node:fs'
-const asset=name=>readFileSync(new URL(name,import.meta.url),'utf8')
-export function page(token,nonce) {return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SuperLcm</title><style>${asset('web-style.css')}</style></head><body><div class="page"><aside class="intro"><h1>SuperLcm</h1><nav class="side-nav" aria-label="控制台菜单">${[['assets','对话索引'],['delivery','对话导入'],['summary','模型设置'],['connection','MCP连接']].map(([id,label])=>`<button type="button" class="nav-link" data-view="${id}" aria-controls="view-${id}"><span>${label}</span><i aria-hidden="true"></i></button>`).join('')}</nav></aside><main id="workbench"><div id="error" class="notice error-banner" role="alert" hidden></div>
-<section class="chapter" id="view-assets" data-view-panel="assets"><div class="head"><h2>对话索引<span class="sub">按来源归档 · 独立会话 · 原文与摘要分开计数</span></h2></div><div id="stats" class="tiles"></div><div class="tabs" id="indexHarnesses" aria-label="索引来源"></div><div class="toolbar"><input id="filter" type="search" placeholder="筛选本页名称或 ID" aria-label="筛选索引"><button class="btn" id="refresh">刷新索引</button></div><div class="panel"><div id="sessions">读取中…</div><div id="indexCount" class="page-caption"></div><button class="btn" id="more" hidden>加载更多</button></div><details id="captureManagement" class="capture-management"><summary>采集管理（可选，不是跨对话导入）</summary><div class="panel"><h3>手动补采集</h3><p class="small muted">仅在点击扫描后读取本地会话目录，只在点击某一行后索引该对话；不批量读取入库，不调用摘要模型。</p><div id="localHarnesses" class="tabs" aria-label="本地对话来源"></div><div class="row"><button id="scanLocal" class="btn">扫描本地会话</button><span id="localRoot" class="mono muted"></span></div><div id="localSessions"></div><div id="localCount" class="page-caption"></div><button class="btn" id="localMore" hidden>更多本地对话</button><div id="localFeedback" class="action-feedback good small" aria-live="polite"></div></div></details><div id="summaryPanel" class="panel" hidden><h3 id="summaryTitle">摘要详情</h3><div id="summaryNodes"></div><button id="moreNodes" class="btn" hidden>更多摘要</button></div></section>
-<section class="chapter" id="view-delivery" data-view-panel="delivery" hidden><div class="head"><h2>对话导入<span class="sub">从 SuperLcm 已入库会话选择来源，导入另一对话的上下文</span></h2></div><div class="panel"><h3>从索引库导入</h3><p class="small muted">此页只读取 SuperLcm 索引库，不扫描或采集本地 CLI 历史。导入的是有来源标识的摘要导航，完整摘要和原文仍可经 MCP 按需读取。</p><div class="split"><div><label class="field">来源 harness<select id="sourceHarness"></select></label><label class="field">索引库中的来源对话<select id="source"></select></label><button id="sourceMore" class="btn" hidden>加载更多来源</button></div><div><label class="field">目标 harness<select id="targetHarness"></select></label><label class="field">接收对话<select id="target"></select></label><button id="targetMore" class="btn" hidden>加载更多目标</button></div></div><label class="field">接收方式<select id="deliveryRoute"><option value="hook">目标会话下次发言时由 hook 接收（Claude / Codex）</option><option value="mcp">在目标对话调用 MCP 领取（其他 harness 也可使用）</option></select></label><div class="row"><button class="btn" id="preview">预览来源</button><button class="btn primary" id="send">确认导入到目标</button></div><div class="pre tall" id="previewtext">选择有摘要的来源再预览。</div><p id="deliveryHint" class="small muted">MCP lcm_context 可直接导入调用者；跨对话则等目标 hook 领取，不代表已被模型读取。</p><div class="action-feedback good small" id="deliveryFeedback" aria-live="polite"></div></div><div class="panel"><h3>当前或新对话直接召回</h3><p class="small muted">目标不在列表里也不用导入本地历史。将下面的指令交给已接入 SuperLcm 的目标智能体，由它直接调用 MCP。</p><div id="directInstruction" class="pre">先选择索引库中的来源对话。</div><button class="btn" id="copyInstruction" disabled>复制召回指令</button><span id="copyFeedback" class="small" aria-live="polite"></span></div><div class="panel"><div class="row"><h3>导入记录</h3><button id="refreshDeliveries" class="btn">刷新状态</button></div><div id="deliveries"></div></div></section>
-<section class="chapter" id="view-summary" data-view-panel="summary" hidden><div class="head"><h2>模型设置<span class="sub">全局默认 + 本机 harness 覆盖 · 真实 CLI 目录，不用示例凑列表</span></h2></div><div class="panel"><h3>全局设置</h3><p class="small muted">保存不发起推理。当前对话智能体需索引和 MCP 写入；订阅后端使用独立 CLI。</p><div id="globalSetting"></div></div><div class="panel"><h3>按 harness 设置</h3><div id="harnessSettings"></div></div></section>
-<section class="chapter" id="view-connection" data-view-panel="connection" hidden><div class="head"><h2>MCP连接<span class="sub">发现本机 harness · 逐行安装、检测与测试</span></h2></div><div class="row"><button id="detectHarnesses" class="btn">重新检测本地 harness</button><span id="detectionTime" class="small muted"></span></div><div class="notice small">配置存在 ≠ 现有会话已连接。Claude 使用真实 CLI 加载验证；活动客户端名称为自报，诊断进程不计入。宿主信任仍由原生界面管理。</div><div class="panel table-wrap"><table><thead><tr><th>Harness / CLI</th><th>MCP 配置</th><th>Hook / 最近活动</th><th>操作</th></tr></thead><tbody id="harnessRows"></tbody></table></div></section></main></div><dialog id="setupDialog" aria-labelledby="setupTitle"><div id="setupPanel"><div class="row dialog-head"><h3 id="setupTitle">连接 SuperLcm</h3><button class="btn" id="closeSetup" aria-label="关闭连接对话框">关闭</button></div><div id="setupFeedback" class="notice small" role="status" aria-live="polite">检查接入配置中…</div><div id="setupInfo" class="pre tall"></div><p class="small muted">确认后备份并写入 MCP / hook 配置，再做无模型推理的连接检查。不自动授予宿主信任。</p><button class="btn primary" id="applySetup" disabled>确认连接</button><div id="setupNext" class="notice small" hidden></div><button class="btn" id="verifyConnection" hidden>刷新当前会话连接状态</button></div></dialog><script nonce="${nonce}">const token=${JSON.stringify(token)};${asset('web-client.js')}
-${asset('web-settings.js')}
-${asset('web-connections.js')}</script></body></html>`}
+import { icons } from './web-icons.js'
+const asset = name => readFileSync(new URL(name, import.meta.url), 'utf8')
+const logo = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="3" rx="1.5" fill="var(--l3)"/><rect x="2" y="8.5" width="11" height="3" rx="1.5" fill="var(--l2)"/><rect x="2" y="14" width="6" height="3" rx="1.5" fill="var(--l1)"/></svg>'
+const swatches = [['orange', '陶橙', '#C96442'], ['teal', '松石', '#1E6B57'], ['indigo', '靛青', '#3A4FB0'], ['graphite', '石墨', '#2E2E2C']]
+
+export function page(token, nonce) {
+  return `<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SuperLcm</title>
+<style>${asset('web-style.css')}</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">${logo}SuperLcm</div>
+    <nav class="nav" aria-label="主菜单">
+      <button type="button" data-view="conversations">对话</button>
+      <button type="button" data-view="connect">接入</button>
+      <button type="button" data-view="settings">设置</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="swatches" role="group" aria-label="配色">${swatches.map(([id, name, color]) => `<button type="button" class="sw" data-pal="${id}" title="${name}" style="background:${color}"></button>`).join('')}</div>
+    <button type="button" class="pill" id="statusPill"><span class="dot" id="statusDot"></span><span id="statusText">检测中…</span></button>
+  </header>
+  <p class="banner" id="error" role="alert" hidden><span id="errorText"></span><button type="button" class="link" id="errorClose">关闭</button></p>
+
+  <section class="view" id="view-conversations">
+    <div class="conv" id="conv">
+      <aside class="list">
+        <div class="list-head">
+          <label class="search"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input id="q" type="search" placeholder="搜索对话、摘要与原文" autocomplete="off" aria-label="搜索"><kbd>/</kbd></label>
+          <div class="chips" id="chips"></div>
+        </div>
+        <div class="rows" id="rows" role="listbox" aria-label="对话列表"></div>
+        <div class="list-foot"><span id="listCount"></span><button type="button" class="link" id="more" hidden>加载更多</button></div>
+      </aside>
+      <main class="detail" id="detail"></main>
+    </div>
+  </section>
+
+  <section class="view page" id="view-connect" hidden>
+    <div class="page-inner">
+      <div class="page-h"><h1>接入</h1><p>接入后，该工具的对话会自动存入 SuperLcm，其中的 AI 也可查阅全部已存对话。</p></div>
+      <div class="tools" id="tools"></div>
+      <div class="panel">
+        <h2>导入本机的历史对话</h2>
+        <p class="desc">接入之前的对话，或暂不支持自动接入的工具（如 Hermes、Pi），可以从本机记录中挑选导入。只读取你选中的对话，不会调用模型。</p>
+        <div class="actions" id="importTools"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view page" id="view-settings" hidden>
+    <div class="page-inner">
+      <div class="page-h"><h1>设置</h1></div>
+      <div class="panel">
+        <h2>摘要生成方式</h2>
+        <p class="desc">摘要仅用于导航，原文始终完整保存。「对话内生成」由当前对话的 AI 顺带完成，它读到的内容大多已在缓存中，费用最低；其他方式会在后台自动补齐。</p>
+        <div class="seg-ctl" id="writer"></div>
+        <div class="fields" id="writerFields"></div>
+        <div class="actions"><button type="button" class="btn primary" id="saveWriter">保存</button><span class="saved" id="writerSaved" aria-live="polite"></span></div>
+      </div>
+      <div class="panel">
+        <h2>摘要粒度</h2>
+        <p class="desc">只影响之后新生成的摘要，已有摘要保持不变。</p>
+        <div class="fields">
+          <label class="field">第 1 层每段原文<select id="segSize"><option value="6000">约 6,000 字 · 更细</option><option value="12000">约 12,000 字 · 推荐</option><option value="24000">约 24,000 字 · 更省</option></select></label>
+          <label class="field">单段最多消息数<select id="segMsgs"><option value="16">16 条</option><option value="32">32 条 · 推荐</option><option value="64">64 条</option></select></label>
+          <label class="field">合并方式<select id="fanout"><option value="3">每 3 段合并为上一层</option><option value="4">每 4 段合并为上一层 · 推荐</option><option value="6">每 6 段合并为上一层</option></select></label>
+        </div>
+        <div class="notice calm"><span id="granEst"></span></div>
+      </div>
+      <div class="panel">
+        <h2>按工具设置</h2>
+        <p class="desc">未单独设置的工具沿用上方默认值。</p>
+        <div class="tbl-wrap"><table><thead><tr><th>工具</th><th>摘要生成</th><th>实际生效</th></tr></thead><tbody id="perTool"></tbody></table></div>
+      </div>
+      <div class="panel">
+        <h2>AI 可用的 MCP 工具</h2>
+        <p class="desc">接入后，对话中的 AI 可调用以下工具。接入、导入、重命名等管理操作仅在控制台和命令行中进行。</p>
+        <div class="toolref">
+          <div><code>lcm_continue</code><span>接续另一个对话：获取其顶层摘要与最近原文。</span></div>
+          <div><code>lcm_find</code><span>按名称、编号或关键词查找对话，并在摘要与原文中全文搜索。</span></div>
+          <div><code>lcm_outline</code><span>逐层展开摘要目录。</span></div>
+          <div><code>lcm_read</code><span>按编号读取原文，与原始记录逐字一致。</span></div>
+          <div><code>lcm_summary_task</code><span>领取待摘要的原文（仅「对话内生成」模式可用）。</span></div>
+          <div><code>lcm_summary_submit</code><span>提交摘要，服务器校验原文后保存（同上）。</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>存储与外观</h2>
+        <div class="fields">
+          <label class="field">数据位置<input id="dataDir" readonly></label>
+          <label class="field">配色<select id="palSel">${swatches.map(([id, name]) => `<option value="${id}">${name}</option>`).join('')}</select></label>
+          <label class="field">外观<select id="themeSel"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+<div id="overlay"></div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script nonce="${nonce}">
+const token = ${JSON.stringify(token)};
+const ICONS = ${JSON.stringify(icons)};
+${asset('web-client.js')}
+${asset('web-admin.js')}
+boot();
+</script>
+</body>
+</html>`
+}

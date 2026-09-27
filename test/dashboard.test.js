@@ -16,7 +16,7 @@ import { startWeb } from '../src/web.js'
 import { call } from '../src/mcp.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-const fixture=fn=>async t=>{const dir=mkdtempSync(join(tmpdir(),'superlcm-dashboard-')),store=new ClaudeStore(join(dir,'index')),env={...process.env,HOME:dir,USERPROFILE:dir,CODEX_HOME:join(dir,'codex'),CLAUDE_CONFIG_DIR:join(dir,'claude')};t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true})});await fn({dir,store,env,t})}
+const fixture=fn=>async t=>{const dir=mkdtempSync(join(tmpdir(),'superlcm-dashboard-')),store=new ClaudeStore(join(dir,'index')),_small=store.db.prepare('INSERT INTO summary_tuning VALUES(1,12000,8,4)').run(),env={...process.env,HOME:dir,USERPROFILE:dir,CODEX_HOME:join(dir,'codex'),CLAUDE_CONFIG_DIR:join(dir,'claude')};t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true})});await fn({dir,store,env,t})}
 function transcript(env,h,id,name='Conversation'){const folder=configFiles(h,env).transcripts;mkdirSync(folder,{recursive:true});const path=join(folder,id+'.jsonl');const header=h==='codex'?{type:'session_meta',payload:{id}}:{sessionId:id,type:'custom-title',customTitle:name};writeFileSync(path,[header,...Array.from({length:8},(_,i)=>({role:i%2?'assistant':'user',content:name+' decision '+i,sessionId:id}))].map(x=>JSON.stringify(x)).join('\n')+'\n');return path}
 test('real CLI IDs survive policy and workers, dangerous model strings fail',fixture(({store})=>{for(const model of ['opus[1m]','claude-fable-5-1[1m]','tianyi/glm-5.3-oc','opencode-go/deepseek-v4.1-flash']){assert.equal(validModel(model),true);store.setGlobalSetting('cli',model);assert.equal(store.globalSetting().model,model)}for(const model of ['--flag','$(whoami)','a b','a;cmd','a\nfoo'])assert.equal(validModel(model),false)}))
 test('local conversations page by harness and index only a selected identity',fixture(async({env,store})=>{
@@ -28,7 +28,7 @@ test('local conversations page by harness and index only a selected identity',fi
  assert.throws(()=>indexLocalConversation(store,'claude-code',selected.key,{env}),/no longer available/)
  assert.throws(()=>indexLocalConversation(store,'codex','../../secrets',{env}),/Invalid/)
  assert.equal(localConversations(store,'claude-code',{env}).conversations[0].name,'Name C')
- store.setGlobalSetting('agent');const {work}=await call(store,'lcm_summary_work',{session:saved.session});assert.ok(work);assert.equal((await call(store,'lcm_save_summary',{session:saved.session,batch_id:work.batch_id,summary:'This indexed conversation contains eight factual decision records.'})).saved,true)
+ store.setGlobalSetting('agent');const {work}=await call(store,'lcm_summary_task',{conversation:saved.session});assert.ok(work);assert.equal((await call(store,'lcm_summary_submit',{conversation:saved.session,batch_id:work.batch_id,summary:'This indexed conversation contains eight factual decision records.'})).saved,true)
  assert.equal(store.doctor(saved.session).issues.length,0)
 }))
 test('local scanning does not follow symlink files or directories',{skip:process.platform==='win32'},fixture(({env,dir,store})=>{const root=configFiles('codex',env).transcripts;mkdirSync(root,{recursive:true});const outside=join(dir,'outside');mkdirSync(outside);writeFileSync(join(outside,'secret.jsonl'),'{}\n');symlinkSync(outside,join(root,'link'));symlinkSync(join(outside,'secret.jsonl'),join(root,'secret.jsonl'));assert.equal(localConversations(store,'codex',{env}).total,0)}))
@@ -52,17 +52,26 @@ test('Claude catalog sends initialize only and strips hooks, prompts and tools',
  const models=await claudeModels({spawnProcess,env:{ANTHROPIC_API_KEY:'secret'}});assert.deepEqual(models,[{value:'runtime-only'}]);assert.equal(JSON.parse(input).request.subtype,'initialize');assert.equal(input.includes('"type":"user"'),false);assert.ok(seen.args.includes('--no-session-persistence'));assert.ok(seen.args.includes('{"disableAllHooks":true}'));assert.equal(seen.options.env.ANTHROPIC_API_KEY,undefined)
 })
 test('authenticated Web workflow detects, indexes, pages nodes and gates setup',fixture(async({env,store})=>{
- transcript(env,'codex','web','Web Local');const web=await startWeb({store:new ClaudeStore(store.dir),env,discovery:async()=>[{harness:'codex',supported:true,detected:true}],catalog:async()=>({models:[{id:'runtime-only'}],status:'live'})});const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token};const post=(path,data)=>fetch(base+path,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(data)})
+ transcript(env,'codex','web','Web Local');const spawned=[];const web=await startWeb({store:new ClaudeStore(store.dir),env,discovery:async()=>[{harness:'codex',supported:true,detected:true}],catalog:async()=>({models:[{id:'runtime-only'}],status:'live'}),spawnWorker:(...args)=>{spawned.push(args);return {unref(){}}}});const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token};const post=(path,data)=>fetch(base+path,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(data)})
  try {
   assert.equal((await fetch(base+'/api/local-conversations?harness=codex')).status,401)
   const rows=await fetch(base+'/api/local-conversations?harness=codex',{headers}).then(r=>r.json());assert.equal(rows.total,1);assert.equal(store.sources().length,0)
   const result=await post('/api/index-local',{harness:'codex',key:rows.conversations[0].key}).then(r=>r.json());assert.equal(result.source.conversation_id,'web');assert.equal(result.summary_count,0)
-  const stats=await fetch(base+'/api/statistics',{headers}).then(r=>r.json());assert.equal(stats.sessions,1);assert.equal(stats.summaries,0)
-  assert.equal((await fetch(base+'/api/sessions?harness=claude-code',{headers}).then(r=>r.json())).total,0)
+  const list=await fetch(base+'/api/conversations',{headers}).then(r=>r.json());assert.equal(list.total,1);assert.deepEqual(list.groups.map(g=>g.harness),['codex'])
+  assert.equal((await fetch(base+'/api/conversations?harness=claude-code',{headers}).then(r=>r.json())).total,0)
+  const detail=await fetch(base+'/api/conversation?session='+result.session,{headers}).then(r=>r.json());assert.equal(detail.summary_count,0);assert.deepEqual(detail.bands,[]);assert.equal(detail.summarizing,false)
+  const events=await fetch(base+'/api/events?session='+result.session+'&from=0&to=5',{headers}).then(r=>r.json());assert.ok(events.events.length>0)
+  const handoff=await fetch(base+'/api/continue?session='+result.session,{headers}).then(r=>r.json());assert.match(handoff.line,/#[0-9a-f]{5}/);assert.match(handoff.packet.content,/No summaries yet/)
+  assert.equal((await post('/api/rename',{session:result.session,name:'Renamed'})).status,200);assert.equal(store.metadata(result.session).name,'Renamed')
+  assert.ok((await fetch(base+'/api/search?q=Renamed',{headers}).then(r=>r.json())).conversations.length)
+  assert.equal((await post('/api/tuning',{target_chars:24000,batch_size:64,fanout:6})).status,200);assert.equal(store.tuning().fanout,6)
+  assert.equal((await post('/api/tuning',{target_chars:7,batch_size:64,fanout:6})).status,400)
+  assert.equal((await post('/api/summarize',{session:result.session,backend:'api'})).status,400)
+  assert.equal((await post('/api/summarize',{session:result.session,backend:'cli'}).then(r=>r.json())).started,true);assert.deepEqual(spawned[0][1].slice(1),['summarize',result.session,'--backend','cli'])
   assert.equal((await post('/api/setup-apply',{harness:'codex',revision:'fake'})).status,400)
   assert.equal((await fetch(base+'/api/models?backend=cli',{headers}).then(r=>r.json())).models[0].id,'runtime-only')
   assert.equal((await post('/api/index-local',{harness:'codex',key:'not-a-local-selection'})).status,400)
-  assert.equal((await fetch(base+'/api/summary-nodes?session='+result.session,{headers}).then(r=>r.json())).total,0)
+  assert.equal((await fetch(base+'/api/statistics',{headers})).status,404)
  }finally{await web.close()}
 }))
 

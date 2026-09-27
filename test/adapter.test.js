@@ -25,6 +25,7 @@ import { codexTranscript, codexSessionKey } from '../src/codex.js'
 const fixture = fn => async t => {
   const dir=mkdtempSync(join(tmpdir(),'superlcm-claude-'))
   const store=new ClaudeStore(join(dir,'private'))
+  store.db.prepare('INSERT INTO summary_tuning VALUES(1,12000,8,4)').run()
   t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true})})
   await fn({dir,store,t})
 }
@@ -50,7 +51,7 @@ test('incremental ingest, layered nodes, exact pagination and idempotence',fixtu
   appendFileSync(source,'}\n')
   assert.equal(store.ingest('session1',source).added,1)
   assert.equal(store.exact('session1',16),'{"type":"assistant"}\n')
-  assert.equal((await call(store,'lcm_read_event',{session:'session1',ordinal:16})).content,'{"type":"assistant"}\n')
+  assert.equal((await call(store,'lcm_read',{conversation:'session1',from:16})).chunks[0].content,'{"type":"assistant"}\n')
 }))
 test('reject source changes, enforce private exact source, import text',fixture(async ({dir,store})=>{
   const src=join(dir,'conversation.txt')
@@ -72,11 +73,11 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.ok((await send({jsonrpc:'2.0',id:1,method:'server/discover',params:{_meta:meta}})).result.supportedVersions.includes('2026-07-28'))
   assert.equal((await send({jsonrpc:'2.0',id:2,method:'initialize',params:{protocolVersion:'2025-11-25'}})).result.protocolVersion,'2025-11-25')
   assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
-  assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_sessions',arguments:{}}})).result.isError,undefined)
+  assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_find',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
-  assert.equal(tools.length,18)
-  assert.equal(tools.filter(tool=>['lcm_summary_work','lcm_save_summary'].includes(tool.name)).length,2)
-  assert.deepEqual(await call(store,'lcm_sessions'),{sessions:[],total:0,next_offset:null})
+  assert.equal(tools.length,6)
+  assert.deepEqual((await send({jsonrpc:'2.0',id:6,method:'tools/list',params:{}})).result.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read'],'summary tools hidden unless in-conversation summaries are enabled')
+  assert.deepEqual(await call(store,'lcm_find'),{conversations:[],total:0})
   input.end();await new Promise(r=>server.once('close',r));lines.close()
 }))
 
@@ -92,19 +93,19 @@ test('any MCP client reads a chosen Claude conversation without merging other su
   assert.equal((await buildHierarchy(store,'codex-conversation',{model:'fake',summarize:async()=> 'Codex-only findings'})).created,1)
   const client=new ClaudeStore(store.dir)
   try {
-    const claudeOnly=await call(client,'lcm_sessions',{harness:'claude-code',limit:1})
-    assert.equal(claudeOnly.total,1);assert.equal(claudeOnly.sessions[0].session,'claude-conversation')
-    assert.equal(claudeOnly.sessions[0].summary_count,5);assert.match(claudeOnly.sessions[0].first_message,/alpha project/)
-    const all=await call(client,'lcm_sessions',{limit:1})
-    assert.equal(all.total,2);assert.equal(all.next_offset,1)
-    assert.equal((await call(client,'lcm_sessions',{limit:1,offset:1})).sessions.length,1)
-    let page=await call(client,'lcm_summaries',{session:'claude-conversation',limit:2})
-    assert.equal(page.total,5);assert.equal(page.nodes.length,2);assert.equal(page.next_offset,2)
-    const ids=new Set(page.nodes.map(n=>n.id))
-    while(page.next_offset!==null){page=await call(client,'lcm_summaries',{session:'claude-conversation',limit:2,offset:page.next_offset});page.nodes.forEach(n=>ids.add(n.id))}
-    assert.equal(ids.size,5)
-    assert.equal((await call(client,'lcm_summaries',{session:'codex-conversation'})).total,1)
-    assert.equal(client.search('claude-conversation','Codex-only').nodes.length,0)
+    const claudeOnly=await call(client,'lcm_find',{harness:'claude-code'})
+    assert.equal(claudeOnly.total,1);assert.equal(claudeOnly.conversations[0].session,'claude-conversation')
+    assert.equal(claudeOnly.conversations[0].summary_count,5)
+    assert.equal((await call(client,'lcm_find',{limit:1})).total,2)
+    const top=await call(client,'lcm_outline',{conversation:'claude-conversation'})
+    assert.equal(top.nodes.length,1);assert.equal(top.nodes[0].level,1);assert.equal(top.unsummarized,null)
+    const children=await call(client,'lcm_outline',{conversation:'claude-conversation',node:top.nodes[0].id})
+    assert.equal(children.nodes.length,4)
+    const leaf=await call(client,'lcm_outline',{conversation:'claude-conversation',node:children.nodes[0].id})
+    assert.equal(leaf.events.length,8);assert.match(leaf.events[0].preview,/alpha project/)
+    assert.equal((await call(client,'lcm_outline',{conversation:'codex-conversation'})).nodes.length,1)
+    assert.equal((await call(client,'lcm_find',{conversation:'claude-conversation',query:'Codex-only'})).summaries.length,0)
+    assert.equal((await call(client,'lcm_find',{query:'Codex-only'})).summaries.length,1)
     assert.match(client.readEvent('claude-conversation',0).content,/alpha project/)
     assert.throws(()=>client.setOrigin('claude-conversation','codex'),/different harness/)
   } finally {client.close()}
@@ -126,7 +127,7 @@ test('Claude custom title outranks AI title and user-derived text',fixture(async
   store.ingest('claude-9',file)
   assert.equal(store.nativeClaudeTitle('claude-9'),'My named discussion')
   store.setMetadata('claude-9',{harness:'claude-code',externalId:'claude-9',name:store.nativeClaudeTitle('claude-9'),nameSource:'native'})
-  assert.equal((await call(store,'lcm_resolve_session',{name_or_id:'My named discussion'})).matches[0].session,'claude-9')
+  assert.equal((await call(store,'lcm_find',{query:'My named discussion'})).conversations[0].session,'claude-9')
   store.nameSession('claude-9','Manual override')
   store.setMetadata('claude-9',{harness:'claude-code',externalId:'claude-9',name:store.nativeClaudeTitle('claude-9'),nameSource:'native'})
   assert.equal(store.metadata('claude-9').name,'Manual override')
@@ -150,12 +151,13 @@ test('Codex Stop hook indexes local rollout with native title and exact source I
     const meta=store.metadata('codex-thr_42')
     assert.deepEqual({harness:meta.harness,conversation_id:meta.conversation_id,name:meta.name,name_source:meta.name_source},{harness:'codex',conversation_id:'thr_42',name:'Named research thread',name_source:'native'})
     assert.equal(store.eventRows('codex-thr_42').length,8)
-    assert.equal((await call(store,'lcm_resolve_session',{name_or_id:'Named research thread',harness:'codex'})).matches[0].session,'codex-thr_42')
-    assert.equal((await call(store,'lcm_resolve_session',{name_or_id:'thr_42'})).matches[0].session,'codex-thr_42')
+    assert.equal((await call(store,'lcm_find',{query:'Named research thread',harness:'codex'})).conversations[0].session,'codex-thr_42')
+    assert.equal(store.resolveOne('thr_42'),'codex-thr_42')
+    assert.equal(store.resolveOne('#'+store.metadata('codex-thr_42').code),'codex-thr_42')
     assert.equal(store.nameSession('codex-thr_42','My renamed thread').name_source,'manual')
   } finally {store.close()}
   const again=run('PostCompact');assert.equal(again.status,0,again.stderr)
-  const compact=run('SessionStart');assert.equal(compact.status,0,compact.stderr);assert.match(compact.stdout,/SuperLcm session codex-thr_42/)
+  const compact=run('SessionStart');assert.equal(compact.status,0,compact.stderr);assert.match(compact.stdout,/all 8 original records are preserved as #[0-9a-f]{5}/)
   const final=new ClaudeStore(dbPath);assert.equal(final.metadata('codex-thr_42').name,'My renamed thread');final.close()
   const outside=join(dir,'outside.jsonl');writeFileSync(outside,'{"role":"user","content":"private"}\n')
   assert.notEqual(run('Stop',outside).status,0)
@@ -193,12 +195,12 @@ test('duplicate names remain ambiguous; source identity is returned with summary
     importFile(store,path,session,'other','Shared title')
     await buildHierarchy(store,session,{model:'test',summarize:async()=> 'A deliberately separate summary'})
   }
-  const found=await call(store,'lcm_resolve_session',{name_or_id:'Shared title'})
-  assert.equal(found.ambiguous,true);assert.equal(found.matches.length,2)
-  const page=await call(store,'lcm_summaries',{session:'one'})
+  assert.equal((await call(store,'lcm_find',{query:'Shared title'})).conversations.length,2)
+  await assert.rejects(call(store,'lcm_outline',{conversation:'Shared title'}),/matches 2 conversations/)
+  const page=await call(store,'lcm_outline',{conversation:'one'})
   assert.equal(page.source.name,'Shared title');assert.equal(page.source.harness,'other');assert.equal(page.nodes.length,1)
   assert.equal(page.nodes[0].summary,'A deliberately separate summary')
-  assert.equal((await call(store,'lcm_summaries',{session:'two'})).source.conversation_id,'two')
+  assert.equal((await call(store,'lcm_outline',{conversation:'#'+store.metadata('two').code})).source.conversation_id,'two')
 }))
 test('global defaults and per-harness overrides persist without a conversation selector',fixture(async ({dir,store})=>{
   for(const [id,harness] of [['a','claude-code'],['b','codex']]){const file=join(dir,id+'.txt');writeFileSync(file,'A user decision\n');importFile(store,file,id,harness)}
@@ -261,39 +263,38 @@ test('metadata-only Codex batches never invoke a summary model',fixture(async ({
   assert.equal(result.created,0);assert.equal(called,0)
   assert.equal(store.summaries('metadata-session').total,0)
 }))
-test('MCP directly imports context and target hook issues a bounded delivery',fixture(async ({dir,store})=>{
-  const file=join(dir,'source.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'source decision '+i+'\n').join(''))
+test('lcm_continue hands off outline, recent originals and how to verify, with or without summaries',fixture(async ({dir,store})=>{
+  const file=join(dir,'source.txt');writeFileSync(file,Array.from({length:37},(_,i)=>'source decision '+i+'\n').join(''))
   importFile(store,file,'source-A','claude-code','Architecture A')
   await buildHierarchy(store,'source-A',{model:'mock',summarize:async()=> 'We decided to preserve original evidence across harnesses.'})
-  const home=join(dir,'codex-home'),sessions=join(home,'sessions'),targetFile=join(sessions,'target.jsonl');mkdirSync(sessions,{recursive:true});writeFileSync(targetFile,JSON.stringify({role:'user',content:'Continue B'})+'\n')
-  store.ingest('codex-thr_B',targetFile);store.setMetadata('codex-thr_B',{harness:'codex',externalId:'thr_B',name:'Conversation B'})
-  const direct=await call(store,'lcm_context',{session:'source-A'});assert.match(direct.content,/preserve original evidence/)
-  await assert.rejects(call(store,'lcm_enqueue_context',{source:'source-A',target:'codex-thr_B'}),/disabled/)
-  const oldGate=process.env.SUPERLCM_ALLOW_MCP_DELIVERY;process.env.SUPERLCM_ALLOW_MCP_DELIVERY='1'
-  try {
-    const queued=await call(store,'lcm_enqueue_context',{source:'source-A',target:'codex-thr_B'});assert.equal(queued.status,'pending')
-    assert.equal((await call(store,'lcm_enqueue_context',{source:'source-A',target:'codex-thr_B'})).deduplicated,true)
-  } finally { if(oldGate===undefined)delete process.env.SUPERLCM_ALLOW_MCP_DELIVERY;else process.env.SUPERLCM_ALLOW_MCP_DELIVERY=oldGate }
-  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),env={...process.env,CODEX_HOME:home,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'off'}
-  const result=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_B',transcript_path:null,cwd:dir,hook_event_name:'UserPromptSubmit',prompt:'Find A'}),encoding:'utf8',env,timeout:15000})
-  assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/SuperLcm delivery #/);assert.match(result.stdout,/Architecture A/)
-  assert.ok(store.deliveries()[0].issued_at);assert.equal(store.pendingFor('codex','thr_B').length,0)
+  const code=store.metadata('source-A').code
+  const packet=await call(store,'lcm_continue',{conversation:'Architecture A'})
+  assert.equal(packet.records,37);assert.equal(packet.summarized_to,32)
+  assert.match(packet.content,new RegExp('#'+code))
+  assert.match(packet.content,/preserve original evidence/)
+  assert.match(packet.content,/Records #32–#36 are not summarized yet/)
+  assert.match(packet.content,/\[#36\] source decision 36/)
+  assert.match(packet.content,/lcm_read/)
+  const bare=join(dir,'bare.txt');writeFileSync(bare,'only raw 1\nonly raw 2\n');importFile(store,bare,'bare-B','codex','Bare B')
+  const raw=await call(store,'lcm_continue',{conversation:'#'+store.metadata('bare-B').code})
+  assert.match(raw.content,/No summaries yet/);assert.match(raw.content,/only raw 2/)
+  await assert.rejects(call(store,'lcm_continue',{conversation:'missing'}),/No conversation matches/)
 }))
 test('main-agent summary mode requires explicit opt-in and exact unchanged source',fixture(async ({dir,store})=>{
   const file=join(dir,'agent.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'agent decision '+i+'\n').join(''))
   importFile(store,file,'agent-A','codex','Agent authored A')
-  await assert.rejects(call(store,'lcm_summary_work',{session:'agent-A'}),/disabled/)
+  await assert.rejects(call(store,'lcm_summary_task',{conversation:'agent-A'}),/not enabled/)
   store.setGlobalSetting('off');store.setHarnessSetting('codex','agent');store.setPreference('agent-A','off')
   assert.equal(store.effectiveSetting('agent-A').mode,'agent')
-  const work=(await call(store,'lcm_summary_work',{session:'agent-A'})).work
+  const work=(await call(store,'lcm_summary_task',{conversation:'agent-A'})).work
   assert.ok(work.batch_id);assert.equal(work.level,0)
-  const saved=await call(store,'lcm_save_summary',{session:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'})
+  const saved=await call(store,'lcm_summary_submit',{conversation:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'})
   assert.equal(saved.saved,true);assert.equal(store.summaries('agent-A').nodes[0].model,'mcp-agent')
-  await assert.rejects(call(store,'lcm_save_summary',{session:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'}),/Stale/)
+  await assert.rejects(call(store,'lcm_summary_submit',{conversation:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'}),/Stale/)
   const another=join(dir,'tamper.txt');writeFileSync(another,Array.from({length:8},(_,i)=>'before '+i+'\n').join(''));importFile(store,another,'tamper-A','codex')
-  const pending=(await call(store,'lcm_summary_work',{session:'tamper-A'})).work
+  const pending=(await call(store,'lcm_summary_task',{conversation:'tamper-A'})).work
   const bound=store.source('tamper-A').path;const bytes=readFileSync(bound);bytes[3]=bytes[3]===65?66:65;writeFileSync(bound,bytes)
-  await assert.rejects(call(store,'lcm_save_summary',{session:'tamper-A',batch_id:pending.batch_id,summary:'This should not persist with a changed original.'}),/changed/)
+  await assert.rejects(call(store,'lcm_summary_submit',{conversation:'tamper-A',batch_id:pending.batch_id,summary:'This should not persist with a changed original.'}),/changed/)
 }))
 test('Codex CLI backend strips API credentials and captures final JSONL item',fixture(async ({dir})=>{
   let seen
@@ -315,38 +316,36 @@ test('Codex pre-turn hook indexes and current agent saves without MCP import per
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),env={...process.env,CODEX_HOME:home,SUPERLCM_HOME:store.dir}
   const input={session_id:'thr_pre_turn',transcript_path:file,cwd:dir,hook_event_name:'UserPromptSubmit',prompt:'Please write a summary'}
   const hook=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify(input),encoding:'utf8',env,timeout:15000})
-  assert.equal(hook.status,0,hook.stderr);assert.match(hook.stdout,/lcm_summary_work/)
+  assert.equal(hook.status,0,hook.stderr);assert.match(hook.stdout,/lcm_summary_task/)
   const session='codex-thr_pre_turn';assert.equal(store.listSessions(5,0,'codex').total,1)
   assert.equal(store.eventRows(session).length,8)
-  const {work}=await call(store,'lcm_summary_work',{session});assert.ok(work?.batch_id)
-  const result=await call(store,'lcm_save_summary',{session,batch_id:work.batch_id,summary:'The active session discussed eight events and retained their exact source references.'});assert.equal(result.saved,true)
+  const {work}=await call(store,'lcm_summary_task',{conversation:session});assert.ok(work?.batch_id)
+  const result=await call(store,'lcm_summary_submit',{conversation:session,batch_id:work.batch_id,summary:'The active session discussed eight events and retained their exact source references.'});assert.equal(result.saved,true)
   assert.equal(store.summaries(session).total,1)
-  await assert.rejects(call(store,'lcm_import',{path:file}),/disabled/,'file import remains separately gated')
+  await assert.rejects(call(store,'lcm_import',{path:file}),/Unknown tool/,'file import is CLI-only')
 }))
 test('Codex UserPromptSubmit nudges opted-in agent without a transcript path',fixture(async ({dir,store})=>{
   const file=join(dir,'agent-prompt.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
   store.ingest('codex-thr_agent',file,'text');store.setMetadata('codex-thr_agent',{harness:'codex',externalId:'thr_agent'});store.setGlobalSetting('off');store.setHarnessSetting('codex','agent')
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_agent',transcript_path:null,cwd:dir,hook_event_name:'UserPromptSubmit'}),encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir},timeout:15000})
-  assert.equal(r.status,0,r.stderr);assert.match(r.stdout,/lcm_summary_work/);assert.equal(store.summaries('codex-thr_agent').total,0)
+  assert.equal(r.status,0,r.stderr);assert.match(r.stdout,/lcm_summary_task/);assert.equal(store.summaries('codex-thr_agent').total,0)
 }))
-test('8790-inspired Web markup keeps strict-token script syntactically valid',()=>{
+test('Web console page inlines a syntactically valid script with the new views',()=>{
   const html=webPage('demo-token','nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
-  assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/#f0eee6/);assert.match(html,/--accent:#d97757/)
-  assert.match(html,/<nav class="side-nav"/);assert.equal((html.match(/data-view-panel="/g)||[]).length,4)
-  assert.match(html,/\.nav-link:hover i,\.nav-link.active i\{background:var\(--accent\);border-color:var\(--accent\)\}/);assert.doesNotMatch(html,/\.nav-link:hover\{color:/);assert.doesNotMatch(html,/\.nav-link.active\{background:/);assert.match(html,/\.side-nav\{display:grid;align-content:start;gap:16px\}/)
-  assert.match(html,/\.chapter\[hidden\]/);assert.match(html,/<aside class="intro"><h1>SuperLcm<\/h1>/)
-  for(const label of ['对话索引','对话导入','模型设置','MCP连接'])assert.match(html,new RegExp('>'+label+'<'))
-  assert.doesNotMatch(html,/<span class="n">|nav-caption|brand-version|WORKSPACE|LOCAL CONTROL|id="modeSession"|本页有摘要/);assert.match(html,/\['摘要',counts.summaries/)
-  assert.doesNotMatch(html,/<datalist/);assert.match(html,/data-role=\"model-choice\"/);assert.match(html,/data-role=\"api-key\"/);assert.match(html,/data-role=\"provider\"/)
+  assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/--accent: #C96442/)
+  for(const view of ['conversations','connect','settings'])assert.match(html,new RegExp('id="view-'+view+'"'))
+  for(const label of ['对话','接入','设置','摘要生成方式','摘要粒度'])assert.match(html,new RegExp('>'+label+'<'))
+  assert.match(js,/对话内生成/);assert.match(js,/function boot\(/);assert.doesNotMatch(html,/lcm_sessions|lcm_deliver|当前会话 AI/)
 })
 test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
   const web=await startWeb({store:new ClaudeStore(store.dir),discovery:async()=>[{harness:'codex',detected:true,configured:true}]})
   try {
-    const initial=await fetch(web.url),html=await initial.text();assert.match(html,/<title>SuperLcm<\/title>/);assert.match(html,/#f0eee6/)
+    const initial=await fetch(web.url),html=await initial.text();assert.match(html,/<title>SuperLcm<\/title>/)
     const cookie=initial.headers.get('set-cookie');assert.match(cookie,/HttpOnly/);assert.equal((await fetch(new URL(web.url).origin+'/',{headers:{Cookie:cookie.split(';')[0]}})).status,200)
     const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token}
-    assert.equal((await fetch(base+'/api/state')).status,401)
-    assert.equal((await fetch(base+'/api/state',{headers})).status,200)
+    assert.equal((await fetch(base+'/api/conversations')).status,401)
+    assert.equal((await fetch(base+'/api/conversations',{headers})).status,200)
+    assert.equal((await fetch(base+'/api/state',{headers})).status,404)
     const original=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.equal(typeof original.global.mode,'string')
     const saved=await fetch(base+'/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify({scope:'global',mode:'off'})});assert.equal(saved.status,200);assert.equal(store.globalSetting().mode,'off')
     store.markClient('codex','hook')
@@ -430,7 +429,7 @@ test('background summary refuses changed original before any model call',fixture
 test('CLI mode never injects agent writing prompts and worker hooks do not recurse',fixture(async ({dir})=>{
   const config=join(dir,'claude-config'),projects=join(config,'projects'),db=join(dir,'hook-index')
   mkdirSync(projects,{recursive:true});const src=join(projects,'hook.jsonl')
-  writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
+  writeFileSync(src,Array.from({length:32},(_,i)=>line(i)).join(''))
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
   const env={...process.env,CLAUDE_CONFIG_DIR:config,SUPERLCM_CLAUDE_HOME:db,SUPERLCM_SUMMARY_MODE:'cli'}
   delete env.SUPERLCM_ANTHROPIC_API_KEY;delete env.SUPERLCM_CLAUDE_MODEL
@@ -439,7 +438,7 @@ test('CLI mode never injects agent writing prompts and worker hooks do not recur
   assert.equal(prompt.status,0,prompt.stderr);assert.equal(prompt.stdout,'')
   const nested=run({hook_event_name:'Stop'},{SUPERLCM_CLI_WORKER:'1'})
   assert.equal(nested.status,0,nested.stderr);assert.equal(nested.stdout,'')
-  const check=new ClaudeStore(db);assert.equal(check.sources().length,1);assert.equal(check.eventRows('hook-session').length,8);assert.equal(check.summaries('hook-session').total,0);check.close()
+  const check=new ClaudeStore(db);assert.equal(check.sources().length,1);assert.equal(check.eventRows('hook-session').length,32);assert.equal(check.summaries('hook-session').total,0);check.close()
   env.SUPERLCM_SUMMARY_MODE='api';env.SUPERLCM_ANTHROPIC_API_KEY='test-not-used'
   const missingModel=run({hook_event_name:'Stop'})
   assert.equal(missingModel.status,0,missingModel.stderr);assert.match(missingModel.stderr,/api mode needs/)
@@ -463,3 +462,13 @@ test('mode defaults to CLI and preserves explicit agent or API choice',()=>{
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'agent')
   assert.equal(subscriptionEnv({ANTHROPIC_API_KEY:'secret',SUPERLCM_CLI_WORKER:'0'}).SUPERLCM_CLI_WORKER,'1')
 })
+test('merge work is planned as soon as four summaries exist, before the next raw batch',fixture(async ({dir,store})=>{
+  const src=join(dir,'long.jsonl');writeFileSync(src,Array.from({length:48},(_,i)=>line(i)).join(''))
+  store.ingest('long',src);store.setGlobalSetting('agent')
+  const levels=[]
+  for(let i=0;i<7;i++){const {work}=await call(store,'lcm_summary_task',{conversation:'long'});if(!work)break;levels.push(work.level);await call(store,'lcm_summary_submit',{conversation:'long',batch_id:work.batch_id,summary:'Summary of level '+work.level+' covering '+work.first+'-'+work.last})}
+  assert.deepEqual(levels,[0,0,0,0,1,0,0],'fifth task merges before summarizing records 32-47')
+  const outline=store.outline('long');assert.deepEqual(outline.nodes.map(n=>n.level),[1,0,0]);assert.equal(outline.unsummarized,null)
+  assert.throws(()=>store.setTuning({target_chars:100,batch_size:8,fanout:4}),/Unsupported/)
+  assert.equal(store.setTuning({target_chars:24000,batch_size:64,fanout:6}).fanout,6)
+}))

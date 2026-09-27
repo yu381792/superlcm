@@ -1,66 +1,40 @@
-# Console contract and acceptance
+# Local console
 
-## One inventory, four views
+`node src/cli.js web [port]` prints a one-time `http://127.0.0.1:<port>/?token=…` URL. The server binds only to 127.0.0.1, sets an HttpOnly cookie from the token, requires the bearer token on every API call, refuses cross-origin writes, and serves a strict CSP (inline script by nonce, images only as `data:`). Opening the page never calls a model.
 
-All pages share local harness detection: executable, version, configuration, transcript source and capabilities. Installed, configured, historical activity and protocol success are separate facts. No claim of exhaustive detection of every possible agent product.
+## 对话 (Conversations)
 
-| Harness | Detect | Select local conversations | Guided MCP + hooks |
-|---|---|---|---|
-| Codex | CLI/config/root | Native JSONL pointers | Yes; native /hooks review required |
-| Claude Code / Desktop Code Local | CLI/config/root | Native JSONL pointers | Yes; host permissions retained |
-| Hermes | CLI/config/SQLite | Immutable selected visible-message snapshot | Not implemented; clearly labelled |
-| Pi | CLI/config/session root | Latest-leaf ancestry snapshot, no branch mixing | Not implemented; clearly labelled |
-| OpenCode / Gemini | Known executable | Not implemented | Not implemented |
+The list shows every stored conversation, newest activity first, with its tool logo, record count, last update and summary coverage. Filter chips are built from the tools that actually have conversations. The search box (shortcut `/`) matches conversation names, `#codes`, summaries and original text (substring match, works for Chinese).
 
-Remote/cloud/SSH history is not on this machine. Any configured MCP client can read the shared index, but this does not provide universal auto-capture.
+The detail view shows:
 
-## 对话索引
+- **摘要层级** — one lane per summary level plus the raw-record lane. Higher-level segments are clickable and jump to that summary. The hatched tail is records not yet summarized; their originals are still readable.
+- **摘要目录** — the top-level summaries (nodes not yet merged upward). Higher nodes expand into their children; first-level nodes open the original records.
+- **原文 drawer** — the exact records for a range, with tool calls and system records collapsed. This is the same text `lcm_read` returns.
+- **Notices** — when in-conversation summaries fall far behind, or a conversation has none, buttons start a one-off background pass with the Claude or Codex subscription CLI (`POST /api/summarize`, which spawns `cli.js summarize … --backend`). The view polls while a pass holds the summary lease.
+- **接续到其他工具** — pick a target tool and copy the one-line handoff (or a terminal command). The packet preview shows exactly what `lcm_continue` returns.
+- **重命名** — a manual name that later hook updates do not overwrite.
 
-Group by source harness, retain original names/IDs, page stored nodes and verify original pointers. Statistics count actual nodes across the index. Having raw records does not mean having a summary. Hermes/Pi content versions are distinct snapshots; ambiguous IDs/versions require selection.
+## 接入 (Connect)
 
-## 对话导入
+One card per detected tool. The status comes from real evidence: configuration match, then whether a SuperLcm MCP process loaded, then whether the AI has actually called a tool. **接入** opens a dialog that previews the files it will change, applies only after confirmation (official CLI registration + hook merge, with private backups), reads the config back, and runs a load check. Claude is checked by an ephemeral `claude` process that reports `mcp_status` without any prompt; Codex by a protocol and hook self-test. Codex still needs its native `/hooks` trust review.
 
-This means **an already-indexed conversation → another conversation context**, never discovery/import of arbitrary current CLI history. Selectors use saved index identities; the source and destination DAGs remain independent.
+Tools without automatic capture (Hermes, Pi) and past conversations of any supported tool can be imported from **导入本机的历史对话**; only the selected conversation is read, and no model is called.
 
-1. Select a source harness and saved source conversation, preview its source-labelled summary navigation, then choose an indexed destination.
-2. Choose hook receipt (Claude/Codex) or explicit target MCP receipt. Confirmation stores an immutable bounded navigation packet and returns pending, not imported/consumed success.
-3. Hooks offer the packet on the next prompt/start. Alternatively the target agent calls `lcm_receive_context` with its exact target ID. Receipts distinguish pending, hook-issued and MCP-received; no receipt proves comprehension.
-4. A current/new conversation absent from the target list can call `lcm_context` with the source ID using the generated instruction. Complete summaries and originals remain accessible via paginated tools; the initial packet is bounded navigation, not a full transcript dump.
+## 设置 (Settings)
 
-Native collection is now under **对话索引 → 采集管理**. It runs only after an explicit scan action. Opening 对话导入 sends no native scan or ingestion request. The arbitrary-file `lcm_import` allowlist is separate.
+- **摘要生成方式** — 对话内生成 (the conversation's own AI, via `lcm_summary_task`/`lcm_summary_submit`), Claude 订阅, Codex 订阅, 自定义 API, or 关闭. CLI modes list models from the installed CLI's own catalog. API keys are write-only and stored outside SQLite.
+- **摘要粒度** — first-level segment size (6k / 12k / 24k characters), maximum messages per segment (16 / 32 / 64), and merge width (3 / 4 / 6). Changes apply to new summaries only.
+- **按工具设置** — per-tool overrides of the default writer.
+- Palette (陶橙 default, 松石, 靛青, 石墨) and light/dark follow-system are stored per browser.
 
-## 模型设置
+## How summaries grow
 
-Harness override → global default → environment fallback; no per-conversation policy.
-
-- Codex: actual debug models response. Cache fallback is marked cached, not live; hidden entries stay hidden.
-- Claude: initialize.models control response only, without user prompts, inference, tools, hooks, MCP servers or persisted model sessions. Help examples are not a model directory.
-- Preserve actual IDs including provider/model and opus[1m]; show Claude resolvedModel aliases.
-- Catalog response is not entitlement or inference success. Isolated workers may not inherit user custom-provider routes; do not promise all listed models work through a subscription.
-- API fields include protocol, endpoint, model ID and a write-only scoped key. Saving never invokes a model.
-
-## MCP连接 and installation
-
-Clicking **连接** opens a visible modal immediately: loading, errors, paths, confirmation, verification and next steps. No below-fold hidden confirmation. The official CLI writes configuration only after confirmation, with private backups; setup reads it back before readiness. Stale/conflicting previews still fail closed and preserve unrelated settings and native trust.
-
-Claude verification launches a real ephemeral Claude CLI and sends only control `initialize` and `mcp_status`; Claude must report SuperLcm connected. No user prompt, inference, hooks or persistent conversation. This proves a fresh runtime can load the configuration, not that previously opened sessions reloaded it. Codex protocol/hook fixture checks remain labelled self-tests.
-
-Independently observe MCP initialization, live server heartbeats, successful tools/call and connection closure. Diagnostic peers are excluded. Names are self-reported, not authenticated host identity. Existing clients may require /mcp or a new local Code session; native Codex /hooks review remains mandatory. Old SuperLcm processes lack new heartbeat evidence until reloaded.
+The planner always merges before it summarizes new text: whenever a level has at least `fanout` adjacent nodes not yet owned by a parent, the next task is to merge them. Otherwise it closes the next first-level segment once it reaches the message or character target. Each task is verified against the original byte ranges before and after the model call, so a changed source fails closed.
 
 ## Tests
 
-    npm run validate
-    npm pack --dry-run
+    npm test
     python3 scripts/test-ui.py
 
-The default suite is offline: temporary roots and fake providers, plus actual local Node hook subprocesses. The optional browser test needs Python Playwright, Chrome and installed Codex/Claude CLIs. It reads real catalogs without inference and tests official MCP setup in temporary CLI homes; it checks user config hashes unchanged. SUPERLCM_TEST_CHROME overrides Chrome's path.
-
-Mocks/fixtures are not evidence of a live host calling summary tools or consuming context. Cross-platform CI is a release gate; one Mac run is not Windows/Linux validation. Windows .cmd CLI wrappers may require a platform-specific runner/native executable override.
-
-## Open-source scope
-
-No private paths, credentials, transcripts, account routes or trust state are distributed. Default index remains ~/.superlcm-claude for compatibility; SUPERLCM_HOME overrides it. Node >=22.16, no runtime dependencies. Source remains private until a separate release decision; no npm publication or GitHub visibility change is implied.
-
-Native Claude metadata probing can refresh its own cachedGrowthBookFeatures, cachedGrowthBookFeaturesAt and cachedExperimentData fields in .claude.json. It does not send a model prompt. The browser test compares real user settings after excluding only those observed runtime-cache fields; all MCP, hook, model and trust configuration remains included in the comparison.
-
-MCP pickup target IDs are supplied by the caller; this shared index is not a per-client access-control boundary. An MCP receipt proves a packet was claimed for that target ID, not authenticated insertion into a particular host conversation.
+`npm test` is offline (temporary indexes, fake providers, real hook subprocesses). `scripts/test-ui.py` drives the real console in headless Chrome through Playwright against a temporary fixture index, checks every view at desktop and phone width, and confirms the user's real CLI config files are unchanged.

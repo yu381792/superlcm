@@ -1,34 +1,45 @@
 # SuperLcm
 
-Cross-harness MCP companion for per-conversation layered summaries and exact-source recall.
+**Lossless, never-ending conversations across Claude Code, Codex and other MCP tools.**
 
-**让各个宿主自己管理压缩；SuperLcm 按对话保存摘要导航并找回可验证的原文。**
+**原文完整入库，分层摘要导航，随时按编号读回原文；额度用完或想换工具时，一句话在另一个工具里接着聊。**
 
-Independent MCP server for **layered conversation summaries and exact original recall**, accessible from Claude Code, Codex and other MCP clients. Each host retains control of its native context compaction; this repository does **not** replace it. It has no DeepSeek Harness dependency or DSH source files.
+Claude Code and Codex compact long conversations and lose detail. SuperLcm keeps every original record in a local index, builds a layered summary tree over it, and gives the AI in any connected tool six MCP tools to navigate that tree and read the exact originals. Native compaction stays in charge of the live context; SuperLcm makes sure nothing it drops is gone.
 
-**Claude Code CLI, Desktop Code (Local), and Codex CLI**: automatic local JSONL ingestion via their respective trusted hooks; Codex and Claude retain native compaction. **Any MCP harness** on the same local index can list sessions and read the entire paginated summary DAG of a selected conversation, including one created by Claude Code. Every saved conversation carries a source harness, original conversation ID, and a resolvable name; ambiguous names return candidates. Other harnesses can explicitly import portable JSONL or UTF-8 text; automatic capture needs a dedicated adapter. Summaries normally use an independent background worker or explicit CLI summarization: default `cli` runs logged-in `claude --print`; explicit `codex-cli` uses isolated `codex exec`; configured `SUPERLCM_ANTHROPIC_API_KEY` selects the paid `api` backend. `agent` is opt-in and advisory; `off` disables summaries. Neither main Claude nor Codex agent writes nodes unless explicitly switched to agent mode.
+- **Lossless.** Every message is stored with byte offsets and SHA-256 hashes; `lcm_read` returns the exact original text, verified against the source file.
+- **Layered summaries.** First-level summaries cover segments of the conversation (about 12,000 characters each, adjustable); every 4 adjacent summaries merge into one higher level, so a very long conversation still fits in a short outline.
+- **Switch tools mid-task.** Out of Claude quota, or want a second opinion? Open Codex and say `通过 SuperLcm 接续对话 #6e94e`. `lcm_continue` hands over the outline plus the most recent messages, and the new conversation can read any earlier detail on demand.
+- **Local only.** Node.js 22.16+, no runtime dependencies, loopback-only console, no cloud service.
 
-- Local Web control console: `node src/cli.js web` prints a one-time loopback URL; choose source/target navigation, a **global or harness-specific** summary backend (never per conversation), and verify Claude with its own runtime MCP status. Configuration, diagnostic success and observed client tool calls are distinct states. Subscription models appear in a selectable CLI-sourced list with a manual model-ID override; custom API has provider, endpoint, model ID and a write-only key. Saving never invokes a model.
-- [Setup, security, tools and limitations](./docs/SETUP.md)
-- Runtime: Node.js 22.16+, no third-party runtime dependencies.
-- Current source preview: 0.1.0-alpha.12. See the capability/test matrix; metadata checks do not prove inference or live host consumption.
-
-## Quick local setup
-
-With Node.js >=22.16, run from this repository:
+## Quick start
 
     node src/cli.js web
 
-Open the printed URL → MCP连接 → choose a detected harness → 连接. A visible dialog previews the change, asks for confirmation, writes/verifies configuration, and shows runtime checks plus any required reload/trust steps. No agent must hand-edit hooks. Terminal equivalent:
+Open the printed URL, then:
 
-    node src/cli.js doctor-local
-    node src/cli.js setup codex
-    node src/cli.js setup codex --apply
-    # or: node src/cli.js setup claude-code --apply
+1. **接入 (Connect)** — pick Claude Code or Codex and confirm. SuperLcm registers its MCP server and hooks through the tool's own CLI, backs up the config first, and verifies it loads. Codex additionally asks you to trust the hooks in `/hooks`.
+2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **接续到其他工具** to get the one-line handoff for another tool.
+3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (cheapest, it mostly reads cached context), your Claude or Codex subscription CLI in the background, or a custom API. Tune segment size and merge width.
 
-Hermes and Pi are detected with explicit capability states and offer selected native snapshots; automatic MCP/hook setup for them is not yet implemented. Setup performs no mass import, native trust grant or inference.
+Terminal equivalents: `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
-- [Console behavior, capabilities and tests](docs/CONSOLE.md)
-- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+Hermes and Pi are detected and their past conversations can be imported from the console; automatic capture for them is not implemented yet.
 
-**对话导入** selects only already-indexed conversations and sends their summary navigation to another conversation. It does not scan CLI history. Targets receive via trusted hooks or `lcm_receive_context`; pending, hook-issued and MCP-received receipts are distinct. Native collection is an optional lazy action under 对话索引.
+## MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `lcm_continue` | Hand over another conversation: top-level outline + recent messages + how to dig deeper |
+| `lcm_find` | Find conversations by `#code`, name or ID, and search summaries and originals |
+| `lcm_outline` | Expand the summary tree one level at a time |
+| `lcm_read` | Read exact original records by number |
+| `lcm_summary_task` / `lcm_summary_submit` | In-conversation summary mode only: claim a segment, submit its summary (verified against the originals) |
+
+## More
+
+- [Setup, security and limitations](docs/SETUP.md)
+- [Console behavior and tests](docs/CONSOLE.md)
+- [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- License: [Apache-2.0](LICENSE)
+
+Claude, Claude Code, Codex, Hermes and Pi names and logos belong to their respective owners and are used only to identify compatible tools. SuperLcm is an independent project and is not affiliated with or endorsed by them.

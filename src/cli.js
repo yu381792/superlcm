@@ -4,7 +4,6 @@ import { codexTranscript, codexNativeName, codexSessionKey } from './codex.js'
 import { buildHierarchy, summaryWork } from './summarize.js'
 import { summarizeWithClaudeCli } from './claude-cli.js'
 import { summarizeWithCodexCli } from './codex-cli.js'
-import { issuePending } from './context.js'
 import { startServer } from './mcp.js'
 import { startWeb } from './web.js'
 import { spawn } from 'node:child_process'
@@ -52,15 +51,11 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
             const {mode,model}=effective(store,session)
             if (['off','cli','api'].includes(mode)) store.setSummaryMode(session,mode)
             if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) scheduleSummary(store,session,mode,model)
-            if (event==='UserPromptSubmit' || event==='SessionStart') {
-              const packets=issuePending(store,codex?'codex':'claude-code',input.session_id,{maxChars:4000})
-              for(const packet of packets) { process.stdout.write(`SuperLcm delivery #${packet.id}: ${packet.content}\n`);store.markIssued(packet.id) }
-              if (event==='UserPromptSubmit' && mode==='agent' && summaryWork(store,session)) process.stdout.write(`SuperLcm opt-in agent summary for ${session}: call lcm_summary_work, summarize its bounded content, then lcm_save_summary with its batch_id. Tool use is advisory; never claim a summary was saved without tool confirmation.\n`)
-            }
+            if (event==='UserPromptSubmit' && mode==='agent' && summaryWork(store,session)) process.stdout.write(`SuperLcm in-conversation summary for this conversation (${session}): after answering, call lcm_summary_task {"conversation":"${session}"}, summarize the returned content, then lcm_summary_submit with its batch_id. One task per turn is enough; never claim a summary was saved without tool confirmation.\n`)
           }
           if (event==='SessionStart' && input.source==='compact' && store.source(session)) {
-            const info=store.overview(session)
-            process.stdout.write(`SuperLcm session ${session}: ${JSON.stringify(info.nodes).slice(0,1300)}; search/read exact sources through MCP.\n`)
+            const {code}=store.metadata(session),{records}=store.stats(session)
+            process.stdout.write(`SuperLcm: this conversation was compacted, but all ${records} original records are preserved as #${code}. When an earlier detail matters, call lcm_outline {"conversation":"#${code}"} to locate it and lcm_read to quote the exact original instead of relying on the compacted summary.\n`)
           }
         }
       }
@@ -77,9 +72,12 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       // Indexing alone never starts a paid summarizer.
     } else if (command==='summarize') {
       if (!store.source(rest[0])) throw new Error('Unknown session')
+      // --backend runs one explicit subscription pass (console "generate now"), independent of the saved mode.
+      const backendFlag=rest.indexOf('--backend'),backend=backendFlag>=0?rest[backendFlag+1]:null
+      if (backend!==null && !['cli','codex-cli'].includes(backend)) throw new Error('--backend must be cli or codex-cli')
       try {
-        const {mode,model,api_provider,api_url}=effective(store,rest[0])
-        if (process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
+        const {mode,model,api_provider,api_url}=backend?{mode:backend,model:null}:effective(store,rest[0])
+        if (!backend && process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
         result=mode==='api'
           ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL})

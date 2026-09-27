@@ -1,4 +1,3 @@
-import { contextPacket } from './context.js'
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { normalizeApiEndpoint } from './api-endpoint.js'
@@ -48,6 +47,7 @@ function extract(raw, kind) {
   } catch { return '' }
 }
 function derivedName(preview) { return typeof preview==='string' ? preview.replace(/^(user|assistant):\s*/,'').replace(/\s+/g,' ').trim().slice(0,90) : '' }
+export const shortCode = session => hash(String(session)).slice(0,5)
 function bounded(value, fallback, max) { return Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback }
 export class ClaudeStore {
   constructor(dir = home()) {
@@ -71,6 +71,7 @@ export class ClaudeStore {
       CREATE INDEX IF NOT EXISTS deliveries_target ON deliveries(target_harness,target_session,issued_at);
       CREATE TABLE IF NOT EXISTS client_seen(client TEXT NOT NULL, seen_at TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(client,kind));
       CREATE TABLE IF NOT EXISTS global_summary_settings(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
+      CREATE TABLE IF NOT EXISTS summary_tuning(id INTEGER PRIMARY KEY CHECK(id=1), target_chars INTEGER NOT NULL, batch_size INTEGER NOT NULL, fanout INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
@@ -79,6 +80,11 @@ export class ClaudeStore {
     // Existing alpha.5 indexes have only (session,harness); preserve every row.
     const columns=new Set(this.db.prepare('PRAGMA table_info(session_origins)').all().map(c=>c.name))
     for (const [column,type] of [['external_id','TEXT'],['display_name','TEXT'],['name_source','TEXT']]) if (!columns.has(column)) this.db.exec(`ALTER TABLE session_origins ADD COLUMN ${column} ${type}`)
+    const sourceColumns=new Set(this.db.prepare('PRAGMA table_info(sources)').all().map(c=>c.name))
+    if(!sourceColumns.has('updated_ms')){
+      this.db.exec('ALTER TABLE sources ADD COLUMN updated_ms INTEGER')
+      for(const row of this.db.prepare('SELECT session,path FROM sources').all()){let ms=null;try{ms=Math.round(statSync(row.path).mtimeMs)}catch{}this.db.prepare('UPDATE sources SET updated_ms=? WHERE session=?').run(ms,row.session)}
+    }
     for(const table of ['global_summary_settings','harness_summary_settings']){const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name));for(const column of ['api_provider','api_url'])if(!names.has(column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)}
   }
   close() { this.db.close() }
@@ -100,6 +106,14 @@ export class ClaudeStore {
     if(mode==='api') {if(!model)throw new Error('Custom API requires an explicit model ID');return {api_provider:apiProvider,api_url:normalizeApiEndpoint(apiProvider,apiURL)}}
     if (['off','agent'].includes(mode) && model!==null) throw new Error('This summary mode does not use a model')
     return {api_provider:null,api_url:null}
+  }
+  // Granularity applies to batches planned from now on; saved nodes keep their original ranges.
+  tuning() { return this.db.prepare('SELECT target_chars,batch_size,fanout FROM summary_tuning WHERE id=1').get() || {target_chars:12000,batch_size:32,fanout:4} }
+  setTuning({target_chars,batch_size,fanout}) {
+    const within=(n,lo,hi)=>Number.isSafeInteger(n)&&n>=lo&&n<=hi
+    if (!within(target_chars,2000,48000) || !within(batch_size,2,64) || !within(fanout,2,8)) throw new Error('Unsupported summary granularity')
+    this.db.prepare('INSERT INTO summary_tuning(id,target_chars,batch_size,fanout) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET target_chars=excluded.target_chars,batch_size=excluded.batch_size,fanout=excluded.fanout').run(target_chars,batch_size,fanout)
+    return this.tuning()
   }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }
   harnessSetting(harness) {
@@ -131,43 +145,6 @@ export class ClaudeStore {
     return readApiKey(this.dir,scope) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null)
   }
   hasApiCredential(scope){return Boolean(readApiKey(this.dir,scope))}
-  enqueue(source,target,route='hook') {
-    const from=this.metadata(source),to=this.metadata(target)
-    if(source===target)throw Error('Source and target conversations must differ')
-    if(!['hook','mcp'].includes(route))throw Error('Unknown delivery route')
-    if(route==='hook'&&!['codex','claude-code'].includes(to.harness))throw Error('该目标尚无自动 hook；请选择目标 MCP 领取')
-    const packet=contextPacket(this,source)
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const prior=this.db.prepare('SELECT id,delivery_route FROM deliveries WHERE source_session=? AND target_session=? AND issued_at IS NULL').get(source,target)
-      if(prior){this.db.exec('COMMIT');return {id:prior.id,source:from,target:to,status:'pending',route:prior.delivery_route,deduplicated:true}}
-      const id=Number(this.db.prepare('INSERT INTO deliveries(source_session,target_session,target_harness,delivery_route) VALUES(?,?,?,?)').run(source,target,to.harness,route).lastInsertRowid)
-      const {content,source:metadata,...details}=packet
-      this.db.prepare('INSERT INTO delivery_packets VALUES(?,?,?,?)').run(id,content,JSON.stringify(metadata),JSON.stringify(details));this.db.exec('COMMIT')
-      return {id,source:from,target:to,status:'pending',route,snapshot:true}
-    }catch(error){this.db.exec('ROLLBACK');throw error}
-  }
-  pendingFor(harness,conversationId,limit=3) {
-    const targets=this.db.prepare('SELECT s.session FROM sources s JOIN session_origins o ON s.session=o.session WHERE o.harness=? AND o.external_id=?').all(harness,conversationId)
-    if(targets.length!==1)return []
-    return this.db.prepare("SELECT id,source_session,target_session FROM deliveries WHERE target_harness=? AND target_session=? AND issued_at IS NULL AND delivery_route='hook' ORDER BY id LIMIT ?").all(harness,targets[0].session,limit)
-  }
-  deliveryPacket(delivery,{maxChars=4000}={}) {
-    const row=this.db.prepare('SELECT * FROM delivery_packets WHERE id=?').get(delivery.id)
-    if(!row)return contextPacket(this,delivery.source_session,{maxChars})
-    const details=JSON.parse(row.details_json)
-    return {...details,source:JSON.parse(row.source_json),content:row.content.slice(0,maxChars),truncated:details.truncated||row.content.length>maxChars,snapshot:true}
-  }
-  receivePending(target) {
-    const destination=this.metadata(target),packets=[]
-    this.db.exec('BEGIN IMMEDIATE')
-    try{for(const delivery of this.db.prepare('SELECT id,source_session FROM deliveries WHERE target_session=? AND issued_at IS NULL ORDER BY id LIMIT 3').all(target)){
-      const packet=this.deliveryPacket(delivery);if(this.markIssued(delivery.id,'mcp'))packets.push({id:delivery.id,...packet})
-    }this.db.exec('COMMIT')}catch(error){this.db.exec('ROLLBACK');throw error}
-    return {target:destination,packets,status:packets.length?'mcp_received':'no_pending',note:'MCP 已领取不等于模型已理解或采纳。'}
-  }
-  markIssued(id,via='hook') {return this.db.prepare("UPDATE deliveries SET issued_at=datetime('now'),issued_via=? WHERE id=? AND issued_at IS NULL").run(via,id).changes===1}
-  deliveries(limit=30) {return this.db.prepare('SELECT id,source_session,target_session,target_harness,created_at,issued_at,issued_via,delivery_route FROM deliveries ORDER BY id DESC LIMIT ?').all(limit).map(x=>({...x,source:this.metadata(x.source_session),target:this.metadata(x.target_session),status:x.issued_at?(x.issued_via==='mcp'?'mcp_received':'hook_issued'):'pending'}))}
   markClient(client,kind='mcp') {if(typeof client!=='string'||!client.trim()||client.length>100)return;this.db.prepare("INSERT INTO client_seen(client,seen_at,kind) VALUES(?,datetime('now'),?) ON CONFLICT(client,kind) DO UPDATE SET seen_at=excluded.seen_at").run(client,kind)}
   clients() {return this.db.prepare('SELECT client,seen_at,kind FROM client_seen ORDER BY seen_at DESC LIMIT 30').all()}
   setOrigin(session,harness) {
@@ -202,15 +179,15 @@ export class ClaudeStore {
     if (!this.source(session)) throw new Error('Unknown session')
     const row=this.db.prepare('SELECT harness,external_id,display_name,name_source FROM session_origins WHERE session=?').get(session)
     const first=this.db.prepare("SELECT preview FROM events WHERE session=? AND preview<>'' ORDER BY ordinal LIMIT 1").get(session)?.preview
-    return {session,harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
+    return {session,code:shortCode(session),harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
   }
   sources() { return this.listSessions(2147483647,0).sessions }
   listSessions(limit=20,offset=0,harness) {
     const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
-    const select="SELECT s.session,s.kind,s.offset,s.status,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN session_origins o ON s.session=o.session"
-    const sessions=this.db.prepare(select+where+' ORDER BY s.session LIMIT ? OFFSET ?').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,summary_mode:setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
+    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT COUNT(*) FROM events e WHERE e.session=s.session) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session) AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session) AS levels,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN session_origins o ON s.session=o.session"
+    const sessions=this.db.prepare(select+where+' ORDER BY s.updated_ms IS NULL, s.updated_ms DESC, s.session LIMIT ? OFFSET ?').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,code:shortCode(row.session),summary_mode:setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}
   }
   resolveSession(query,harness) {
@@ -218,6 +195,94 @@ export class ClaudeStore {
     if (harness!==undefined && (typeof harness!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(harness))) throw new Error('Invalid harness filter')
     const ids=this.db.prepare("SELECT s.session FROM sources s LEFT JOIN session_origins o ON s.session=o.session WHERE (s.session=? OR o.external_id=? OR o.display_name=? COLLATE NOCASE)"+(harness ? " AND COALESCE(o.harness,'legacy')=?" : '')+' ORDER BY s.session LIMIT 21').all(query,query,query,...(harness?[harness]:[]))
     return {query,matches:ids.slice(0,20).map(row=>this.metadata(row.session)),ambiguous:ids.length>1,truncated:ids.length>20}
+  }
+  // Accepts #code, code, internal/source ID or name. Exact identity wins over partial names.
+  resolve(query) {
+    if (typeof query!=='string' || !query.trim() || query.length>200) throw new Error('Provide a conversation code, ID or name')
+    const q=query.trim().replace(/^#/,'')
+    const all=this.db.prepare('SELECT s.session,o.external_id,o.display_name FROM sources s LEFT JOIN session_origins o ON s.session=o.session').all()
+    const exact=all.filter(r=>shortCode(r.session)===q.toLowerCase()||r.session===q||r.external_id===q||(r.display_name||'').toLowerCase()===q.toLowerCase())
+    const rows=exact.length?exact:all.filter(r=>(r.display_name||this.metadata(r.session).name).toLowerCase().includes(q.toLowerCase()))
+    return rows.slice(0,20).map(r=>this.metadata(r.session))
+  }
+  resolveOne(query) {
+    const matches=this.resolve(query)
+    if(matches.length===1) return matches[0].session
+    if(!matches.length) throw new Error(`No conversation matches "${query}". Use lcm_find to list conversations.`)
+    throw new Error(`"${query}" matches ${matches.length} conversations: `+matches.slice(0,8).map(m=>`#${m.code} ${m.name} (${m.harness})`).join('; ')+'. Retry with a #code.')
+  }
+  stats(session) {
+    return this.db.prepare('SELECT (SELECT COUNT(*) FROM events WHERE session=?) AS records,(SELECT COALESCE(MAX(last)+1,0) FROM nodes WHERE session=?) AS summarized_to,(SELECT COUNT(*) FROM nodes WHERE session=?) AS summary_count,(SELECT COALESCE(MAX(level)+1,0) FROM nodes WHERE session=?) AS levels,(SELECT updated_ms FROM sources WHERE session=?) AS updated_ms').get(session,session,session,session,session)
+  }
+  // Roots of the summary forest in time order: the shortest outline that covers everything summarized.
+  roots(session) {
+    const nodes=this.db.prepare('SELECT id,level,first,last,children,summary FROM nodes WHERE session=? ORDER BY first,level DESC').all(session)
+    const owned=new Set(nodes.flatMap(n=>JSON.parse(n.children)))
+    return nodes.filter(n=>!owned.has(n.id)).map(n=>({...n,children:JSON.parse(n.children)}))
+  }
+  outline(session, nodeId) {
+    const source=this.metadata(session), stats=this.stats(session)
+    const tail=stats.summarized_to<stats.records?{from:stats.summarized_to,to:stats.records-1}:null
+    if(!nodeId) return {source,...stats,nodes:this.roots(session),unsummarized:tail}
+    const node=this.node(session,nodeId)
+    if(!node) throw new Error('Unknown summary node')
+    const children=JSON.parse(node.children)
+    if(children.length) return {source,node:{...node,children},nodes:children.map(id=>this.node(session,id)).filter(Boolean).map(n=>({...n,children:JSON.parse(n.children)}))}
+    const events=this.db.prepare("SELECT ordinal,substr(preview,1,400) AS preview FROM events WHERE session=? AND ordinal BETWEEN ? AND ? AND preview<>'' ORDER BY ordinal").all(session,node.first,node.last)
+    return {source,node:{...node,children},events}
+  }
+  // Exact raw events by ordinal range, verified against the original file.
+  readRange(session, from, to=from, charOffset=0, maxChars=12000) {
+    if (!Number.isSafeInteger(from) || from<0 || !Number.isSafeInteger(to) || to<from) throw new Error('Invalid ordinal range')
+    if (!Number.isSafeInteger(charOffset) || charOffset<0) throw new Error('Invalid character offset')
+    const records=this.stats(session).records
+    if (from>=records) throw new Error(`Ordinal ${from} is past the last record (${records-1})`)
+    const last=Math.min(to,records-1), cap=bounded(maxChars,12000,50000), chunks=[]
+    let left=cap
+    for (let i=from;i<=last&&left;i++) {
+      const raw=this.exact(session,i), start=i===from?charOffset:0
+      if (start>raw.length) throw new Error('Offset past end of event')
+      const content=raw.slice(start,start+left)
+      chunks.push({ordinal:i,charOffset:start,content});left-=content.length
+      if (start+content.length<raw.length) return {source:this.metadata(session),chunks,next:{ordinal:i,charOffset:start+content.length}}
+    }
+    const end=chunks.at(-1)?.ordinal
+    return {source:this.metadata(session),chunks,next:end!==undefined&&end<last?{ordinal:end+1,charOffset:0}:null}
+  }
+  // Readable previews for the console; exact bytes stay behind readRange.
+  eventPreviews(session, from, to) {
+    if (!Number.isSafeInteger(from) || from<0 || !Number.isSafeInteger(to) || to<from) throw new Error('Invalid record range')
+    return this.db.prepare('SELECT ordinal,preview FROM events WHERE session=? AND ordinal BETWEEN ? AND ? ORDER BY ordinal LIMIT 400').all(session,from,Math.min(to,from+399))
+  }
+  bands(session) { return this.db.prepare('SELECT id,level,first,last FROM nodes WHERE session=? AND level>=1 ORDER BY level DESC,first').all(session) }
+  harnessGroups() { return this.db.prepare("SELECT COALESCE(o.harness,'legacy') AS harness,COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON o.session=s.session GROUP BY 1 ORDER BY 2 DESC").all() }
+  summarizing(session) { return Boolean(this.db.prepare('SELECT 1 FROM leases WHERE session=? AND until_ms>?').get(session,Date.now())) }
+  // Most recent visible messages, oldest first, within a character budget.
+  recent(session, maxChars=6000) {
+    const out=[];let left=maxChars
+    for (const e of this.db.prepare("SELECT ordinal,preview FROM events WHERE session=? AND preview<>'' AND preview NOT LIKE 'custom-title:%' AND preview NOT LIKE 'ai-title:%' ORDER BY ordinal DESC LIMIT 200").iterate(session)) {
+      const text=e.preview.length>1500?e.preview.slice(0,1500)+' …[truncated; lcm_read for full text]':e.preview
+      if (text.length>left && out.length) break
+      out.unshift({ordinal:e.ordinal,text});left-=text.length
+      if (left<=0) break
+    }
+    return out
+  }
+  // Substring search (works for CJK) across one or all conversations.
+  find(query, {session, harness, limit=20}={}) {
+    const cap=bounded(limit,20,50)
+    if (query===undefined || query==='') {
+      const list=this.listSessions(cap,0,harness)
+      return {conversations:list.sessions.map(({session,code,harness,name,records,summary_count,updated_ms})=>({session,code,harness,name,records,summary_count,updated_ms})),total:list.total}
+    }
+    if (typeof query!=='string' || query.length>200) throw new Error('Query must be 1–200 characters')
+    const like='%'+query.trim().replace(/[\\%_]/g,m=>'\\'+m)+'%'
+    const scope=session?' AND x.session=?':harness?" AND x.session IN (SELECT session FROM session_origins WHERE harness=?)":''
+    const args=session?[session]:harness?[harness]:[]
+    const conversations=session?[]:this.resolve(query).filter(m=>!harness||m.harness===harness).slice(0,10)
+    const summaries=this.db.prepare(`SELECT x.session,x.id,x.level,x.first,x.last,x.summary FROM nodes x WHERE x.summary LIKE ? ESCAPE '\\'${scope} ORDER BY x.level DESC,x.first DESC LIMIT ?`).all(like,...args,cap).map(r=>({...r,conversation:this.metadata(r.session)}))
+    const events=this.db.prepare(`SELECT x.session,x.ordinal,x.preview FROM events x WHERE x.preview LIKE ? ESCAPE '\\'${scope} ORDER BY x.rowid DESC LIMIT ?`).all(like,...args,cap).map(r=>{const i=r.preview.toLowerCase().indexOf(query.trim().toLowerCase());return {session:r.session,ordinal:r.ordinal,snippet:r.preview.slice(Math.max(0,i-120),i+240),conversation:this.metadata(r.session)}})
+    return {query,conversations,summaries,events}
   }
   summaries(session, limit=10, offset=0) {
     const source=this.metadata(session)
@@ -275,7 +340,7 @@ export class ClaudeStore {
     try {
       this.db.prepare('INSERT INTO events VALUES(?,?,?,?,?,?)').run(session, ordinal, start, end, hash(raw), preview)
       this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
-      this.db.prepare("UPDATE sources SET offset=?,status='ok' WHERE session=?").run(end, session)
+      this.db.prepare("UPDATE sources SET offset=?,status='ok',updated_ms=? WHERE session=?").run(end, Date.now(), session)
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }
@@ -306,6 +371,7 @@ export class ClaudeStore {
     return {session,source:this.metadata(session),ordinal,charOffset,content,next:charOffset+content.length < raw.length ? {ordinal,charOffset:charOffset+content.length} : null}
   }
   eventRows(session) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? ORDER BY ordinal').all(session) }
+  eventRowsFrom(session, start) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? AND ordinal>=? ORDER BY ordinal').all(session, start) }
   nodeRows(session, level) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND level=? ORDER BY first').all(session, level) }
   node(session, id) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND id=?').get(session, id) }
   addNode(node) {
@@ -321,6 +387,7 @@ export class ClaudeStore {
     const result=this.db.prepare('INSERT INTO leases(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms WHERE leases.until_ms < ?').run(session, now+duration, now)
     return result.changes === 1
   }
+  renewLease(session, duration = 120000) { this.db.prepare('UPDATE leases SET until_ms=? WHERE session=?').run(Date.now()+duration, session) }
   release(session) { this.db.prepare('UPDATE leases SET until_ms=0 WHERE session=?').run(session) }
   search(session, query, limit = 10) {
     if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new Error('Provide a query of 1–200 characters')

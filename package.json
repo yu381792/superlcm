@@ -1,10 +1,10 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.1.0-alpha.12",
+  "version": "0.2.0-alpha.1",
   "description": "Cross-harness conversation summaries and exact-source recall over MCP",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "bin": {
     "superlcm": "./src/cli.js",
     "superlcm-claude": "./src/cli.js"
