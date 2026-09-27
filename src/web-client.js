@@ -200,12 +200,12 @@ function renderDetail() {
   html += stripHtml(d)
   if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
   else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
-  else if (d.summary_count && tail > 64 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后 {n} 条。', { n: fmt(tail) }) + '</b>' + t('对话内生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
+  else if (d.summary_count && tail > 64 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后 {n} 条。', { n: fmt(tail) }) + '</b>' + t('对话模型生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
   if (d.summary_count) {
     html += '<div><div class="section-h"><h2>' + t('摘要目录') + '</h2><span class="aside"><button type="button" class="link" id="collapseAll">' + t('收起全部') + '</button></span></div><div class="tree">' + d.nodes.map(nodeHtml).join('') +
       (tail > 0 ? '<div class="tail-row"><span>' + t('最新 {n} 条（{r}）尚未摘要', { n: '<b class="num">' + fmt(tail) + '</b>', r: '#' + d.summarized_to + '–#' + (d.records - 1) }) + '</span><button type="button" class="btn small" data-raw="' + Math.max(d.summarized_to, d.records - 60) + '-' + (d.records - 1) + '">' + t('查看原文') + '</button></div>' : '') + '</div></div>'
   } else {
-    html += '<div class="notice calm"><span><b>' + t('此对话暂无摘要。') + '</b>' + t('{n} 条原文已完整保存，AI 可按编号读取和搜索；接续时将提供最近的原文。', { n: fmt(d.records) }) + (d.setting.mode === 'agent' ? t('对话内生成只在该对话继续进行时才会写摘要。') : '') + '</span></div>' +
+    html += '<div class="notice calm"><span><b>' + t('此对话暂无摘要。') + '</b>' + t('{n} 条原文已完整保存，AI 可按编号读取和搜索；接续时将提供最近的原文。', { n: fmt(d.records) }) + (d.setting.mode === 'agent' ? t('对话模型生成只在该对话继续进行时才会写摘要。') : '') + '</span></div>' +
       '<div class="actions">' + (d.summarizing ? '' : generateButton('生成摘要…', 'btn primary')) + '<button type="button" class="btn" data-raw="' + Math.max(0, d.records - 60) + '-' + Math.max(d.records - 1, 0) + '">' + t('查看最近原文') + '</button></div>'
   }
   $('#detail').innerHTML = html + '</div>'
@@ -241,7 +241,7 @@ function bindDetail() {
   })
   for (const b of all('[data-raw]')) b.onclick = () => { const [a, z] = b.dataset.raw.split('-').map(Number); openRaw(a, z) }
   for (const b of all('.seg[data-node]')) b.onclick = () => act(() => revealNode(d.bands.find(x => x.id === b.dataset.node), true))
-  for (const b of all('[data-goto]')) b.onclick = () => { show(b.dataset.goto); if (b.dataset.goto === 'settings') settingsSection('writer') }
+  for (const b of all('[data-goto]')) b.onclick = () => { show(b.dataset.goto); if (b.dataset.goto === 'settings') settingsSection('summary') }
   for (const b of all('[data-generate]')) b.onclick = openGenerate
 }
 // Expand every ancestor of a node (found by range containment), then scroll to it.

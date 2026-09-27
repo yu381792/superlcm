@@ -1,6 +1,6 @@
 // Connect view (setup + local import), status pill, settings, appearance and boot().
 const WRITERS = [
-  ['agent', t('对话内生成'), t('由对话中的 AI 顺带完成，读取多为缓存，最省钱')],
+  ['agent', t('对话模型生成'), t('由对话中的 AI 顺带完成，读取多为缓存，最省钱')],
   ['cli', t('Claude 订阅'), t('后台自动补齐 · 调用 Claude CLI')],
   ['codex-cli', t('Codex 订阅'), t('后台自动补齐 · 调用 Codex CLI')],
   ['api', t('自定义 API'), t('后台自动补齐 · 使用你的 API 密钥')],
@@ -150,6 +150,7 @@ $('#saveWriter').onclick = () => act(async () => {
   if (mode === 'cli' || mode === 'codex-cli') payload.model = $('#wModel').value || null
   if (mode === 'api') { payload.api_provider = $('#wProvider').value; payload.api_url = $('#wUrl').value.trim(); payload.model = $('#wModelId').value.trim() || null; const key = $('#wKey').value; if (key) payload.api_key = key }
   await api('/api/settings', payload)
+  await api('/api/tuning', pickedTuning())
   await loadSettings()
   $('#writerSaved').textContent = t('已保存')
 }, $('#saveWriter'))
@@ -159,7 +160,7 @@ function writerPicker(h) {
   if (!s) return ''
   const x = s.settings.find(y => y.harness === h.harness)
   if (!h.supported && !h.detected && !x) return ''
-  return '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('沿用默认（{w}）', { w: writerLabel(s.global.mode) }) + '</option>' +
+  return '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('默认（{w}）', { w: writerLabel(s.global.mode) }) + '</option>' +
     WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>'
 }
 function renderTuning(tuning) {
@@ -172,10 +173,8 @@ function renderTuning(tuning) {
   const big = n => LANG === 'zh' ? (n >= 10000 ? (n / 10000).toFixed(n % 10000 ? 1 : 0) + ' 万' : fmt(n)) : (n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + 'k' : fmt(n))
   $('#granEst').innerHTML = t('按当前设置：每段第 1 层摘要约覆盖 {a} 字原文，第 2 层约 {b} 字，第 3 层约 {c} 字。一段 100 万字的长对话大约产生 {n} 段第 1 层摘要。', { a: '<b>' + big(perL1) + '</b>', b: '<b>' + big(perL2) + '</b>', c: '<b>' + big(perL3) + '</b>', n: Math.ceil(1e6 / perL1) })
 }
-for (const id of ['#segSize', '#segMsgs', '#fanout']) $(id).onchange = () => act(async () => {
-  const tuning = await api('/api/tuning', { target_chars: Number($('#segSize').value), batch_size: Number($('#segMsgs').value), fanout: Number($('#fanout').value) })
-  renderTuning(tuning); toast(t('已保存，只影响之后的新摘要'))
-})
+const pickedTuning = () => ({ target_chars: Number($('#segSize').value), batch_size: Number($('#segMsgs').value), fanout: Number($('#fanout').value) })
+for (const id of ['#segSize', '#segMsgs', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 
 /* ---------- appearance ---------- */
 function prefs(key, value) {

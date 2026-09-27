@@ -54,7 +54,7 @@ export function page(nonce) {
     <div class="page-inner">
       <div class="page-h"><h1>设置</h1></div>
       <div class="set-layout">
-        <nav class="set-nav" id="setNav" aria-label="设置分类"><button type="button" data-sec="look" aria-current="true">外观</button><button type="button" data-sec="storage">存储</button><button type="button" data-sec="writer">摘要生成方式</button><button type="button" data-sec="granularity">摘要粒度</button><button type="button" data-sec="mcp">MCP 工具</button></nav>
+        <nav class="set-nav" id="setNav" aria-label="设置分类"><button type="button" data-sec="look" aria-current="true">外观</button><button type="button" data-sec="storage">存储</button><button type="button" data-sec="summary">摘要</button><button type="button" data-sec="mcp">MCP 工具</button></nav>
         <div class="set-body">
       <div class="panel" data-sec="look">
         <h2>外观</h2>
@@ -69,15 +69,14 @@ export function page(nonce) {
         <p class="desc">所有对话、原文存档和摘要都只存在这台电脑上的这个目录里。</p>
         <div class="fields"><label class="field">数据位置<input id="dataDir" readonly></label></div>
       </div>
-      <div class="panel" data-sec="writer" hidden>
-        <h2>摘要生成方式</h2>
-        <p class="desc">摘要仅用于导航，原文始终完整保存。「对话内生成」由当前对话的 AI 顺带完成，它读到的内容大多已在缓存中，费用最低；其他方式会在后台自动补齐。</p>
+      <div class="panel" data-sec="summary" hidden>
+        <h2>摘要（全局默认）</h2>
+        <p class="desc">所有工具默认按这里生成摘要；某个工具想用别的方式，到「接入」页它的卡片上单独改。摘要仅用于导航，原文始终完整保存。</p>
+        <h3>生成方式</h3>
+        <p class="desc">「对话模型生成」由当前对话的 AI 顺带完成，它读到的内容大多已在缓存中，费用最低；其他方式会在后台自动补齐。</p>
         <div class="seg-ctl" id="writer"></div>
         <div class="fields" id="writerFields"></div>
-        <div class="actions"><button type="button" class="btn primary" id="saveWriter">保存</button><span class="saved" id="writerSaved" aria-live="polite"></span></div>
-      </div>
-      <div class="panel" data-sec="granularity" hidden>
-        <h2>摘要粒度</h2>
+        <h3>粒度</h3>
         <p class="desc">只影响之后新生成的摘要，已有摘要保持不变。</p>
         <div class="fields">
           <label class="field">第 1 层每段原文<select id="segSize"><option value="6000">约 6,000 字 · 更细</option><option value="12000">约 12,000 字 · 推荐</option><option value="24000">约 24,000 字 · 更省</option></select></label>
@@ -85,6 +84,7 @@ export function page(nonce) {
           <label class="field">合并方式<select id="fanout"><option value="3">每 3 段合并为上一层</option><option value="4">每 4 段合并为上一层 · 推荐</option><option value="6">每 6 段合并为上一层</option></select></label>
         </div>
         <div class="notice calm"><span id="granEst"></span></div>
+        <div class="actions"><button type="button" class="btn primary" id="saveWriter">保存</button><span class="saved" id="writerSaved" aria-live="polite"></span></div>
       </div>
       <div class="panel" data-sec="mcp" hidden>
         <h2>AI 可用的 MCP 工具</h2>
@@ -94,7 +94,7 @@ export function page(nonce) {
           <div><code>lcm_find</code><span>按名称、编号或关键词查找对话，并在摘要与原文中全文搜索。</span></div>
           <div><code>lcm_outline</code><span>逐层展开摘要目录。</span></div>
           <div><code>lcm_read</code><span>按编号读取原文，与原始记录逐字一致。</span></div>
-          <div><code>lcm_summary_task</code><span>领取待摘要的原文（仅「对话内生成」模式可用）。</span></div>
+          <div><code>lcm_summary_task</code><span>领取待摘要的原文（仅「对话模型生成」模式可用）。</span></div>
           <div><code>lcm_summary_submit</code><span>提交摘要，服务器校验原文后保存（同上）。</span></div>
         </div>
       </div>

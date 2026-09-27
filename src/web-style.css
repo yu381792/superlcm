@@ -242,6 +242,7 @@ details > summary { cursor: pointer; font-size: 13px; color: var(--ink2) }
 .set-body { display: grid; gap: 24px; min-width: 0 }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 14px }
 .panel h2 { margin: 0; font-size: 15px }
+.panel h3 { margin: 8px 0 0; font-size: 13px; color: var(--ink2); font-weight: 600; padding-top: 14px; border-top: 1px solid var(--line) }
 .panel .desc { margin: -8px 0 0; font-size: 13px; color: var(--ink2) }
 .seg-ctl { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px }
 .opt { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: none; text-align: left; display: grid; gap: 2px }

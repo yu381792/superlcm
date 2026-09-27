@@ -369,8 +369,8 @@ test('Web console page inlines a syntactically valid script with the new views',
   const html=webPage('nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
   assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/--accent: #C96442/)
   for(const view of ['conversations','connect','settings'])assert.match(html,new RegExp('id="view-'+view+'"'))
-  for(const label of ['对话','接入','设置','摘要生成方式','摘要粒度'])assert.match(html,new RegExp('>'+label+'<'))
-  assert.match(js,/对话内生成/);assert.match(js,/function boot\(/);assert.doesNotMatch(html,/lcm_sessions|lcm_deliver|当前会话 AI/)
+  for(const label of ['对话','接入','设置','摘要','生成方式','粒度'])assert.match(html,new RegExp('>'+label+'<'))
+  assert.match(js,/对话模型生成/);assert.match(js,/function boot\(/);assert.doesNotMatch(html,/lcm_sessions|lcm_deliver|当前会话 AI/)
 })
 test('local Web console needs no login, refuses foreign writes and probes actual MCP protocol',fixture(async ({store})=>{
   const web=await startWeb({store:new ClaudeStore(store.dir),discovery:async()=>[{harness:'codex',detected:true,configured:true}]})

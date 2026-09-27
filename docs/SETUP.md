@@ -29,7 +29,7 @@ To continue a conversation in another tool, open it in **对话**, click **接�
 
 Each connected tool card shows evidence in order of strength: configuration matches, a SuperLcm MCP process loaded, and the AI actually called a tool. A self-test proves the configuration and protocol work, not that an already-open session reloaded it. There is no remote multi-device sync or per-client ACL: every client sharing the index can read every stored conversation, so connect only trusted local clients.
 
-Summary settings have **one global default** plus optional per-tool overrides (set on each tool's card under 接入); there is no per-conversation selector. The choices are 对话内生成 (the conversation's own AI), Claude 订阅, Codex 订阅, 自定义 API and 关闭. Saving never invokes a model. CLI model lists come from the installed CLI's own catalog (Codex `debug models`, Claude `initialize.models`); a listed model does not prove entitlement. Custom API takes Anthropic Messages or OpenAI-compatible Chat Completions, a full endpoint URL, a model ID and a write-only key stored in `SUPERLCM_HOME/api-credentials.json` (0600 on POSIX), never echoed back. Segment size, messages per segment and merge width are set under **摘要粒度** and apply to new summaries only.
+Summary settings have **one global default** plus optional per-tool overrides (set on each tool's card under 接入); there is no per-conversation selector. The choices are 对话模型生成 (the conversation's own AI), Claude 订阅, Codex 订阅, 自定义 API and 关闭. Saving never invokes a model. CLI model lists come from the installed CLI's own catalog (Codex `debug models`, Claude `initialize.models`); a listed model does not prove entitlement. Custom API takes Anthropic Messages or OpenAI-compatible Chat Completions, a full endpoint URL, a model ID and a write-only key stored in `SUPERLCM_HOME/api-credentials.json` (0600 on POSIX), never echoed back. Segment size, messages per segment and merge width are set under **摘要粒度** and apply to new summaries only.
 
 ## Shared conversations across harnesses
 
@@ -103,11 +103,11 @@ Example `.claude/settings.json` hook block (merge with your existing `hooks` rat
 }
 ```
 
-`Stop`/`PostCompact` asynchronously index complete JSONL records and, when a segment is ready, start the selected background worker. `SessionStart(compact)` adds a short retrieval note after Claude's native compaction. `UserPromptSubmit` nudges summarization **only** when that tool (or the inherited global default) selects 对话内生成. It cannot ensure the model calls tools.
+`Stop`/`PostCompact` asynchronously index complete JSONL records and, when a segment is ready, start the selected background worker. `SessionStart(compact)` adds a short retrieval note after Claude's native compaction. `UserPromptSubmit` nudges summarization **only** when that tool (or the inherited global default) selects 对话模型生成. It cannot ensure the model calls tools.
 
 ## Summary modes for Claude Code CLI and Desktop Code (Local)
 
-The default `SUPERLCM_SUMMARY_MODE=auto` chooses `cli` without a dedicated API key, or `api` when `SUPERLCM_ANTHROPIC_API_KEY` is set. `SUPERLCM_SUMMARY_MODE=cli|codex-cli|api|agent|off|auto` selects a backend explicitly; settings saved in the console take precedence. Explicit `cli` strips any API key from the CLI subprocess. `agent` (对话内生成) exposes `lcm_summary_task` and `lcm_summary_submit`; they are hidden from `tools/list` unless some tool or the global default uses this mode. Existing summary nodes are always preserved.
+The default `SUPERLCM_SUMMARY_MODE=auto` chooses `cli` without a dedicated API key, or `api` when `SUPERLCM_ANTHROPIC_API_KEY` is set. `SUPERLCM_SUMMARY_MODE=cli|codex-cli|api|agent|off|auto` selects a backend explicitly; settings saved in the console take precedence. Explicit `cli` strips any API key from the CLI subprocess. `agent` (对话模型生成) exposes `lcm_summary_task` and `lcm_summary_submit`; they are hidden from `tools/list` unless some tool or the global default uses this mode. Existing summary nodes are always preserved.
 
 ### CLI subscription backend (default, no separate API key)
 
@@ -127,7 +127,7 @@ Set `SUPERLCM_SUMMARY_MODE=codex-cli` or choose Codex subscription for the globa
 
 ### Current-session agent (explicit opt-in)
 
-Choose 对话内生成 in the console (or `SUPERLCM_SUMMARY_MODE=agent`). After each answer, a `UserPromptSubmit` nudge asks the AI to call `lcm_summary_task`, which returns either the next merge (several adjacent summaries to combine) or the next unsummarized segment, and then `lcm_summary_submit`, which re-verifies the originals before saving. One task per turn keeps the cost low: the AI mostly re-reads context that is already cached. If the conversation stops, summarizing stops too; the console offers a one-click background catch-up with whichever method this computer has: an installed Claude or Codex CLI, or a saved custom API. The local stdio MCP cannot authenticate which conversation is calling, so the stored model label is `mcp-agent`.
+Choose 对话模型生成 in the console (or `SUPERLCM_SUMMARY_MODE=agent`). After each answer, a `UserPromptSubmit` nudge asks the AI to call `lcm_summary_task`, which returns either the next merge (several adjacent summaries to combine) or the next unsummarized segment, and then `lcm_summary_submit`, which re-verifies the originals before saving. One task per turn keeps the cost low: the AI mostly re-reads context that is already cached. If the conversation stops, summarizing stops too; the console offers a one-click background catch-up with whichever method this computer has: an installed Claude or Codex CLI, or a saved custom API. The local stdio MCP cannot authenticate which conversation is calling, so the stored model label is `mcp-agent`.
 
 ### Custom API backend (explicit opt-in)
 
