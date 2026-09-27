@@ -37,7 +37,7 @@ const LANGS = {
     '领取下一段待写的摘要（仅「对话模型生成」模式可用）。': 'Get the next summary piece to write (In-conversation mode only).',
     '同时替我在 {tool} 里允许': 'Also approve it in {tool} for me',
     '相当于替你在 {tool} 里点一次「允许」，只针对 SuperLcm 自己的钩子。不勾的话，接入后要打开 {tool} 亲自确认。': 'Same as clicking Allow in {tool} yourself, for SuperLcm\'s own hooks only. Leave it unchecked to approve them in {tool} after connecting.',
-    '对话模型生成': 'In-conversation', '本工具后台写': 'Own tool, in the background',
+    '对话模型生成': 'In-conversation', '本工具后台写': 'Own tool, in the background', '没在存': 'Not saving', '最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。点「检查接入」可以一键允许': 'Recent Codex conversations were not saved; Codex is probably waiting for you to approve the hooks. Click Check to approve them in one step', '最近的 {tool} 对话没有存进来。点「检查接入」看看哪里不对': 'Recent {tool} conversations were not saved. Click Check to see what is wrong',
     '自定义 API': 'Custom API', '不生成摘要，原文照常保存': 'No summaries; originals are still stored',
     '暂不支持自动接入，可导入本机对话': 'No automatic setup yet; local conversations can be imported', '未找到 {tool} 命令行': '{tool} CLI not found', '尚未接入': 'Not connected',
     '已接入 · AI 已成功调用': 'Connected · the AI has called it', '已接入 · 等待首次调用': 'Connected · waiting for the first call', '已写入配置 · 重启 {tool} 后生效': 'Configured · restart {tool} to apply', '已接入 {tools}': 'Connected: {tools}', '尚未接入工具': 'No tool connected',

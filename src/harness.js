@@ -1,5 +1,5 @@
 import { connectionEvidence } from './connections.js'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findCli, paths, runCommand as run, commandOptions, preferredNode } from './runtime.js'
@@ -46,6 +46,22 @@ export function hookInspection(harness,env=process.env) {
   const matched=events.filter(event=>(config.hooks?.[event]||[]).some(group=>(group.hooks||[]).some(h=>h.type==='command'&&typeof h.command==='string'&&h.command.includes(script)&&new RegExp('\\b'+command+'\\b').test(h.command))))
   return {file,status:!enabled?'disabled':matched.length===events.length?'configured':matched.length?'partial':'missing',events:matched,trust:harness==='codex'?'review-in-codex':'host-controlled',note:harness==='codex'?'请在 Codex /hooks 查看当前定义是否已信任；本页不写入信任状态。':'宿主权限仍由 Claude Code 控制。'}
 }
+// Newest transcript the tool has written (Codex: the latest sessions/YYYY/MM/DD folder; Claude: projects/*/*.jsonl).
+export function newestTranscript(harness,env=process.env) {
+  const root=configFiles(harness,env).transcripts,list=dir=>{try{return readdirSync(dir)}catch{return []}},mtime=file=>{try{return statSync(file).mtimeMs}catch{return 0}}
+  let files=[]
+  if(harness==='codex'){let dir=root;for(let i=0;i<3;i++){const next=list(dir).filter(n=>/^\d+$/.test(n)).sort().at(-1);if(!next)return null;dir=join(dir,next)}files=list(dir).filter(n=>n.endsWith('.jsonl')).map(n=>join(dir,n))}
+  else if(harness==='claude-code')files=list(root).slice(0,500).flatMap(d=>list(join(root,d)).filter(n=>n.endsWith('.jsonl')).map(n=>join(root,d,n))).slice(0,5000)
+  else return null
+  return files.reduce((max,file)=>Math.max(max,mtime(file)),0)||null
+}
+// Hooks connected but not firing (for example Codex waiting for the changed hooks to be approved): the tool has
+// finished writing a conversation (quiet for 2 minutes) after the last time any SuperLcm hook ran.
+export function captureStale(newest,hookSeen,now=Date.now()) {
+  if(!newest||newest>now-120000)return false
+  const seen=hookSeen?Date.parse(hookSeen.replace(' ','T')+'Z'):0
+  return newest>seen+60000
+}
 export async function harnessConnections(store,{env=process.env,runCommand=run}={}) {
   const seen=store.clients();const rows=await Promise.all(definitions.map(async def=>{
     const bin=findCli(def.bin,env),files=def.supported||def.local?configFiles(def.id,env):null
@@ -59,7 +75,8 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     else if(def.supported&&bin){try{const {setupPreview}=await import('./setup.js');plan=await setupPreview(store,def.id,{env,runCommand});reg={found:plan.existing||plan.mcp_action==='preserve'||(plan.can_apply===false&&!!plan.blocker&&/同名/.test(plan.blocker))};hook={status:plan.hook_events_added.length?'missing':'configured',events:[]}}catch(error){reg={found:false,error:error.message}}}
     const hookSeen=seen.find(c=>c.kind==='hook'&&c.client===def.id)?.seen_at||null
     const mcpSeen=seen.find(c=>c.kind==='mcp-self-reported'&&(def.id==='claude-code'?/claude/i:/codex/i).test(c.client)&&!c.client.includes('self-test'))?.seen_at||null
-    return {node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
+    const capture_stale=native&&!!reg.found&&captureStale(newestTranscript(def.id,env),hookSeen)
+    return {capture_stale,node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
   }))
   for(const x of store.harnessSettings())if(!rows.some(r=>r?.harness===x.harness))rows.push({harness:x.harness,label:x.harness,supported:false,detected:false,configured:false,hook:{status:'unsupported'},connection:'unverified'})
   return rows.filter(Boolean)

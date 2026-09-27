@@ -25,6 +25,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { summarizeWithCodexCli } from '../src/codex-cli.js'
 import { startWeb } from '../src/web.js'
 import { modelCatalog, harnessConnections } from '../src/model-catalog.js'
+import { captureStale } from '../src/harness.js'
 import { page as webPage } from '../src/web-page.js'
 import { codexTranscript, codexSessionKey } from '../src/codex.js'
 const fixture = fn => async t => {
@@ -618,4 +619,12 @@ test('segments are sized by characters: whole records up to the target, one over
     assert.match(big.content, /^\[event \d+\] assistant: H+ …\[\d+ characters omitted; lcm_read event \d+ for the full text\]… T+$/)
     assert.ok(big.content.length < 2100)
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a card warns when the tool wrote a conversation after the last SuperLcm hook ran',()=>{
+  const now=Date.parse('2026-09-27T15:20:00Z')
+  assert.equal(captureStale(Date.parse('2026-09-27T15:10:00Z'),'2026-09-27 14:42:52',now),true)
+  assert.equal(captureStale(Date.parse('2026-09-27T15:10:00Z'),'2026-09-27 15:10:05',now),false,'hook ran after the last write')
+  assert.equal(captureStale(Date.parse('2026-09-27T15:19:30Z'),'2026-09-27 14:00:00',now),false,'still being written')
+  assert.equal(captureStale(null,null,now),false)
 })

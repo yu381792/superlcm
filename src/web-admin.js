@@ -14,6 +14,7 @@ function connState(h) {
   if (!h.supported) return { cls: 'off', badge: t('仅导入'), text: h.local_conversations ? t('暂不支持自动接入，可导入本机对话') : t('暂不支持自动接入') }
   if (!h.bin) return { cls: 'off', badge: t('未安装'), text: t('未找到 {tool} 命令行', { tool }) }
   if (!h.configuration_matches) return h.configured ? { cls: 'warn', badge: t('需更新'), text: t('点「接入」更新一次，以后 {tool} 升级不会影响 SuperLcm', { tool }) } : { cls: 'warn', badge: t('未接入'), text: t('接入后，新对话会自动存入 SuperLcm') }
+  if (h.capture_stale) return { cls: 'warn', badge: t('没在存'), text: h.harness === 'codex' ? t('最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。点「检查接入」可以一键允许') : t('最近的 {tool} 对话没有存进来。点「检查接入」看看哪里不对', { tool }) }
   if (h.node_borrowed) return { cls: 'warn', badge: t('已接入'), text: t('借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「接入」即可恢复', { owner: h.node_borrowed }) }
   if (e?.last_call_at) return { cls: 'on', badge: t('已接入'), text: t('AI 最近一次调用：{t}', { t: ago(Date.parse(e.last_call_at)) }) }
   if (e?.state === 'tool_verified') return { cls: 'on', badge: t('已接入'), text: t('AI 已成功调用') }
