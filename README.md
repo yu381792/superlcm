@@ -40,6 +40,6 @@ Hermes and Pi are detected and their past conversations can be imported from the
 - [Setup, security and limitations](docs/SETUP.md)
 - [Console behavior and tests](docs/CONSOLE.md)
 - [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
-- License: [Apache-2.0](LICENSE)
+- License: [AGPL-3.0](LICENSE). Copyright 2026 ygc3817922006-sketch contributors. If you modify SuperLcm and let others use it, including over a network, you must publish your modified source under the same license. For closed-source or commercial licensing, contact the author.
 
 Claude, Claude Code, Codex, Hermes and Pi names and logos belong to their respective owners and are used only to identify compatible tools. SuperLcm is an independent project and is not affiliated with or endorsed by them.

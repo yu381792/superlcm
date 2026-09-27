@@ -7,7 +7,7 @@
 - Summaries now merge before new text is summarized, so higher levels actually form; first-level segments default to about 12,000 characters / 32 messages and merge 4 at a time, all adjustable.
 - Conversations get a short `#code`, track last activity, and sort newest first. Continuing elsewhere is one line: `通过 SuperLcm 接续对话 #code`.
 - Remove the queued cross-conversation delivery flow (the target now pulls context with `lcm_continue`); old delivery tables are left untouched.
-- Relicense from MIT to Apache-2.0.
+- Relicense from MIT to AGPL-3.0-only; commercial closed-source licensing is available from the author.
 - One-click background catch-up with the Claude or Codex subscription CLI from a conversation's page.
 
 ## 0.1.0-alpha.12

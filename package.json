@@ -4,7 +4,7 @@
   "description": "Cross-harness conversation summaries and exact-source recall over MCP",
   "type": "module",
   "private": true,
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "bin": {
     "superlcm": "./src/cli.js",
     "superlcm-claude": "./src/cli.js"
