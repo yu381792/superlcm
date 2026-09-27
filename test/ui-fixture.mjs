@@ -8,7 +8,9 @@ import {findCli} from '../src/runtime.js'
 import './env.mjs'
 import {buildHierarchy} from '../src/summarize.js'
 const dir=mkdtempSync(join(tmpdir(),'superlcm-browser-')),store=new ClaudeStore(join(dir,'index'))
-const env={...process.env,HOME:dir,USERPROFILE:dir,CODEX_HOME:join(dir,'codex'),CLAUDE_CONFIG_DIR:join(dir,'claude'),SUPERLCM_CODEX_CLI_BIN:findCli('codex'),SUPERLCM_CLAUDE_CLI_BIN:findCli('claude')}
+const env={...process.env,HOME:dir,USERPROFILE:dir,CODEX_HOME:join(dir,'codex'),CLAUDE_CONFIG_DIR:join(dir,'claude'),SUPERLCM_CODEX_CLI_BIN:findCli('codex'),SUPERLCM_CLAUDE_CLI_BIN:findCli('claude'),
+ // Hermes 0.21.5+ keeps its packages in the real Hermes home and stalls when started with this fake one.
+ SUPERLCM_HERMES_BIN:join(dir,'no-hermes')}
 store.setGlobalSetting('off')
 store.db.prepare('INSERT OR REPLACE INTO summary_tuning VALUES(1,12000,8,4)').run()
 for(const [h,id,name] of [['codex','source','Codex 架构来源'],['claude-code','target','Claude 验证目标'],['codex','fresh','待导入本地记录']]){
