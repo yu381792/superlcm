@@ -2,7 +2,7 @@ import { connectionEvidence } from './connections.js'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findCli, paths, runCommand as run, commandOptions } from './runtime.js'
+import { findCli, paths, runCommand as run, commandOptions, preferredNode } from './runtime.js'
 export const script = fileURLToPath(new URL('./cli.js',import.meta.url))
 export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:true,local:true},{id:'pi',label:'Pi',bin:'pi',supported:true,local:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
 export function configFiles(harness,env=process.env) {
@@ -23,15 +23,20 @@ export async function mcpRegistration(harness,{env=process.env,runCommand=run}={
   try {const config=readJson(files.mcp).mcpServers?.superlcm;return {found:!!config,enabled:true,config}}
   catch {return {found:false,enabled:false,error:'Claude 用户配置无法解析'}}
 }
-export function matchingMcp(reg,store) {
+// SuperLcm's own registration (this script, this index), whichever node launches it.
+export function ownMcp(reg,store) {
   const c=reg?.config
-  if(!reg?.found||!reg.enabled||!c||!['stdio',undefined].includes(c.type))return false
+  if(!reg?.found||!c||!['stdio',undefined].includes(c.type))return false
   if(!Array.isArray(c.args)||c.args.length!==2||resolve(c.args[0])!==script||c.args[1]!=='mcp')return false
-  // Never execute an unknown configured binary in a connection test.
-  let sameBinary=false;try{sameBinary=realpathSync(c.command)===realpathSync(process.execPath)||realpathSync(c.command)===realpathSync(findCli('node'))}catch{}
   const configuredHome=c.env?.SUPERLCM_HOME||c.env?.SUPERLCM_CLAUDE_HOME
   const defaultHome=resolve(process.env.SUPERLCM_HOME||process.env.SUPERLCM_CLAUDE_HOME||join(paths().home,'.superlcm-claude'))
-  return sameBinary&&resolve(configuredHome||defaultHome)===store.dir
+  return resolve(configuredHome||defaultHome)===store.dir
+}
+// Up to date: our registration, enabled, launched by the node setup would write now.
+export function matchingMcp(reg,store,env=process.env) {
+  if(!ownMcp(reg,store)||!reg.enabled)return false
+  // Never execute an unknown configured binary in a connection test.
+  try{return realpathSync(reg.config.command)===realpathSync(preferredNode(env).path)}catch{return false}
 }
 export function hookInspection(harness,env=process.env) {
   const file=configFiles(harness,env).hooks;const events=['SessionStart','UserPromptSubmit','Stop','PostCompact','SessionEnd'];let config
@@ -51,10 +56,10 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     const native=['codex','claude-code'].includes(def.id)
     let reg={found:false},hook={status:'unsupported',events:[]},plan=null
     if(native){reg=await mcpRegistration(def.id,{env,runCommand});hook=hookInspection(def.id,env)}
-    else if(def.supported&&bin){try{const {setupPreview}=await import('./setup.js');plan=await setupPreview(store,def.id,{env,runCommand});reg={found:plan.mcp_action==='preserve'||(plan.can_apply===false&&!!plan.blocker&&/同名/.test(plan.blocker))};hook={status:plan.hook_events_added.length?'missing':'configured',events:[]}}catch(error){reg={found:false,error:error.message}}}
+    else if(def.supported&&bin){try{const {setupPreview}=await import('./setup.js');plan=await setupPreview(store,def.id,{env,runCommand});reg={found:plan.existing||plan.mcp_action==='preserve'||(plan.can_apply===false&&!!plan.blocker&&/同名/.test(plan.blocker))};hook={status:plan.hook_events_added.length?'missing':'configured',events:[]}}catch(error){reg={found:false,error:error.message}}}
     const hookSeen=seen.find(c=>c.kind==='hook'&&c.client===def.id)?.seen_at||null
     const mcpSeen=seen.find(c=>c.kind==='mcp-self-reported'&&(def.id==='claude-code'?/claude/i:/codex/i).test(c.client)&&!c.client.includes('self-test'))?.seen_at||null
-    return {harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:native?matchingMcp(reg,store):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
+    return {node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
   }))
   for(const x of store.harnessSettings())if(!rows.some(r=>r?.harness===x.harness))rows.push({harness:x.harness,label:x.harness,supported:false,detected:false,configured:false,hook:{status:'unsupported'},connection:'unverified'})
   return rows.filter(Boolean)

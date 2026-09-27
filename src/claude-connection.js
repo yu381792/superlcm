@@ -7,7 +7,7 @@ import { subscriptionEnv } from './claude-cli.js'
 // No user message, persisted conversation, tools execution or model inference.
 export async function probeClaudeConnection(store,{env=process.env,registration,spawnProcess=spawn,timeoutMs=15000}={}) {
  const reg=registration||await mcpRegistration('claude-code',{env})
- if(!matchingMcp(reg,store))return {ok:false,skipped:true,status:'not_configured',message:'Claude 的 SuperLcm 配置尚未匹配此索引；请先确认接入。'}
+ if(!matchingMcp(reg,store,env))return {ok:false,skipped:true,status:'not_configured',message:'Claude 的 SuperLcm 配置尚未匹配此索引；请先确认接入。'}
  const server={type:'stdio',command:reg.config.command,args:reg.config.args,env:{...reg.config.env,SUPERLCM_HOME:store.dir,SUPERLCM_DIAGNOSTIC:'1'}}
  return new Promise(resolve=>{
   const args=['--print','--input-format','stream-json','--output-format','stream-json','--verbose','--no-session-persistence','--strict-mcp-config','--mcp-config',JSON.stringify({mcpServers:{superlcm:server}}),'--settings','{"disableAllHooks":true}','--tools','']

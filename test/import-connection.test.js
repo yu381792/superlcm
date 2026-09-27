@@ -1,4 +1,5 @@
 import './env.mjs'
+import { preferredNode } from '../src/runtime.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync,writeFileSync,rmSync } from 'node:fs'
@@ -28,7 +29,7 @@ test('real stdio lcm_continue call returns the handoff and records the successfu
  assert.equal(connectionEvidence(store,'claude-code').last_tool,'lcm_continue');assert.equal(connectionEvidence(store,'claude-code').state,'not_observed','stdio process has closed')
 }))
 test('Claude runtime check uses native status not server self-test and sends no prompt',fixture(async({store})=>{
- const calls=[],registration={found:true,enabled:true,config:{command:process.execPath,args:[script,'mcp'],env:{SUPERLCM_HOME:store.dir}}};let receivedEnv
+ const calls=[],registration={found:true,enabled:true,config:{command:preferredNode().path,args:[script,'mcp'],env:{SUPERLCM_HOME:store.dir}}};let receivedEnv
  const spawnProcess=(bin,args,options)=>{receivedEnv=JSON.parse(args[args.indexOf('--mcp-config')+1]).mcpServers.superlcm.env;const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),exitCode:null,kill(){this.exitCode=0}});child.stdin.on('data',raw=>{const req=JSON.parse(raw);calls.push(req.request.subtype);const response=req.request.subtype==='initialize'?{}:{mcpServers:[{name:'superlcm',status:'connected',tools:[{name:'lcm_context'}]}]};queueMicrotask(()=>child.stdout.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:req.request_id,response}})+'\n'))});return child}
  const result=await probeClaudeConnection(store,{registration,spawnProcess});assert.deepEqual(calls,['initialize','mcp_status']);assert.equal(receivedEnv.SUPERLCM_DIAGNOSTIC,'1');assert.equal(result.ok,true);assert.equal(result.existing_session_verified,false);assert.equal(result.scope,'claude-runtime-probe');assert.equal(result.tool_count,1)
 }))

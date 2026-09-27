@@ -2,6 +2,7 @@
 
 ## 0.2.0-alpha.1
 
+- Launch SuperLcm with a node that no AI tool bundles, so a tool update cannot break it; cards show 需更新 when an older connection should be refreshed, and connecting again updates SuperLcm's own MCP entry and hooks in place.
 - Size summary segments by characters only and send every record whole; previously input was cut at 22,000 characters (so 24,000-character segments lost their end) and each message at 2,400. A record longer than a whole segment gets its own segment with head and tail kept. The 单段最多消息数 setting is gone (a hidden 200-message cap remains), and the CLI summary timeout is 180 s.
 - Optional 自动补齐 for 对话模型生成 (off by default): pick the Claude or Codex CLI and hooks catch up in the background when summaries fall about 3 calls behind or a conversation ends. The lag notice now counts pending summary calls instead of records.
 - Hermes and Pi connect automatically: 接入 registers SuperLcm's MCP tools and capture hooks (Hermes through its own config code; Pi as one extension file), checks that they load, and for Hermes opens a terminal so its hook approval prompt appears. Hermes messages are kept in SuperLcm's own append-only copy, with compression chains joined into one conversation; Pi session files are indexed byte for byte. The Codex setup dialog reads whether its hooks are trusted and can open Codex for the review.

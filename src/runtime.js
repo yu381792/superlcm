@@ -1,7 +1,7 @@
-import { accessSync, constants } from 'node:fs'
+import { accessSync, constants, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, isAbsolute, join, resolve } from 'node:path'
-import { execFile } from 'node:child_process'
+import { basename, delimiter, isAbsolute, join, resolve, sep } from 'node:path'
+import { execFile, spawnSync } from 'node:child_process'
 import { promisify } from 'node:util'
 export const runCommand = promisify(execFile)
 export const cliScript = new URL('./cli.js', import.meta.url)
@@ -23,3 +23,32 @@ export function findCli(name,env=process.env) {
   return null
 }
 export const commandOptions = env => ({env,timeout:12000,maxBuffer:2*1024*1024,windowsHide:true})
+
+// Node that the connected tools should launch SuperLcm with. Prefer one that no AI tool ships inside its
+// own folder (Hermes bundles one under ~/.hermes/node): a tool update can replace or remove its copy.
+const TOOL_DIRS = [['.hermes', 'Hermes'], ['.codex', 'Codex'], ['.claude', 'Claude Code'], ['.pi', 'Pi']]
+const recentNode = new Map()
+function nodeRecentEnough(bin) {
+  if (!recentNode.has(bin)) {
+    let ok = false
+    try { const [major, minor] = spawnSync(bin, ['-p', 'process.versions.node'], { encoding: 'utf8', timeout: 5000 }).stdout.trim().split('.').map(Number); ok = major > 22 || (major === 22 && minor >= 16) } catch {}
+    recentNode.set(bin, ok)
+  }
+  return recentNode.get(bin)
+}
+export function nodeOwner(bin, env = process.env) {
+  let real; try { real = realpathSync(bin) } catch { return null }
+  let home = paths(env).home; try { home = realpathSync(home) } catch {}
+  return TOOL_DIRS.find(([dir]) => real.startsWith(join(home, dir) + sep))?.[1] || null
+}
+export function preferredNode(env = process.env) {
+  const exe = process.platform === 'win32' ? 'node.exe' : 'node'
+  const candidates = [process.execPath, '/usr/local/bin/node', '/opt/homebrew/bin/node', ...(env.PATH || '').split(delimiter).filter(Boolean).map(dir => join(dir, exe))]
+  for (const bin of candidates) {
+    let real; try { accessSync(bin, constants.X_OK); real = realpathSync(bin) } catch { continue }
+    if (!/^node(\.exe)?$/i.test(basename(real)) || nodeOwner(bin, env)) continue // skip version-manager shims and tool-bundled copies
+    if (bin !== process.execPath && !nodeRecentEnough(bin)) continue
+    return { path: bin, borrowed: null }
+  }
+  return { path: process.execPath, borrowed: nodeOwner(process.execPath, env) }
+}

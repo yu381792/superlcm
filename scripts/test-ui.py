@@ -80,7 +80,8 @@ try:
   for harness in ['codex','claude-code','hermes','pi']:
    if not page.locator('[data-setup="'+harness+'"]:not([disabled])').count():print('skip',harness,'(not installed)');continue
    page.locator('[data-setup="'+harness+'"]').click()
-   page.wait_for_function("() => document.getElementById('applySetup') && !document.getElementById('applySetup').disabled",timeout=30000)
+   page.wait_for_function("() => document.getElementById('applySetup') && (!document.getElementById('applySetup').disabled || document.querySelector('.modal .notice.bad'))",timeout=30000)
+   if page.locator('#applySetup').is_disabled():print('skip',harness,'(blocked on this computer:',page.locator('.modal .notice.bad').first.inner_text(),')');page.locator('.modal [data-close]').first.click();continue
    with page.expect_response(lambda r:'/api/setup-apply' in r.url) as setup:page.click('#applySetup')
    result=setup.value.json();assert setup.value.status==200,result;assert result['saved'] and result['configuration_verified'] and not result['trust_granted'],result
    page.wait_for_selector('.modal .steps li:nth-child(3).done, .modal .steps li:nth-child(3).fail',timeout=60000)

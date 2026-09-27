@@ -57,10 +57,12 @@ h = c.get("hooks")
 if not isinstance(h, dict):
     h = {}
     c["hooks"] = h
+old = lambda i, entry: isinstance(i, dict) and isinstance(i.get("command"), str) and x.get("script") and x["script"] in i["command"] and "hermes-hook" in i["command"] and i["command"] != entry["command"]
 for event, entry in (x.get("hooks") or {}).items():
-    items = h.get(event) or []
+    items = [i for i in (h.get(event) or []) if not old(i, entry)]  # replace an older SuperLcm hook instead of adding a second one
     if not any(isinstance(i, dict) and i.get("command") == entry["command"] for i in items):
-        h[event] = list(items) + [entry]
+        items = list(items) + [entry]
+    h[event] = items
 save_config(c)
 print("SUPERLCM_JSON " + json.dumps({"saved": True}))`, { mcp, hooks })
 }

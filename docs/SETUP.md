@@ -25,6 +25,8 @@ Hermes (`HERMES_HOME`, default `~/.hermes`) and Pi (`PI_CODING_AGENT_DIR`, defau
 
 **Pi.** Setup writes one auto-discovered file, `extensions/superlcm.ts`, and refuses if a file of that name that SuperLcm did not write already exists. The extension reports `session_start`, `turn_end`, `agent_settled`, `session_compact` and `session_shutdown` to `cli.js pi-hook`, which indexes the append-only session file byte for byte (all branches), and registers the SuperLcm MCP tools as Pi tools; `/superlcm-status` lists them. Open Pi sessions pick it up after `/reload`.
 
+**Which node launches SuperLcm.** Setup writes the path of a Node.js 22.16+ that no AI tool ships inside its own folder (it checks the node running the console, then `/usr/local/bin/node`, `/opt/homebrew/bin/node` and `PATH`), so updating Hermes, which bundles a node under `~/.hermes/node`, cannot remove it. If only a tool-bundled node exists, the card says so. Connecting again replaces SuperLcm's own older MCP entry and hooks in place (never duplicates them); Codex and Hermes then ask you to approve the changed hooks once more.
+
 In-conversation summaries (`agent` mode) get no per-turn nudge in Hermes or Pi yet; choose a background method for those tools. Conversations imported earlier as one-off snapshots stay as separate entries.
 
 ## Local Web control console (opt-in)

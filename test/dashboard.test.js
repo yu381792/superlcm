@@ -124,3 +124,28 @@ test('generated hook command handles spaces/quotes and writes explicit index hom
  assert.equal(result.status,0,result.stderr);assert.equal(store.source('codex-generated').status,'ok');assert.equal(existsSync(join(dir,'wrong-index','lcm.sqlite')),false)
  }finally{store.close()}
 }))
+
+test('setup prefers a node no AI tool bundles, and replaces an older SuperLcm hook instead of adding a second', async () => {
+  const { preferredNode, nodeOwner } = await import('../src/runtime.js')
+  const { setupPreview } = await import('../src/setup.js')
+  const dir = mkdtempSync(join(tmpdir(), 'superlcm-node-'))
+  try {
+    const bundled = join(dir, '.hermes', 'node', 'bin'); mkdirSync(bundled, { recursive: true }); symlinkSync(process.execPath, join(bundled, 'node'))
+    assert.equal(nodeOwner(join(bundled, 'node'), { HOME: dir }), null, 'the link resolves outside the tool folder, so it is not borrowed')
+    assert.equal(preferredNode({ HOME: dir, PATH: '' }).path, process.execPath)
+    const inside = join(dir, '.hermes', 'bin'); mkdirSync(inside, { recursive: true }); writeFileSync(join(inside, 'node'), '#!/bin/sh\n', { mode: 0o755 })
+    assert.equal(nodeOwner(join(inside, 'node'), { HOME: dir }), 'Hermes', 'a node inside a tool folder is borrowed')
+    const env = { ...process.env, HOME: dir, CODEX_HOME: join(dir, 'codex'), SUPERLCM_CODEX_CLI_BIN: process.execPath }
+    const store = new ClaudeStore(join(dir, 'index'))
+    try {
+      mkdirSync(env.CODEX_HOME, { recursive: true })
+      const stale = `'/old/node' '${script}' 'codex-hook' '--home' '${store.dir}'`
+      writeFileSync(join(env.CODEX_HOME, 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: stale }] }] } }))
+      const p = await setupPreview(store, 'codex', { env, runCommand: async () => { throw Error('absent') } })
+      const stop = p._next.hooks.Stop.flatMap(g => g.hooks)
+      assert.equal(stop.length, 1, 'updated in place, not duplicated')
+      assert.ok(stop[0].command.startsWith("'" + preferredNode(env).path + "'"))
+      assert.ok(p.hook_events_added.includes('Stop'))
+    } finally { store.close() }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

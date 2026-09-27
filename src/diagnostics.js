@@ -52,7 +52,7 @@ export async function testHarness(store,harness,options={}) {
   if(harness==='hermes')return testHermes(store,options)
   if(harness==='pi')return testPi(store,options)
   if(!['codex','claude-code'].includes(harness)){const row=(await harnessConnections(store,options)).find(x=>x.harness===harness);if(!row)throw Error('Unknown detected harness');let local;try{const page=row.local_conversations?localConversations(store,harness,{...options,limit:1}):null;local=page?{ok:true,total:page.total}:{ok:false,note:'暂无本地会话 adapter'}}catch(error){local={ok:false,error:error.message}}return {harness,capabilities_only:true,detected:row.detected,version:row.version,local,host_connection:'unverified',note:'仅检查 CLI 和原生会话读取能力；MCP / 自动 hook 接入尚未适配，不宣称已连接。'}}
-  const reg=await mcpRegistration(harness,options),matches=matchingMcp(reg,store),hook=hookInspection(harness,options.env)
+  const reg=await mcpRegistration(harness,options),matches=matchingMcp(reg,store,options.env||process.env),hook=hookInspection(harness,options.env)
   const protocol=matches?await probeMcp({env:{...(options.env||process.env),SUPERLCM_HOME:store.dir}}):{ok:false,skipped:true,error:reg.found?'配置不匹配此 SuperLcm 路径 / 索引；未执行未知命令':'未配置 SuperLcm MCP'}
   let adapter;try{adapter=await testHook(harness,options)}catch(error){adapter={ok:false,error:error.message}}
   const trust=harness==='codex'?await codexHookTrust({env:options.env||process.env}):null
