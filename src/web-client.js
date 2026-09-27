@@ -55,6 +55,13 @@ function show(view, updateHash = true) {
   if (updateHash) history.replaceState(null, '', '#' + view)
 }
 for (const b of document.querySelectorAll('.nav button')) b.onclick = () => show(b.dataset.view)
+// The brand always returns to the conversation list (also leaving the phone detail view).
+$('#brand').onclick = event => { event.preventDefault(); $('#conv').classList.remove('show-detail'); show('conversations') }
+// Settings show one section at a time, picked from the side list.
+for (const b of document.querySelectorAll('#setNav button')) b.onclick = () => {
+  for (const x of document.querySelectorAll('#setNav button')) x === b ? x.setAttribute('aria-current', 'true') : x.removeAttribute('aria-current')
+  for (const p of document.querySelectorAll('.set-body .panel')) p.hidden = p.dataset.sec !== b.dataset.sec
+}
 window.addEventListener('hashchange', () => show(location.hash.slice(1), false))
 $('#statusPill').onclick = () => show('connect')
 document.addEventListener('keydown', event => {

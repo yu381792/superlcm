@@ -40,7 +40,8 @@ button:disabled { cursor: default }
 /* Top bar */
 .app { height: 100%; display: flex; flex-direction: column }
 .top { display: flex; align-items: center; gap: 24px; padding: 0 20px; height: 56px; border-bottom: 1px solid var(--line); background: var(--surface); flex: none }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; color: inherit; text-decoration: none; border-radius: 6px }
+.brand:hover { opacity: .8 }
 .nav { display: flex; gap: 4px; height: 100% }
 .nav button { border: 0; background: none; padding: 0 12px; height: 100%; color: var(--ink2); border-bottom: 2px solid transparent; font-weight: 500 }
 .nav button:hover { color: var(--ink) }
@@ -225,6 +226,12 @@ details > summary { cursor: pointer; font-size: 13px; color: var(--ink2) }
 .local-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 13px }
 .local-row:last-child { border-bottom: 0 }
 .local-row .n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.set-layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 24px; align-items: start }
+.set-nav { position: sticky; top: 0; display: grid; gap: 2px }
+.set-nav button { border: 0; background: none; text-align: left; padding: 8px 12px; border-radius: 8px; color: var(--ink2); font-weight: 500 }
+.set-nav button:hover { background: var(--hover); color: var(--ink) }
+.set-nav button[aria-current="true"] { background: var(--accent-soft); color: var(--ink) }
+.set-body { display: grid; gap: 24px; min-width: 0 }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 14px }
 .panel h2 { margin: 0; font-size: 15px }
 .panel .desc { margin: -8px 0 0; font-size: 13px; color: var(--ink2) }
@@ -267,5 +274,8 @@ td select { border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px;
   .lanes { grid-template-columns: 36px minmax(0, 1fr) }
   .axis { padding-left: 46px }
   .page-inner { padding: 20px 16px 40px }
+  .set-layout { grid-template-columns: minmax(0, 1fr); gap: 16px }
+  .set-nav { position: static; display: flex; overflow-x: auto; gap: 4px }
+  .set-nav button { white-space: nowrap; flex: none }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important } }

@@ -16,7 +16,7 @@ export function page(nonce) {
 <body>
 <div class="app">
   <header class="top">
-    <div class="brand">${logo}SuperLcm</div>
+    <a class="brand" href="#conversations" id="brand" title="返回对话列表">${logo}SuperLcm</a>
     <nav class="nav" aria-label="主菜单">
       <button type="button" data-view="conversations">对话</button>
       <button type="button" data-view="connect">接入</button>
@@ -57,14 +57,17 @@ export function page(nonce) {
   <section class="view page" id="view-settings" hidden>
     <div class="page-inner">
       <div class="page-h"><h1>设置</h1></div>
-      <div class="panel">
+      <div class="set-layout">
+        <nav class="set-nav" id="setNav" aria-label="设置分类"><button type="button" data-sec="writer" aria-current="true">摘要生成方式</button><button type="button" data-sec="granularity">摘要粒度</button><button type="button" data-sec="per-tool">按工具设置</button><button type="button" data-sec="mcp">AI 可用的 MCP 工具</button><button type="button" data-sec="storage">存储与外观</button></nav>
+        <div class="set-body">
+      <div class="panel" data-sec="writer">
         <h2>摘要生成方式</h2>
         <p class="desc">摘要仅用于导航，原文始终完整保存。「对话内生成」由当前对话的 AI 顺带完成，它读到的内容大多已在缓存中，费用最低；其他方式会在后台自动补齐。</p>
         <div class="seg-ctl" id="writer"></div>
         <div class="fields" id="writerFields"></div>
         <div class="actions"><button type="button" class="btn primary" id="saveWriter">保存</button><span class="saved" id="writerSaved" aria-live="polite"></span></div>
       </div>
-      <div class="panel">
+      <div class="panel" data-sec="granularity" hidden>
         <h2>摘要粒度</h2>
         <p class="desc">只影响之后新生成的摘要，已有摘要保持不变。</p>
         <div class="fields">
@@ -74,12 +77,12 @@ export function page(nonce) {
         </div>
         <div class="notice calm"><span id="granEst"></span></div>
       </div>
-      <div class="panel">
+      <div class="panel" data-sec="per-tool" hidden>
         <h2>按工具设置</h2>
         <p class="desc">未单独设置的工具沿用上方默认值。</p>
         <div class="tbl-wrap"><table><thead><tr><th>工具</th><th>摘要生成</th><th>实际生效</th></tr></thead><tbody id="perTool"></tbody></table></div>
       </div>
-      <div class="panel">
+      <div class="panel" data-sec="mcp" hidden>
         <h2>AI 可用的 MCP 工具</h2>
         <p class="desc">接入后，对话中的 AI 可调用以下工具。接入、导入、重命名等管理操作仅在控制台和命令行中进行。</p>
         <div class="toolref">
@@ -91,13 +94,15 @@ export function page(nonce) {
           <div><code>lcm_summary_submit</code><span>提交摘要，服务器校验原文后保存（同上）。</span></div>
         </div>
       </div>
-      <div class="panel">
+      <div class="panel" data-sec="storage" hidden>
         <h2>存储与外观</h2>
         <div class="fields">
           <label class="field">数据位置<input id="dataDir" readonly></label>
           <label class="field">配色<select id="palSel">${swatches.map(([id, name]) => `<option value="${id}">${name}</option>`).join('')}</select></label>
           <label class="field">外观<select id="themeSel"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
           <label class="field">语言<select id="langSel"><option value="auto">跟随浏览器</option><option value="zh">中文</option><option value="en">English</option></select></label>
+        </div>
+      </div>
         </div>
       </div>
     </div>

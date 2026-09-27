@@ -23,6 +23,8 @@ Tools without automatic capture (Hermes, Pi) and past conversations of any suppo
 
 ## 设置 (Settings)
 
+A side list (a scrolling row on phones) shows one section at a time. Clicking the SuperLcm logo in the top-left always returns to the conversation list.
+
 - **摘要生成方式** — 对话内生成 (the conversation's own AI, via `lcm_summary_task`/`lcm_summary_submit`), Claude 订阅, Codex 订阅, 自定义 API, or 关闭. CLI modes list models from the installed CLI's own catalog. API keys are write-only and stored outside SQLite.
 - **摘要粒度** — first-level segment size (6k / 12k / 24k characters), maximum messages per segment (16 / 32 / 64), and merge width (3 / 4 / 6). Changes apply to new summaries only.
 - **按工具设置** — per-tool overrides of the default writer.
