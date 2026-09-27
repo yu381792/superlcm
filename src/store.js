@@ -144,6 +144,16 @@ export class ClaudeStore {
     const scope=chosen.scope==='harness'?'harness:'+chosen.harness:'global'
     return readApiKey(this.dir,scope) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null)
   }
+  // A saved custom API (this conversation's tool first, then global) usable for a one-off catch-up in any mode.
+  apiConfig(session,env=process.env) {
+    const harness=this.metadata(session).harness
+    for (const [scope,choice] of [['harness:'+harness,harness!=='legacy'?this.harnessSetting(harness):null],['global',this.globalSetting()]]) {
+      if (choice?.mode!=='api') continue
+      const apiKey=readApiKey(this.dir,scope) || (scope==='global' && !choice.api_url && !choice.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null)
+      if (apiKey) return {model:choice.model,api_provider:choice.api_provider,api_url:choice.api_url,apiKey}
+    }
+    return null
+  }
   hasApiCredential(scope){return Boolean(readApiKey(this.dir,scope))}
   markClient(client,kind='mcp') {if(typeof client!=='string'||!client.trim()||client.length>100)return;this.db.prepare("INSERT INTO client_seen(client,seen_at,kind) VALUES(?,datetime('now'),?) ON CONFLICT(client,kind) DO UPDATE SET seen_at=excluded.seen_at").run(client,kind)}
   clients() {return this.db.prepare('SELECT client,seen_at,kind FROM client_seen ORDER BY seen_at DESC LIMIT 30').all()}

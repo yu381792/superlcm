@@ -5,7 +5,7 @@ import { buildHierarchy, summaryWork } from './summarize.js'
 import { summarizeWithClaudeCli } from './claude-cli.js'
 import { summarizeWithCodexCli } from './codex-cli.js'
 import { startServer } from './mcp.js'
-import { startWeb } from './web.js'
+import { startWeb, defaultPort } from './web.js'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 const [command,...rest]=process.argv.slice(2)
@@ -27,7 +27,11 @@ function scheduleSummary(store,session,mode,model) {
 const derivedTitle=(store,session)=>store.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview.replace(/^user:\s*/,'').replace(/\s+/g,' ').trim().slice(0,90)
 if(command==='setup' || command==='doctor-local'){const store=new ClaudeStore();try{const {harnessConnections}=await import('./harness.js');if(command==='doctor-local'||!rest[0])console.log(JSON.stringify(await harnessConnections(store),null,2));else{const {setupPreview,publicPreview,applySetup}=await import('./setup.js');const preview=await setupPreview(store,rest[0]);console.log(JSON.stringify(rest.includes('--apply')?await applySetup(store,rest[0],preview.revision):publicPreview(preview),null,2))}}catch(error){console.error(error.message);process.exitCode=1}finally{store.close()}}
 else if (command==='mcp') startServer()
-else if (command==='web') { const web=await startWeb({port:rest[0]?Number(rest[0]):0});process.stdout.write(`SuperLcm local console: ${web.url}\n`) }
+else if (command==='web') {
+  const port=rest[0]?Number(rest[0]):defaultPort
+  try { const web=await startWeb({port});process.stdout.write(`SuperLcm local console: ${web.url}\n`) }
+  catch(error) { if(error.code!=='EADDRINUSE')throw error; process.stderr.write(`Port ${port} is already in use. If the console is already running, open http://127.0.0.1:${port}/ ; otherwise pass another port: node src/cli.js web <port>\n`); process.exitCode=1 }
+}
 else if (command==='hook' || command==='codex-hook' || command==='index' || command==='index-codex' || command==='import' || command==='name' || command==='overview' || command==='summarize') {
   const store=new ClaudeStore()
   try {
@@ -74,13 +78,15 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if (!store.source(rest[0])) throw new Error('Unknown session')
       // --backend runs one explicit subscription pass (console "generate now"), independent of the saved mode.
       const backendFlag=rest.indexOf('--backend'),backend=backendFlag>=0?rest[backendFlag+1]:null
-      if (backend!==null && !['cli','codex-cli'].includes(backend)) throw new Error('--backend must be cli or codex-cli')
+      if (backend!==null && !['cli','codex-cli','api'].includes(backend)) throw new Error('--backend must be cli, codex-cli or api')
+      const oneOffApi=backend==='api'?store.apiConfig(rest[0]):null
+      if (backend==='api' && !oneOffApi) throw new Error('No saved custom API; configure one in Settings first')
       try {
-        const {mode,model,api_provider,api_url}=backend?{mode:backend,model:null}:effective(store,rest[0])
+        const {mode,model,api_provider,api_url}=oneOffApi?{mode:'api',...oneOffApi}:backend?{mode:backend,model:null}:effective(store,rest[0])
         if (!backend && process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
         result=mode==='api'
-          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL})
+          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?.apiKey||store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL})
           : mode==='codex-cli'
             ? await buildHierarchy(store,rest[0],{model:`codex-cli:${model||process.env.SUPERLCM_CODEX_CLI_MODEL||'configured'}`,summarize:text=>summarizeWithCodexCli(text,{model:model||process.env.SUPERLCM_CODEX_CLI_MODEL||''})})
             : await buildHierarchy(store,rest[0],{model:`claude-cli:${model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||'sonnet'}`,summarize:text=>summarizeWithClaudeCli(text,{model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||'sonnet'})})

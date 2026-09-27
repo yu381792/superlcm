@@ -16,11 +16,11 @@ Claude Code and Codex compact long conversations and lose detail. SuperLcm keeps
 
     node src/cli.js web
 
-Open the printed URL, then:
+Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then:
 
 1. **接入 (Connect)** — pick Claude Code or Codex and confirm. SuperLcm registers its MCP server and hooks through the tool's own CLI, backs up the config first, and verifies it loads. Codex additionally asks you to trust the hooks in `/hooks`.
 2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **接续到其他工具** to get the one-line handoff for another tool.
-3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (cheapest, it mostly reads cached context), your Claude or Codex subscription CLI in the background, or a custom API. Tune segment size and merge width.
+3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (cheapest, it mostly reads cached context), your Claude or Codex subscription CLI in the background, or a custom API (any Anthropic or OpenAI-compatible endpoint), so no subscription is required. Tune segment size and merge width.
 
 Terminal equivalents: `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 

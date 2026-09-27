@@ -2,6 +2,8 @@
 
 ## 0.2.0-alpha.1
 
+- The console lives at a fixed address, `http://127.0.0.1:8791/`, with no login token; Host, Origin and JSON-only writes still block other web pages.
+- Catch-up buttons show only methods this computer can run (installed Claude/Codex CLI, saved custom API); `summarize --backend api` runs a one-off pass with the saved custom API.
 - Keep a private byte-for-byte archive of every indexed record under `originals/`, so originals survive the host moving or deleting its transcript; `node src/cli.js archive` backfills existing conversations and recovers Codex rollouts moved into `archived_sessions/`.
 - Chinese and English interface, following the browser language with a switch in Settings; a test checks every Chinese string has an English translation.
 - Redesign the console into three views: 对话 (list, search, summary-level strip, summary tree, original-record drawer, continue-in-another-tool, rename), 接入 (evidence-based status, guided setup dialog, local import) and 设置 (summary writer, granularity, per-tool overrides, palette and theme). Real tool logos; phone layout; dark mode.

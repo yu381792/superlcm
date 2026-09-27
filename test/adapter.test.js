@@ -7,7 +7,7 @@ import { ClaudeStore, importFile } from '../src/store.js'
 import { buildHierarchy, summarizeWithModel } from '../src/summarize.js'
 import { saveApiKey } from '../src/api-credentials.js'
 import { normalizeApiEndpoint } from '../src/api-endpoint.js'
-import { createServer } from 'node:http'
+import { createServer, request } from 'node:http'
 import { summarizeWithClaudeCli, subscriptionEnv } from '../src/claude-cli.js'
 import { summaryMode } from '../src/mode.js'
 import { call, startServer, tools } from '../src/mcp.js'
@@ -355,7 +355,7 @@ test('every Chinese interface string has an English translation',()=>{
   const {LANGS,t}=new Function('localStorage','navigator','document',i18n+';return {LANGS,t}')(env.localStorage,env.navigator,env.document)
   const cjk=/[一-龥]/,missing=new Set(),native=new Set(['中文'])
   for(const file of ['web-client.js','web-admin.js'])for(const [,key] of src(file).matchAll(/\bt\('([^']*)'/g))if(cjk.test(key)&&LANGS.en[key]===undefined)missing.add(key)
-  const html=webPage('tok','n'),shell=html.slice(html.indexOf('<body>'),html.indexOf('<script'))
+  const html=webPage('n'),shell=html.slice(html.indexOf('<body>'),html.indexOf('<script'))
   for(const [,text] of shell.matchAll(/>([^<>]+)</g)){const key=text.trim();if(cjk.test(key)&&!native.has(key)&&LANGS.en[key]===undefined)missing.add(key)}
   for(const [,text] of shell.matchAll(/(?:placeholder|title|aria-label)="([^"]+)"/g))if(cjk.test(text)&&LANGS.en[text]===undefined)missing.add(text)
   assert.deepEqual([...missing],[])
@@ -364,20 +364,24 @@ test('every Chinese interface string has an English translation',()=>{
   assert.match(t('Claude 报告 SuperLcm 状态：failed'),/^Claude reports SuperLcm status: failed/)
 })
 test('Web console page inlines a syntactically valid script with the new views',()=>{
-  const html=webPage('demo-token','nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
+  const html=webPage('nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
   assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/--accent: #C96442/)
   for(const view of ['conversations','connect','settings'])assert.match(html,new RegExp('id="view-'+view+'"'))
   for(const label of ['对话','接入','设置','摘要生成方式','摘要粒度'])assert.match(html,new RegExp('>'+label+'<'))
   assert.match(js,/对话内生成/);assert.match(js,/function boot\(/);assert.doesNotMatch(html,/lcm_sessions|lcm_deliver|当前会话 AI/)
 })
-test('local Web console authenticates and probes actual MCP protocol',fixture(async ({store})=>{
+test('local Web console needs no login, refuses foreign writes and probes actual MCP protocol',fixture(async ({store})=>{
   const web=await startWeb({store:new ClaudeStore(store.dir),discovery:async()=>[{harness:'codex',detected:true,configured:true}]})
   try {
     const initial=await fetch(web.url),html=await initial.text();assert.match(html,/<title>SuperLcm<\/title>/)
-    const cookie=initial.headers.get('set-cookie');assert.match(cookie,/HttpOnly/);assert.equal((await fetch(new URL(web.url).origin+'/',{headers:{Cookie:cookie.split(';')[0]}})).status,200)
+    assert.equal(initial.headers.get('set-cookie'),null,'no login cookie')
     const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token}
-    assert.equal((await fetch(base+'/api/conversations')).status,401)
-    assert.equal((await fetch(base+'/api/conversations',{headers})).status,200)
+    assert.equal(new URL(web.url).search,'','no login token in the console address')
+    assert.equal((await fetch(base+'/api/conversations')).status,200)
+    assert.equal((await fetch(base+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json',Origin:'http://evil.test'},body:'{}'})).status,403,'cross-origin writes are refused')
+    assert.equal((await fetch(base+'/api/settings',{method:'POST',headers:{'Content-Type':'text/plain'},body:'{}'})).status,415,'form-style writes are refused')
+    const rebound=await new Promise(resolve=>{const req=request({host:'127.0.0.1',port:new URL(base).port,path:'/api/conversations',headers:{Host:'evil.test'}},res=>resolve(res.statusCode));req.end()})
+    assert.equal(rebound,403,'DNS-rebinding Host is refused')
     assert.equal((await fetch(base+'/api/state',{headers})).status,404)
     const original=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.equal(typeof original.global.mode,'string')
     const saved=await fetch(base+'/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify({scope:'global',mode:'off'})});assert.equal(saved.status,200);assert.equal(store.globalSetting().mode,'off')

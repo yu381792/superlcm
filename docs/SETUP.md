@@ -23,7 +23,7 @@ Hermes (`HERMES_HOME`) and Pi (`PI_CODING_AGENT_DIR`) are also detected and offe
 
 ## Local Web control console (opt-in)
 
-Run `node /ABSOLUTE_PATH_TO_REPO/src/cli.js web` (or add a local port number). It prints a one-time `http://127.0.0.1:<port>/?token=...` URL. The server binds **only** 127.0.0.1, requires the token on API requests, enforces same-origin writes, and never calls a model merely because the page was opened. See [CONSOLE.md](CONSOLE.md) for what each view does.
+Run `node /ABSOLUTE_PATH_TO_REPO/src/cli.js web` and open `http://127.0.0.1:8791/` (or pass another port). The server binds only to 127.0.0.1 and needs no login. It refuses requests whose Host header is not `127.0.0.1:<port>` (which stops DNS-rebinding pages), refuses cross-origin writes, accepts writes only as JSON (so a foreign web page cannot send them without a failing preflight), and serves a strict CSP. Web pages on other sites cannot read its responses. Any program running as your user on this computer can open it, the same as it can read the index files directly. Opening the page never calls a model. See [CONSOLE.md](CONSOLE.md) for what each view does.
 
 To continue a conversation in another tool, open it in **对话**, click **接续到其他工具**, and paste the one-line instruction (for example `通过 SuperLcm 接续对话 #6e94e`) into a new conversation of the target tool. Its AI calls `lcm_continue`, receives the top-level outline plus recent messages, and reads anything older with `lcm_read`. Nothing is pushed into another process; the target pulls what it needs.
 
@@ -127,7 +127,7 @@ Set `SUPERLCM_SUMMARY_MODE=codex-cli` or choose Codex subscription for the globa
 
 ### Current-session agent (explicit opt-in)
 
-Choose 对话内生成 in the console (or `SUPERLCM_SUMMARY_MODE=agent`). After each answer, a `UserPromptSubmit` nudge asks the AI to call `lcm_summary_task`, which returns either the next merge (several adjacent summaries to combine) or the next unsummarized segment, and then `lcm_summary_submit`, which re-verifies the originals before saving. One task per turn keeps the cost low: the AI mostly re-reads context that is already cached. If the conversation stops, summarizing stops too; the console offers a one-click background catch-up with a subscription CLI. The local stdio MCP cannot authenticate which conversation is calling, so the stored model label is `mcp-agent`.
+Choose 对话内生成 in the console (or `SUPERLCM_SUMMARY_MODE=agent`). After each answer, a `UserPromptSubmit` nudge asks the AI to call `lcm_summary_task`, which returns either the next merge (several adjacent summaries to combine) or the next unsummarized segment, and then `lcm_summary_submit`, which re-verifies the originals before saving. One task per turn keeps the cost low: the AI mostly re-reads context that is already cached. If the conversation stops, summarizing stops too; the console offers a one-click background catch-up with whichever method this computer has: an installed Claude or Codex CLI, or a saved custom API. The local stdio MCP cannot authenticate which conversation is calling, so the stored model label is `mcp-agent`.
 
 ### Custom API backend (explicit opt-in)
 

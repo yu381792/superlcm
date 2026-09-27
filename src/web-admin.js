@@ -122,7 +122,7 @@ function renderWriter() {
     '<label class="field">' + t('接口地址') + '<input id="wUrl" type="url" value="' + esc(same && g.api_url || 'https://api.anthropic.com/v1/messages') + '"></label>' +
     '<label class="field">' + t('模型 ID') + '<input id="wModelId" value="' + esc(same && g.model || '') + '" placeholder="' + t('例如 claude-sonnet-5') + '"></label>' +
     '<label class="field">' + t('API 密钥') + '<input id="wKey" type="password" autocomplete="new-password" placeholder="' + (g.api_key_configured ? t('已保存，留空保持不变') : t('首次保存必须填写')) + '"></label>'
-  if (mode === 'agent') html = '<div class="notice calm"><span>' + t('对话中的 AI 每轮回答后顺带整理一段摘要。对话停下时摘要也会停；需要补齐时，可以在对话详情页用订阅一键生成。') + '</span></div>'
+  if (mode === 'agent') html = '<div class="notice calm"><span>' + t('对话中的 AI 每轮回答后顺带整理一段摘要。对话停下时摘要也会停；需要补齐时，可以在对话详情页一键补齐。') + '</span></div>'
   $('#writerFields').innerHTML = html
   $('#writerSaved').textContent = ''
   const provider = $('#wProvider')

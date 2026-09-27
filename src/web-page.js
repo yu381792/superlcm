@@ -4,7 +4,7 @@ const asset = name => readFileSync(new URL(name, import.meta.url), 'utf8')
 const logo = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="3" rx="1.5" fill="var(--l3)"/><rect x="2" y="8.5" width="11" height="3" rx="1.5" fill="var(--l2)"/><rect x="2" y="14" width="6" height="3" rx="1.5" fill="var(--l1)"/></svg>'
 const swatches = [['orange', '陶橙', '#C96442'], ['teal', '松石', '#1E6B57'], ['indigo', '靛青', '#3A4FB0'], ['graphite', '石墨', '#2E2E2C']]
 
-export function page(token, nonce) {
+export function page(nonce) {
   return `<!doctype html>
 <html lang="zh">
 <head>
@@ -106,7 +106,6 @@ export function page(token, nonce) {
 <div id="overlay"></div>
 <div id="toast" class="toast" role="status" hidden></div>
 <script nonce="${nonce}">
-const token = ${JSON.stringify(token)};
 const ICONS = ${JSON.stringify(icons)};
 ${asset('web-i18n.js')}
 ${asset('web-client.js')}

@@ -54,7 +54,6 @@ test('Claude catalog sends initialize only and strips hooks, prompts and tools',
 test('authenticated Web workflow detects, indexes, pages nodes and gates setup',fixture(async({env,store})=>{
  transcript(env,'codex','web','Web Local');const spawned=[];const web=await startWeb({store:new ClaudeStore(store.dir),env,discovery:async()=>[{harness:'codex',supported:true,detected:true}],catalog:async()=>({models:[{id:'runtime-only'}],status:'live'}),spawnWorker:(...args)=>{spawned.push(args);return {unref(){}}}});const base=new URL(web.url).origin,headers={Authorization:'Bearer '+web.token};const post=(path,data)=>fetch(base+path,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(data)})
  try {
-  assert.equal((await fetch(base+'/api/local-conversations?harness=codex')).status,401)
   const rows=await fetch(base+'/api/local-conversations?harness=codex',{headers}).then(r=>r.json());assert.equal(rows.total,1);assert.equal(store.sources().length,0)
   const result=await post('/api/index-local',{harness:'codex',key:rows.conversations[0].key}).then(r=>r.json());assert.equal(result.source.conversation_id,'web');assert.equal(result.summary_count,0)
   const list=await fetch(base+'/api/conversations',{headers}).then(r=>r.json());assert.equal(list.total,1);assert.deepEqual(list.groups.map(g=>g.harness),['codex'])
@@ -68,6 +67,14 @@ test('authenticated Web workflow detects, indexes, pages nodes and gates setup',
   assert.equal((await post('/api/tuning',{target_chars:7,batch_size:64,fanout:6})).status,400)
   assert.equal((await post('/api/summarize',{session:result.session,backend:'api'})).status,400)
   assert.equal((await post('/api/summarize',{session:result.session,backend:'cli'}).then(r=>r.json())).started,true);assert.deepEqual(spawned[0][1].slice(1),['summarize',result.session,'--backend','cli'])
+  assert.equal((await fetch(base+'/api/conversation?session='+result.session,{headers}).then(r=>r.json())).backends.includes('api'),false)
+  {const r=await post('/api/settings',{scope:'global',mode:'api',model:'gpt-test',api_provider:'openai',api_url:'https://api.example.test/v1/chat/completions',api_key:'k-test-12345'});assert.equal(r.status,200,await r.text())}
+  assert.equal((await post('/api/settings',{scope:'global',mode:'agent'})).status,200)
+  assert.equal(store.apiConfig(result.session),null,'a custom API only counts while a scope is set to it')
+  assert.equal((await post('/api/settings',{scope:'global',mode:'api',model:'gpt-test',api_provider:'openai',api_url:'https://api.example.test/v1/chat/completions'})).status,200)
+  assert.ok((await fetch(base+'/api/conversation?session='+result.session,{headers}).then(r=>r.json())).backends.includes('api'))
+  store.release(result.session)
+  assert.equal((await post('/api/summarize',{session:result.session,backend:'api'}).then(r=>r.json())).started,true);assert.deepEqual(spawned.at(-1)[1].slice(-2),['--backend','api'])
   assert.equal((await post('/api/setup-apply',{harness:'codex',revision:'fake'})).status,400)
   assert.equal((await fetch(base+'/api/models?backend=cli',{headers}).then(r=>r.json())).models[0].id,'runtime-only')
   assert.equal((await post('/api/index-local',{harness:'codex',key:'not-a-local-selection'})).status,400)

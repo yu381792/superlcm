@@ -1,6 +1,6 @@
 # Local console
 
-`node src/cli.js web [port]` prints a one-time `http://127.0.0.1:<port>/?token=…` URL. The server binds only to 127.0.0.1, sets an HttpOnly cookie from the token, requires the bearer token on every API call, refuses cross-origin writes, and serves a strict CSP (inline script by nonce, images only as `data:`). Opening the page never calls a model.
+`node src/cli.js web` serves the console at the fixed address `http://127.0.0.1:8791/` (pass another port as an argument if 8791 is taken; if the console is already running, the command says so). The server binds only to 127.0.0.1 and needs no login. It refuses requests whose Host header is not `127.0.0.1:<port>` (which stops DNS-rebinding pages), refuses cross-origin writes, accepts writes only as JSON (so a foreign web page cannot send them without a failing preflight), and serves a strict CSP. Web pages on other sites cannot read its responses. Any program running as your user on this computer can open it, the same as it can read the index files directly. Opening the page never calls a model.
 
 ## 对话 (Conversations)
 
@@ -11,7 +11,7 @@ The detail view shows:
 - **摘要层级** — one lane per summary level plus the raw-record lane. Higher-level segments are clickable and jump to that summary. The hatched tail is records not yet summarized; their originals are still readable.
 - **摘要目录** — the top-level summaries (nodes not yet merged upward). Higher nodes expand into their children; first-level nodes open the original records.
 - **原文 drawer** — the exact records for a range, with tool calls and system records collapsed. This is the same text `lcm_read` returns.
-- **Notices** — when in-conversation summaries fall far behind, or a conversation has none, buttons start a one-off background pass with the Claude or Codex subscription CLI (`POST /api/summarize`, which spawns `cli.js summarize … --backend`). The view polls while a pass holds the summary lease.
+- **Notices** — when in-conversation summaries fall far behind, or a conversation has none, buttons start a one-off background pass (`POST /api/summarize`, which spawns `cli.js summarize … --backend`). Only methods this computer can run are shown: the Claude or Codex subscription when that CLI is installed, and the custom API when one is saved in Settings. With none available, the notice links to Settings. The view polls while a pass holds the summary lease.
 - **接续到其他工具** — pick a target tool and copy the one-line handoff (or a terminal command). The packet preview shows exactly what `lcm_continue` returns.
 - **重命名** — a manual name that later hook updates do not overwrite.
 

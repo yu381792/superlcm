@@ -1,5 +1,5 @@
 import { createServer } from 'node:http'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connectionEvidence } from './connections.js'
@@ -15,10 +15,11 @@ import { continuePacket } from './context.js'
 import { modelCatalog, harnessConnections } from './model-catalog.js'
 import { summaryMode } from './mode.js'
 import { saveApiKey } from './api-credentials.js'
+import { findCli } from './runtime.js'
 export { probeMcp } from './mcp-probe.js'
 
-const secret = () => randomBytes(24).toString('hex')
-const equal = (a, b) => typeof a === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
+const nonce = () => randomBytes(18).toString('hex')
+export const defaultPort = 8791
 const cliScript = fileURLToPath(new URL('./cli.js', import.meta.url))
 const securityHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...securityHeaders }); res.end(JSON.stringify(data)) }
@@ -34,13 +35,15 @@ const int = (value, fallback) => { const n = value === null || value === undefin
 const shortName = name => { const flat = String(name).replace(/\s+/g, ' ').trim(); return flat.length > 24 ? flat.slice(0, 23) + '…' : flat }
 const continueLine = source => `通过 SuperLcm 接续对话 #${source.code}「${shortName(source.name)}」，继续之前的任务。`
 
-export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', token = secret(), env = process.env, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, spawnWorker = spawn } = {}) {
+export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', env = process.env, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, spawnWorker = spawn } = {}) {
   if (host !== '127.0.0.1') throw new Error('Web console is loopback-only')
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local Web port')
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
+  // One-off catch-up methods this computer can actually run for a conversation.
+  const backends = id => [...(findCli('claude', env) ? ['cli'] : []), ...(findCli('codex', env) ? ['codex-cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
   const routes = {
     'GET /api/conversations': url => ({ ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() }),
-    'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status } },
+    'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id) } },
     'GET /api/outline': url => store.outline(session(url), url.searchParams.get('node') || undefined),
     'GET /api/events': url => { const id = session(url); return { source: store.metadata(id), events: store.eventPreviews(id, int(url.searchParams.get('from'), 0), int(url.searchParams.get('to'), 0)) } },
     'GET /api/search': url => store.find(url.searchParams.get('q') || '', { harness: url.searchParams.get('harness') || undefined, limit: 30 }),
@@ -49,7 +52,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'POST /api/summarize': async req => {
       const x = await body(req)
       if (!store.source(x.session)) throw new Error('Unknown conversation')
-      if (!['cli', 'codex-cli'].includes(x.backend)) throw new Error('Choose Claude or Codex subscription')
+      if (!backends(x.session).includes(x.backend)) throw new Error('This summary method is not available on this computer')
       if (store.summarizing(x.session)) return { started: false, running: true }
       const child = spawnWorker(process.execPath, [cliScript, 'summarize', x.session, '--backend', x.backend], { detached: true, windowsHide: true, stdio: 'ignore', env: { ...env, SUPERLCM_HOME: store.dir } })
       child.on?.('error', () => store.setStatus(x.session, 'summary_error'))
@@ -94,20 +97,23 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     try {
       const url = new URL(req.url, 'http://127.0.0.1')
       if (req.headers.host !== `127.0.0.1:${server.address()?.port}`) return json(res, 403, { error: 'Loopback Host required' })
-      const cookie = req.headers.cookie?.split(';').map(x => x.trim()).find(x => x.startsWith('slcm='))?.slice(5)
-      if (url.pathname === '/' && req.method === 'GET' && (equal(url.searchParams.get('token'), token) || equal(cookie, token))) {
-        const nonce = secret()
-        res.writeHead(200, { 'Set-Cookie': `slcm=${token}; HttpOnly; SameSite=Strict; Path=/`, 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders,
-          'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` })
-        return res.end(page(token, nonce))
+      // No login: the Host check stops DNS rebinding, browsers cannot read cross-origin responses,
+      // and writes need a same-origin JSON request, which a foreign page cannot send without a failing preflight.
+      if (url.pathname === '/' && req.method === 'GET') {
+        const n = nonce()
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders,
+          'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${n}'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` })
+        return res.end(page(n))
       }
-      if (!equal(req.headers.authorization?.replace(/^Bearer /, ''), token)) return json(res, 401, { error: 'Local console token required' })
-      if (req.method === 'POST' && req.headers.origin && req.headers.origin !== `http://127.0.0.1:${server.address()?.port}`) return json(res, 403, { error: 'Cross-origin mutation refused' })
+      if (req.method === 'POST') {
+        if (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${server.address()?.port}`) return json(res, 403, { error: 'Cross-origin mutation refused' })
+        if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) return json(res, 415, { error: 'JSON request required' })
+      }
       const route = routes[`${req.method} ${url.pathname}`]
       if (!route) return json(res, 404, { error: 'Unknown console route' })
       json(res, 200, await route(req.method === 'GET' ? url : req, url))
     } catch (error) { json(res, 400, { error: error.message }) }
   })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve) })
-  return { server, token, url: `http://127.0.0.1:${server.address().port}/?token=${token}`, close: () => new Promise(resolve => server.close(() => { store.close(); resolve() })) }
+  return { server, url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise(resolve => server.close(() => { store.close(); resolve() })) }
 }

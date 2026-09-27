@@ -9,7 +9,7 @@ const toolName = h => NAMES[h] || h
 const state = { view: 'conversations', harnesses: [], rows: [], total: 0, offset: 0, groups: [], h: '', sel: null, query: '', detail: null, open: new Set(), children: new Map(), target: null }
 
 async function api(path, body) {
-  const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
+  const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
   const data = await response.json()
   if (!response.ok) throw new Error(t(data.error || '请求失败'))
   return data
@@ -151,8 +151,12 @@ function stripHtml(d) {
   const note = d.summary_count ? '<div class="strip-note">' + (d.bands.length ? '<span><i class="k" style="background:var(--l3)"></i>' + t('层级越高越概括') + '</span>' : '') + (tail > 0 ? '<span><i class="k" style="background:var(--tail)"></i>' + t('最新 {n} 条尚未摘要，原文可查', { n: fmt(tail) }) + '</span>' : '') + '<span style="margin-left:auto">' + t('摘要生成：') + writerLabel(d.setting.mode) + '</span></div>' : ''
   return '<div><div class="section-h"><h2>' + t('摘要层级') + '</h2>' + (d.bands.length ? '<span class="aside">' + t('点击色块定位到对应摘要') + '</span>' : '') + '</div><div class="strip"><div class="lanes">' + lanes + '</div><div class="axis"><span>#0</span>' + (d.records > 2 ? '<span>#' + Math.round(d.records / 2) + '</span>' : '') + '<span>#' + Math.max(d.records - 1, 0) + '</span></div>' + note + '</div></div>'
 }
+// Only the catch-up methods this computer can run: installed CLIs and a saved custom API.
+const BACKEND_LABELS = { cli: '用 Claude 订阅', 'codex-cli': '用 Codex 订阅', api: '用自定义 API' }
 function generateButtons() {
-  return '<button type="button" class="btn small" data-generate="cli">' + t('用 Claude 订阅') + '</button><button type="button" class="btn small" data-generate="codex-cli">' + t('用 Codex 订阅') + '</button>'
+  const list = state.detail.backends || []
+  if (!list.length) return '<span class="muted">' + t('本机没有可用的补齐方式。') + '</span><button type="button" class="btn small" data-goto="settings">' + t('配置自定义 API') + '</button>'
+  return list.map(b => '<button type="button" class="btn small" data-generate="' + b + '">' + t(BACKEND_LABELS[b]) + '</button>').join('')
 }
 function renderDetail() {
   const d = state.detail, c = d.source, tail = d.records - d.summarized_to
@@ -161,8 +165,8 @@ function renderDetail() {
     '<div class="actions"><button type="button" class="btn" id="rename">' + t('重命名') + '</button><button type="button" class="btn primary" id="continue">' + t('接续到其他工具') + '</button></div></div>'
   html += stripHtml(d)
   if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
-  else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认对应的 CLI 已登录，然后重试。') + '</span><span class="actions">' + generateButtons() + '</span></div>'
-  else if (d.summary_count && tail > 64 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后 {n} 条。', { n: fmt(tail) }) + '</b>' + t('对话内生成每轮只处理一段，跟不上新增内容。可以用订阅在后台补齐。') + '</span><span class="actions">' + generateButtons() + '</span></div>'
+  else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + '</span><span class="actions">' + generateButtons() + '</span></div>'
+  else if (d.summary_count && tail > 64 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后 {n} 条。', { n: fmt(tail) }) + '</b>' + t('对话内生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButtons() + '</span></div>'
   if (d.summary_count) {
     html += '<div><div class="section-h"><h2>' + t('摘要目录') + '</h2><span class="aside"><button type="button" class="link" id="collapseAll">' + t('收起全部') + '</button></span></div><div class="tree">' + d.nodes.map(nodeHtml).join('') +
       (tail > 0 ? '<div class="tail-row"><span>' + t('最新 {n} 条（{r}）尚未摘要', { n: '<b class="num">' + fmt(tail) + '</b>', r: '#' + d.summarized_to + '–#' + (d.records - 1) }) + '</span><button type="button" class="btn small" data-raw="' + Math.max(d.summarized_to, d.records - 60) + '-' + (d.records - 1) + '">' + t('查看原文') + '</button></div>' : '') + '</div></div>'
@@ -203,6 +207,7 @@ function bindDetail() {
   })
   for (const b of all('[data-raw]')) b.onclick = () => { const [a, z] = b.dataset.raw.split('-').map(Number); openRaw(a, z) }
   for (const b of all('.seg[data-node]')) b.onclick = () => act(() => revealNode(d.bands.find(x => x.id === b.dataset.node), true))
+  for (const b of all('[data-goto]')) b.onclick = () => show(b.dataset.goto)
   for (const b of all('[data-generate]')) b.onclick = () => act(async () => {
     const x = await api('/api/summarize', { session: state.sel, backend: b.dataset.generate })
     toast(x.running ? t('已经在生成中') : t('已开始在后台生成摘要'))
