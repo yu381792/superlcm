@@ -50,6 +50,21 @@ function report(ctx, event) {
   child.stdin.end(JSON.stringify({ hook_event_name: event, session_id: sessionId, session_file: sessionFile }));
   child.unref();
 }
+// Same report, but waits for SuperLcm's answer: a short note for the AI this turn (对话模型生成), or nothing.
+function ask(ctx, event) {
+  const sessionId = ctx.sessionManager.getSessionId(), sessionFile = ctx.sessionManager.getSessionFile();
+  if (!sessionId) return Promise.resolve({});
+  return new Promise(resolve => {
+    const child = spawn(NODE, [CLI, "pi-hook", "--home", HOME], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    let out = "";
+    const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({}); }, 10000);
+    child.stdout.on("data", d => { out += d; });
+    child.on("error", () => { clearTimeout(timer); resolve({}); });
+    child.on("close", () => { clearTimeout(timer); try { resolve(JSON.parse(out) || {}); } catch { resolve({}); } });
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify({ hook_event_name: event, session_id: sessionId, session_file: sessionFile }));
+  });
+}
 // Minimal MCP client over stdio for the SuperLcm server.
 function mcpClient() {
   const proc = spawn(NODE, [CLI, "mcp"], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, SUPERLCM_HOME: HOME }, windowsHide: true });
@@ -80,6 +95,10 @@ export default function (pi) {
         registered.push(tool.name);
       }
     } catch (error) { ctx.ui?.notify?.("SuperLcm tools unavailable: " + error.message, "warning"); }
+  });
+  pi.on("before_agent_start", async (_event, ctx) => {
+    const reply = await ask(ctx, "before_agent_start");
+    if (reply.context) return { message: { customType: "superlcm", content: reply.context, display: false } };
   });
   for (const event of ["turn_end", "agent_settled", "session_compact"]) pi.on(event, async (_event, ctx) => report(ctx, event));
   pi.on("session_shutdown", async (_event, ctx) => { report(ctx, "session_shutdown"); try { client?.proc.kill(); } catch {} client = null; });

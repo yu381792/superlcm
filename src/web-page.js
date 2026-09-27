@@ -82,7 +82,7 @@ export function page(nonce) {
         <h2>摘要（全局默认）</h2>
         <p class="desc">所有工具默认按这里生成摘要；某个工具想用别的方式，到「接入」页它的卡片上单独改。摘要仅用于导航，原文始终完整保存。</p>
         <h3>生成方式</h3>
-        <p class="desc">「对话模型生成」由当前对话的 AI 顺带完成，它读到的内容大多已在缓存中，费用最低；其他方式会在后台自动补齐。</p>
+        <p class="desc">「对话模型生成」由正在聊天的 AI 在刚聊完一段时凭记忆顺手写，几乎不多花钱，任何接入的工具都能用；另外几种是在后台单独调用模型来写，不占用主对话。</p>
         <div class="seg-ctl" id="writer"></div>
         <div class="fields" id="writerFields"></div>
         <h3>粒度</h3>
@@ -102,7 +102,7 @@ export function page(nonce) {
           <div><code>lcm_find</code><span>按名称、编号或关键词查找对话，并在摘要与原文中全文搜索。</span></div>
           <div><code>lcm_outline</code><span>逐层展开摘要目录。</span></div>
           <div><code>lcm_read</code><span>按编号读取原文，与原始记录逐字一致。</span></div>
-          <div><code>lcm_summary_task</code><span>领取待摘要的原文（仅「对话模型生成」模式可用）。</span></div>
+          <div><code>lcm_summary_task</code><span>领取下一段待写的摘要（仅「对话模型生成」模式可用）。</span></div>
           <div><code>lcm_summary_submit</code><span>提交摘要，服务器校验原文后保存（同上）。</span></div>
         </div>
       </div>

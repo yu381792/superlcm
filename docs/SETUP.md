@@ -27,7 +27,7 @@ Hermes (`HERMES_HOME`, default `~/.hermes`) and Pi (`PI_CODING_AGENT_DIR`, defau
 
 **Which node launches SuperLcm.** Setup writes the path of a Node.js 22.16+ that no AI tool ships inside its own folder (it checks the node running the console, then `/usr/local/bin/node`, `/opt/homebrew/bin/node` and `PATH`), so updating Hermes, which bundles a node under `~/.hermes/node`, cannot remove it. If only a tool-bundled node exists, the card says so. Connecting again replaces SuperLcm's own older MCP entry and hooks in place (never duplicates them); Codex and Hermes then ask you to approve the changed hooks once more.
 
-In-conversation summaries (`agent` mode) get no per-turn nudge in Hermes or Pi yet; choose a background method for those tools. Conversations imported earlier as one-off snapshots stay as separate entries.
+Conversations imported earlier as one-off snapshots stay as separate entries.
 
 ## Local Web control console (opt-in)
 
@@ -135,7 +135,7 @@ Set `SUPERLCM_SUMMARY_MODE=codex-cli` or choose Codex subscription for the globa
 
 ### Current-session agent (explicit opt-in)
 
-Choose 对话模型生成 in the console (or `SUPERLCM_SUMMARY_MODE=agent`). After each answer, a `UserPromptSubmit` nudge asks the AI to call `lcm_summary_task`, which returns either the next merge (several adjacent summaries to combine) or the next unsummarized segment, and then `lcm_summary_submit`, which re-verifies the originals before saving. One task per turn keeps the cost low: the AI mostly re-reads context that is already cached. If the conversation stops, summarizing stops too; the console offers a one-click background catch-up with whichever method this computer has: an installed Claude or Codex CLI, or a saved custom API. Catch-up is manual by default. Under 设置 › 摘要 you can opt in to **自动补齐** with the Claude or Codex CLI: a hook then starts a background pass once the backlog reaches about 3 model calls, or when a conversation ends with work left (Codex has no end event, so only the backlog rule applies there). The local stdio MCP cannot authenticate which conversation is calling, so the stored model label is `mcp-agent`.
+Choose 对话模型生成 in the console (or `SUPERLCM_SUMMARY_MODE=agent`). When a whole piece is waiting, the hook adds one short note to that turn (Claude Code and Codex `UserPromptSubmit`, Hermes `pre_llm_call`, Pi `before_agent_start`) asking the AI to call `lcm_summary_task` with `recent:true` after answering, then `lcm_summary_submit`. A piece the AI has just been through comes back as `from_memory`: only where it starts and ends, so the AI writes it from its own context and nothing is sent again; the cost is the few hundred tokens of the summary itself. SuperLcm records where the host tool compacted the conversation (Claude Code/Codex `PostCompact`, a Hermes continuation session, Pi `session_compact`); a piece that begins before that point is no longer in the AI's context, so it comes with its original text instead, and nothing is skipped. Merges always come with the child summaries. A summary written from memory cannot be checked word for word against the originals; it is navigation only, and the originals stay exact. The console's 补齐摘要 button catches up in the background with whatever method this computer has. The local stdio MCP cannot authenticate which conversation is calling, so the stored model label is `mcp-agent`, and `recent:true` should only be used from inside that conversation.
 
 ### Custom API backend (explicit opt-in)
 

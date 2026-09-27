@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { findCli, paths } from './runtime.js'
-export const HERMES_EVENTS = ['on_session_end', 'on_session_finalize']
+// pre_llm_call is the one per-turn moment a shell hook can hand the AI a short note (对话模型生成).
+export const HERMES_EVENTS = ['on_session_end', 'on_session_finalize', 'pre_llm_call']
 export const hermesHome = (env = process.env) => env.HERMES_HOME || join(paths(env).home, '.hermes')
 const shebang = file => { try { const first = readFileSync(file, 'utf8').split('\n')[0]; return first.startsWith('#!') ? first.slice(2).trim() : null } catch { return null } }
 // Hermes installs a shell launcher that execs a venv entry point; the venv's Python sits next to that

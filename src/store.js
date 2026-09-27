@@ -75,7 +75,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS summary_tuning(id INTEGER PRIMARY KEY CHECK(id=1), target_chars INTEGER NOT NULL, batch_size INTEGER NOT NULL, fanout INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS deleted_sessions(session TEXT PRIMARY KEY, deleted_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS summary_backfill(id INTEGER PRIMARY KEY CHECK(id=1), backend TEXT NOT NULL CHECK(backend IN ('cli','codex-cli')));
+      CREATE TABLE IF NOT EXISTS compactions(session TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(session,ordinal));
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
@@ -118,14 +118,10 @@ export class ClaudeStore {
     this.db.prepare('INSERT INTO summary_tuning(id,target_chars,batch_size,fanout) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET target_chars=excluded.target_chars,batch_size=excluded.batch_size,fanout=excluded.fanout').run(target_chars,batch_size,fanout)
     return this.tuning()
   }
-  // Opt-in: when in-conversation summaries fall behind, catch up in the background with this subscription CLI. Absent = manual only.
-  backfill() { return this.db.prepare('SELECT backend FROM summary_backfill WHERE id=1').get()?.backend || null }
-  setBackfill(backend) {
-    if (backend===null) this.db.prepare('DELETE FROM summary_backfill').run()
-    else if (['cli','codex-cli'].includes(backend)) this.db.prepare('INSERT INTO summary_backfill(id,backend) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET backend=excluded.backend').run(backend)
-    else throw new Error('Invalid backfill method')
-    return this.backfill()
-  }
+  // Where the host tool last compacted this conversation: records from this ordinal on were seen by the
+  // AI after that compaction, so it can still summarize them from memory.
+  markCompaction(session,ordinal=this.stats(session).records) { if(this.source(session))this.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session,ordinal) }
+  lastCompaction(session) { return this.db.prepare('SELECT MAX(ordinal) AS o FROM compactions WHERE session=?').get(session)?.o ?? 0 }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }
   harnessSetting(harness) {
     if(typeof harness!=='string'||!/^[a-z][a-z0-9-]{0,39}$/.test(harness))throw new Error('Invalid harness')
@@ -373,7 +369,7 @@ export class ClaudeStore {
     try {
       const deliveries = this.db.prepare('SELECT id FROM deliveries WHERE source_session=? OR target_session=?').all(session, session).map(x => x.id)
       for (const id of deliveries) { this.db.prepare('DELETE FROM delivery_packets WHERE id=?').run(id); this.db.prepare('DELETE FROM deliveries WHERE id=?').run(id) }
-      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'compactions', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
       this.db.prepare('INSERT INTO deleted_sessions(session,deleted_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET deleted_ms=excluded.deleted_ms').run(session, Date.now())
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }

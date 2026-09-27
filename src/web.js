@@ -82,15 +82,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       global: { ...(store.globalSetting() || { mode: summaryMode(env), model: null, api_provider: null, api_url: null, configured: false }), api_key_configured: store.hasApiCredential('global') },
       harnesses: await discovery(store, { env }),
       settings: store.harnessSettings().map(x => ({ ...x, api_key_configured: store.hasApiCredential('harness:' + x.harness) })),
-      tuning: store.tuning(),
-      backfill: store.backfill(),
-      backfill_options: [...(findCli('claude', env) ? ['cli'] : []), ...(findCli('codex', env) ? ['codex-cli'] : [])]
+      tuning: store.tuning()
     }),
-    'POST /api/backfill': async req => {
-      const x = await body(req), backend = x.backend || null
-      if (backend && !findCli(backend === 'cli' ? 'claude' : 'codex', env)) throw new Error('This summary method is not available on this computer')
-      return { backfill: store.setBackfill(backend) }
-    },
     'POST /api/settings': async req => {
       const x = await body(req)
       if (x.scope !== 'global' && x.scope !== 'harness') throw new Error('Invalid settings scope')

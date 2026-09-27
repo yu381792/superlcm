@@ -9,13 +9,14 @@ const instructions = 'SuperLcm keeps the complete original of every recorded con
 const schema = (properties = {}, required = []) => ({type:'object',properties,required,additionalProperties:false})
 const str = description => ({type:'string',description})
 const int = description => ({type:'integer',description})
+const bool = description => ({type:'boolean',description})
 const conversation = str('Conversation #code (e.g. #3fa9c), ID or name')
 export const tools = [
   {name:'lcm_continue',description:'Continue another conversation here: returns its layered outline, the most recent original messages and how to check details. Works across Claude Code, Codex and any other connected tool.',inputSchema:schema({conversation,max_chars:int('Packet budget 2000–30000 characters; default 12000')},['conversation'])},
   {name:'lcm_find',description:'Without a query, list recent conversations with #codes. With a query, find conversations by name/code and search summaries and original text (substring match, works for Chinese). Optionally scope to one conversation or tool.',inputSchema:schema({query:str('Text to search for; omit to list conversations'),conversation:str('Optional: search only this conversation'),harness:str('Optional tool filter, e.g. claude-code or codex'),limit:int('Results per section, 1–50; default 20')})},
   {name:'lcm_outline',description:'Browse the summary outline. Without node: top-level summaries covering the whole conversation plus any unsummarized range. With node: that summary\'s children, or its original message list at the lowest level.',inputSchema:schema({conversation,node:str('Optional node ID from a previous outline')},['conversation'])},
   {name:'lcm_read',description:'Read exact original records by number, verified against the source file. Use this to confirm any detail before relying on it. Page with next.',inputSchema:schema({conversation,from:int('First record number'),to:int('Last record number; default from'),char_offset:int('Character offset within the first record'),max_chars:int('Page budget, max 50000; default 12000')},['conversation','from'])},
-  {name:'lcm_summary_task',description:'In-conversation summaries only: get the next piece of summary work for your own conversation (a batch of originals, or consecutive summaries to merge).',inputSchema:schema({conversation:str('Your current conversation ID or #code')},['conversation'])},
+  {name:'lcm_summary_task',description:'In-conversation summaries only: get the next piece of summary work for your own conversation. With recent:true, a part you have just been through comes back as from_memory (only where it starts and ends; write it from your context); older parts and merges come with their text.',inputSchema:schema({conversation:str('Your current conversation ID or #code'),recent:bool('true when calling from inside that same conversation')},['conversation'])},
   {name:'lcm_summary_submit',description:'In-conversation summaries only: submit the summary for the task from lcm_summary_task. The server verifies the originals are unchanged before saving.',inputSchema:schema({conversation:str('Your current conversation ID or #code'),batch_id:str('batch_id from lcm_summary_task'),summary:str('Factual summary, 20–6000 characters')},['conversation','batch_id','summary'])}
 ]
 const agentTools = new Set(['lcm_summary_task','lcm_summary_submit'])
@@ -43,7 +44,7 @@ export async function call(store,name,args = {}) {
   if (name==='lcm_read') return store.readRange(session,args.from,args.to??args.from,args.char_offset??0,args.max_chars??12000)
   const {mode}=store.effectiveSetting(session)
   if (mode!=='agent') throw new Error('In-conversation summaries are not enabled for this conversation')
-  if (name==='lcm_summary_task') return {source:store.metadata(session),work:summaryWork(store,session)}
+  if (name==='lcm_summary_task') return {source:store.metadata(session),work:summaryWork(store,session,{recent:args.recent===true})}
   if (typeof args.summary!=='string'||args.summary.trim().length<20||args.summary.length>6000) throw new Error('Summary must be 20–6000 characters')
   const work=summaryWork(store,session)
   if (!work || work.batch_id!==args.batch_id) throw new Error('Stale or mismatched summary batch; call lcm_summary_task again')

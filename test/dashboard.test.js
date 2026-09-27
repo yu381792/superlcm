@@ -7,6 +7,7 @@ import { mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,syml
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore } from '../src/store.js'
+import { summaryWork } from '../src/summarize.js'
 import { paths,validModel } from '../src/runtime.js'
 import { localConversations,indexLocalConversation } from '../src/local-conversations.js'
 import { configFiles,hookInspection,script,matchingMcp,harnessConnections } from '../src/harness.js'
@@ -91,7 +92,7 @@ test('Hermes conversations are mirrored losslessly, compression chains merge, ho
  message.run(1,'h1','user','first decision',null,0);message.run(2,'h1','tool','tool output kept',"terminal",1);message.run(3,'h2','assistant','after compaction',null,1);message.run(4,'sub','user','separate subagent',null,1)
  const list=localConversations(store,'hermes',{env});assert.deepEqual(list.conversations.map(c=>c.conversation_id),['h1'],'continuations and delegated subagent runs are not listed separately')
  const saved=indexLocalConversation(store,'hermes',list.conversations.find(c=>c.conversation_id==='h1').key,{env})
- assert.equal(saved.session,'hermes-h1');assert.equal(store.stats('hermes-h1').records,3,'inactive and tool rows are kept');assert.match(store.exact('hermes-h1',1),/tool output kept/);assert.equal(store.metadata('hermes-h1').name,'Hermes source')
+ assert.equal(saved.session,'hermes-h1');assert.equal(store.stats('hermes-h1').records,3,'inactive and tool rows are kept');assert.match(store.exact('hermes-h1',1),/tool output kept/);assert.equal(store.metadata('hermes-h1').name,'Hermes source');assert.equal(store.lastCompaction('hermes-h1'),2,'the first row of the continuation session marks the compaction')
  message.run(5,'h2','user','new turn',null,1);db.prepare("UPDATE messages SET content='rewritten' WHERE id=1").run();db.close()
  const hook=spawnSync(process.execPath,[script,'hermes-hook','--home',store.dir],{env:{...env,SUPERLCM_SUMMARY_MODE:'off'},input:JSON.stringify({hook_event_name:'on_session_end',session_id:'h2'}),encoding:'utf8',timeout:10000})
  assert.equal(hook.status,0,hook.stderr);assert.equal(hook.stdout.trim(),'{}')
@@ -149,3 +150,22 @@ test('setup prefers a node no AI tool bundles, and replaces an older SuperLcm ho
     } finally { store.close() }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('对话模型生成: the per-turn note asks for a piece from memory; after a compaction that piece comes with its text',fixture(({env,store})=>{
+ env.PI_CODING_AGENT_DIR=join(env.HOME,'pi-agent');const root=configFiles('pi',env).transcripts;mkdirSync(join(root,'--p--'),{recursive:true});const file=join(root,'--p--','s.jsonl')
+ const msg=(i)=>({type:'message',id:'m'+i,parentId:i?'m'+(i-1):null,message:{role:i%2?'assistant':'user',content:[{type:'text',text:'point '+i+' about the alpha plan'}]}})
+ writeFileSync(file,[{type:'session',id:'mem',version:3},...Array.from({length:10},(_,i)=>msg(i))].map(x=>JSON.stringify(x)).join('\n')+'\n')
+ store.setGlobalSetting('agent')
+ const hook=event=>{const r=spawnSync(process.execPath,[script,'pi-hook','--home',store.dir],{env,input:JSON.stringify({hook_event_name:event,session_id:'mem',session_file:file}),encoding:'utf8',timeout:10000});assert.equal(r.status,0,r.stderr);return JSON.parse(r.stdout)}
+ const reply=hook('before_agent_start')
+ assert.match(reply.context,/lcm_summary_task \{"conversation":"pi-mem","recent":true\}/)
+ assert.equal(hook('turn_end').context,undefined,'only the turn-start event carries a note')
+ const again=new ClaudeStore(store.dir)
+ try{
+  const fresh=summaryWork(again,'pi-mem',{recent:true})
+  assert.equal(fresh.from_memory,true);assert.equal(fresh.content,undefined,'nothing is sent again');assert.match(fresh.starts.text,/point 0/);assert.equal(summaryWork(again,'pi-mem').from_memory,undefined,'another caller gets the text')
+  again.markCompaction('pi-mem',5)
+  const after=summaryWork(again,'pi-mem',{recent:true})
+  assert.equal(after.batch_id,fresh.batch_id,'same piece');assert.equal(after.from_memory,undefined);assert.match(after.content,/point 2 about/,'the compacted piece comes with its originals')
+ }finally{again.close()}
+}))

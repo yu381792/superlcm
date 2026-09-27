@@ -1,9 +1,9 @@
 // Connect view (setup + local import), status pill, settings, appearance and boot().
 const WRITERS = [
-  ['agent', t('对话模型生成'), t('由对话中的 AI 顺带完成，读取多为缓存，最省钱')],
-  ['cli', t('Claude 订阅'), t('后台自动补齐 · 调用 Claude CLI')],
-  ['codex-cli', t('Codex 订阅'), t('后台自动补齐 · 调用 Codex CLI')],
-  ['api', t('自定义 API'), t('后台自动补齐 · 使用你的 API 密钥')],
+  ['agent', t('对话模型生成'), t('正在聊天的 AI 凭记忆顺手写，几乎不多花钱')],
+  ['cli', t('Claude 订阅'), t('后台单独写 · 调用 Claude CLI')],
+  ['codex-cli', t('Codex 订阅'), t('后台单独写 · 调用 Codex CLI')],
+  ['api', t('自定义 API'), t('后台单独写 · 使用你的 API 密钥')],
   ['off', t('关闭（摘要方式）'), t('不生成摘要，原文照常保存')]
 ]
 const writerLabel = mode => WRITERS.find(w => w[0] === mode)?.[1] || mode
@@ -145,14 +145,9 @@ function renderWriter() {
     '<label class="field">' + t('接口地址') + '<input id="wUrl" type="url" value="' + esc(same && g.api_url || 'https://api.anthropic.com/v1/messages') + '"></label>' +
     '<label class="field">' + t('模型 ID') + '<input id="wModelId" value="' + esc(same && g.model || '') + '" placeholder="' + t('例如 claude-sonnet-5') + '"></label>' +
     '<label class="field">' + t('API 密钥') + '<input id="wKey" type="password" autocomplete="new-password" placeholder="' + (g.api_key_configured ? t('已保存，留空保持不变') : t('首次保存必须填写')) + '"></label>'
-  if (mode === 'agent') html = '<div class="notice calm"><span>' + t('对话中的 AI 每轮回答后顺带整理一段摘要。对话停下时摘要也会停；需要补齐时，可以在对话详情页一键补齐。') + '</span></div>' +
-    '<label class="field">' + t('自动补齐') + '<select id="wBackfill"><option value="">' + t('不自动，需要时在对话页手动补齐') + '</option>' +
-    admin.settings.backfill_options.map(b => '<option value="' + b + '"' + (admin.settings.backfill === b ? ' selected' : '') + '>' + t('跟不上时自动用「{m}」在后台补齐', { m: t(b === 'cli' ? 'Claude 订阅' : 'Codex 订阅') }) + '</option>').join('') + '</select></label>' +
-    '<p class="desc">' + t('选了自动补齐后，积压到约 3 次模型调用，或对话结束时还有没写完的，就在后台补齐，消耗所选订阅的额度。') + '</p>'
   $('#writerFields').innerHTML = html
   $('#writerSaved').textContent = ''
   const provider = $('#wProvider')
-  if ($('#wBackfill')) $('#wBackfill').onchange = () => { $('#writerSaved').textContent = t('有未保存的修改') }
   if (provider) provider.onchange = () => { const url = $('#wUrl'); if (/api\.(anthropic|openai)\.com/.test(url.value) || !url.value) url.value = provider.value === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://api.anthropic.com/v1/messages' }
   if ($('#wModel')) fillModels(mode, same ? g.model : null)
 }
@@ -171,7 +166,6 @@ $('#saveWriter').onclick = () => act(async () => {
   if (mode === 'api') { payload.api_provider = $('#wProvider').value; payload.api_url = $('#wUrl').value.trim(); payload.model = $('#wModelId').value.trim() || null; const key = $('#wKey').value; if (key) payload.api_key = key }
   await api('/api/settings', payload)
   await api('/api/tuning', pickedTuning())
-  if ($('#wBackfill')) await api('/api/backfill', { backend: $('#wBackfill').value || null })
   await loadSettings()
   $('#writerSaved').textContent = t('已保存')
 }, $('#saveWriter'))
