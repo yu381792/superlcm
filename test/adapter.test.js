@@ -10,6 +10,7 @@ import { normalizeApiEndpoint } from '../src/api-endpoint.js'
 import { createServer, request } from 'node:http'
 import { summarizeWithClaudeCli, subscriptionEnv } from '../src/claude-cli.js'
 import { summaryMode } from '../src/mode.js'
+import { codexHookTrust } from '../src/codex-hook-trust.js'
 import { call, startServer, tools } from '../src/mcp.js'
 import { PassThrough } from 'node:stream'
 import { createInterface } from 'node:readline'
@@ -510,4 +511,18 @@ test('merge work is planned as soon as four summaries exist, before the next raw
   const outline=store.outline('long');assert.deepEqual(outline.nodes.map(n=>n.level),[1,0,0]);assert.equal(outline.unsummarized,null)
   assert.throws(()=>store.setTuning({target_chars:100,batch_size:8,fanout:4}),/Unsupported/)
   assert.equal(store.setTuning({target_chars:24000,batch_size:64,fanout:6}).fanout,6)
+}))
+
+test('Codex hook trust is read from Codex hooks/list and never written',fixture(async ({dir})=>{
+  const fake=(status)=>{const bin=join(dir,'codex-'+status);writeFileSync(bin,'#!'+process.execPath+`
+let b='';process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const m=JSON.parse(b.slice(0,i));b=b.slice(i+1)
+if(m.id===1)console.log(JSON.stringify({id:1,result:{}}))
+if(m.id===2)console.log(JSON.stringify({id:2,result:{data:[{hooks:[
+{eventName:'stop',handlerType:'command',command:'node /x/src/cli.js codex-hook',enabled:true,trustStatus:'trusted'},
+{eventName:'sessionStart',handlerType:'command',command:'node /x/src/cli.js codex-hook',enabled:true,trustStatus:'${status}'},
+{eventName:'stop',handlerType:'command',command:'other-tool',enabled:true,trustStatus:'untrusted'}]}]}}))}})
+`);chmodSync(bin,0o755);return bin}
+  assert.deepEqual(await codexHookTrust({bin:fake('trusted'),cwd:dir}),{checked:true,total:2,trusted:2,untrusted:[],ok:true})
+  assert.deepEqual(await codexHookTrust({bin:fake('untrusted'),cwd:dir}),{checked:true,total:2,trusted:1,untrusted:['sessionStart'],ok:false})
+  assert.equal((await codexHookTrust({bin:join(dir,'missing'),cwd:dir})).checked,false)
 }))

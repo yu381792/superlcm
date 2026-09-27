@@ -7,6 +7,7 @@ import { ClaudeStore } from './store.js'
 import { configFiles, mcpRegistration, matchingMcp, hookInspection, script } from './harness.js'
 import { runCommand as run, commandOptions } from './runtime.js'
 import { probeMcp } from './mcp-probe.js'
+import { codexHookTrust } from './codex-hook-trust.js'
 export async function testHook(harness,{env=process.env,runCommand=run}={}) {
   configFiles(harness,env)
   const dir=mkdtempSync(join(tmpdir(),'superlcm-hook-check-')),codex=harness==='codex';let fixture
@@ -29,5 +30,6 @@ export async function testHarness(store,harness,options={}) {
   const reg=await mcpRegistration(harness,options),matches=matchingMcp(reg,store),hook=hookInspection(harness,options.env)
   const protocol=matches?await probeMcp({env:{...(options.env||process.env),SUPERLCM_HOME:store.dir}}):{ok:false,skipped:true,error:reg.found?'配置不匹配此 SuperLcm 路径 / 索引；未执行未知命令':'未配置 SuperLcm MCP'}
   let adapter;try{adapter=await testHook(harness,options)}catch(error){adapter={ok:false,error:error.message}}
-  return {harness,checked_at:new Date().toISOString(),configuration:{ok:matches,found:reg.found},protocol,hook:{...hook,adapter},host_connection:'unverified',note:'逐行测试验证配置、stdio 协议、隔离 hook 写入。并非宿主已加载、已信任或模型已调用的证明。'}
+  const trust=harness==='codex'?await codexHookTrust({env:options.env||process.env}):null
+  return {harness,checked_at:new Date().toISOString(),configuration:{ok:matches,found:reg.found},protocol,hook:{...hook,adapter,...(trust?{trust_check:trust}:{})},host_connection:'unverified',note:'逐行测试验证配置、stdio 协议、隔离 hook 写入。并非宿主已加载、已信任或模型已调用的证明。'}
 }

@@ -79,8 +79,10 @@ async function openSetup(harness) {
       const ok = harness === 'claude-code' ? check.ok : check.protocol?.ok
       steps[2][1] = ok ? 'done' : 'fail'
       busy = false
+      const trust = check.hook?.trust_check
       const next = harness === 'codex'
-        ? '<b>' + t('还差一步：') + '</b>' + t('在 Codex 中输入 {cmd} 信任 SuperLcm 的钩子，然后新开一个对话即可使用。', { cmd: '<span class="mono">/hooks</span>' })
+        ? trust?.ok ? '<b>' + t('接入完成。') + '</b>' + t('Codex 已信任 SuperLcm 的钩子，新开的 Codex 对话即可使用。')
+          : '<b>' + t('还差一步：') + '</b>' + t('在 Codex 中输入 {cmd} 信任 SuperLcm 的钩子，然后新开一个对话即可使用。', { cmd: '<span class="mono">/hooks</span>' }) + (trust?.checked && trust.untrusted.length ? t('（尚未信任 {n} 个）', { n: trust.untrusted.length }) : '')
         : '<b>' + t('接入完成。') + '</b>' + t('新开的 Claude Code 对话会自动加载；已打开的对话需要在 {cmd} 中重连或重开。', { cmd: '<span class="mono">/mcp</span>' })
       render(ok ? next : t('配置已保存，但验证未通过：') + esc(t(check.message || check.protocol?.error || '未知原因')), ok ? 'calm' : 'bad', true)
       await loadHarnesses()
