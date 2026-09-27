@@ -151,12 +151,37 @@ function stripHtml(d) {
   const note = d.summary_count ? '<div class="strip-note">' + (d.bands.length ? '<span><i class="k" style="background:var(--l3)"></i>' + t('层级越高越概括') + '</span>' : '') + (tail > 0 ? '<span><i class="k" style="background:var(--tail)"></i>' + t('最新 {n} 条尚未摘要，原文可查', { n: fmt(tail) }) + '</span>' : '') + '<span style="margin-left:auto">' + t('摘要生成：') + writerLabel(d.setting.mode) + '</span></div>' : ''
   return '<div><div class="section-h"><h2>' + t('摘要层级') + '</h2>' + (d.bands.length ? '<span class="aside">' + t('点击色块定位到对应摘要') + '</span>' : '') + '</div><div class="strip"><div class="lanes">' + lanes + '</div><div class="axis"><span>#0</span>' + (d.records > 2 ? '<span>#' + Math.round(d.records / 2) + '</span>' : '') + '<span>#' + Math.max(d.records - 1, 0) + '</span></div>' + note + '</div></div>'
 }
-// Only the catch-up methods this computer can run: installed CLIs and a saved custom API.
-const BACKEND_LABELS = { cli: '用 Claude 订阅', 'codex-cli': '用 Codex 订阅', api: '用自定义 API' }
-function generateButtons() {
-  const list = state.detail.backends || []
-  if (!list.length) return '<span class="muted">' + t('本机没有可用的补齐方式。') + '</span><button type="button" class="btn small" data-goto="settings">' + t('配置自定义 API') + '</button>'
-  return list.map(b => '<button type="button" class="btn small" data-generate="' + b + '">' + t(BACKEND_LABELS[b]) + '</button>').join('')
+// One clear action; the method (and whose quota it spends) is chosen in a confirmation dialog.
+// Only methods this computer can run are offered: installed CLIs and a saved custom API.
+const BACKENDS = {
+  cli: ['Claude 订阅', '在后台调用本机 claude 命令，消耗你的 Claude 订阅额度。'],
+  'codex-cli': ['Codex 订阅', '在后台调用本机 codex 命令，消耗你的 Codex / ChatGPT 订阅额度。'],
+  api: ['自定义 API', '使用设置里保存的接口和密钥，按服务商价格计费。']
+}
+function generateButton(label, cls = 'btn small') {
+  const d = state.detail
+  if (!(d.backends || []).length) return '<span class="muted">' + t('本机没有可用的摘要生成方式。') + '</span><button type="button" class="' + cls + '" data-goto="settings">' + t('配置自定义 API') + '</button>'
+  if (!d.estimate?.calls) return '<span class="muted">' + t('未摘要的对话文字约 {a} 字，还不到一段摘要（{b} 字），暂不需要生成。', { a: fmt(d.estimate.tail_chars), b: fmt(d.estimate.target_chars) }) + '</span>'
+  return '<button type="button" class="' + cls + '" data-generate>' + t(label) + '</button>'
+}
+function openGenerate() {
+  const d = state.detail, e = d.estimate, list = d.backends
+  let pick = list[0]
+  const opts = () => list.map(b => '<button type="button" class="target" data-b="' + b + '" aria-pressed="' + (b === pick) + '"><span class="t1">' + t(BACKENDS[b][0]) + '</span><span class="t2">' + t(BACKENDS[b][1]) + '</span></button>').join('')
+  overlay('<div class="modal" role="dialog" aria-labelledby="gtitle"><div class="card" style="width:min(520px,100%)"><div class="card-h"><h3 id="gtitle">' + t('生成摘要') + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
+    '<p style="margin:0">' + t('把尚未摘要的 {n} 条原文整理成分层摘要，方便浏览和接续。原文不会改动。', { n: fmt(e.records) }) + '</p>' +
+    '<p class="muted" style="margin:0">' + t('预计调用模型约 {c} 次，在后台运行，可以关掉此页。', { c: fmt(e.calls) }) + (e.tail_chars ? t('最后约 {n} 字还不够一段，暂时只保留原文。', { n: fmt(e.tail_chars) }) : '') + '</p>' +
+    '<div class="section-h"><h2>' + t('用哪种方式生成') + '</h2></div><div class="targets" id="genOpts">' + opts() + '</div>' +
+    '<div class="actions"><button type="button" class="btn primary" id="genGo">' + t('开始生成') + '</button><button type="button" class="btn" data-close>' + t('取消') + '</button></div></div></div></div>', root => {
+    const bind = () => { for (const b of root.querySelectorAll('[data-b]')) b.onclick = () => { pick = b.dataset.b; root.querySelector('#genOpts').innerHTML = opts(); bind() } }
+    bind()
+    const go = root.querySelector('#genGo')
+    go.onclick = () => act(async () => {
+      const x = await api('/api/summarize', { session: state.sel, backend: pick })
+      closeOverlay(); toast(x.running ? t('已经在生成中') : t('已开始在后台生成摘要'))
+      await loadDetail()
+    }, go)
+  })
 }
 function renderDetail() {
   const d = state.detail, c = d.source, tail = d.records - d.summarized_to
@@ -165,14 +190,14 @@ function renderDetail() {
     '<div class="actions"><button type="button" class="btn" id="rename">' + t('重命名') + '</button><button type="button" class="btn primary" id="continue">' + t('接续到其他工具') + '</button></div></div>'
   html += stripHtml(d)
   if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
-  else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + '</span><span class="actions">' + generateButtons() + '</span></div>'
-  else if (d.summary_count && tail > 64 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后 {n} 条。', { n: fmt(tail) }) + '</b>' + t('对话内生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButtons() + '</span></div>'
+  else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
+  else if (d.summary_count && tail > 64 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后 {n} 条。', { n: fmt(tail) }) + '</b>' + t('对话内生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
   if (d.summary_count) {
     html += '<div><div class="section-h"><h2>' + t('摘要目录') + '</h2><span class="aside"><button type="button" class="link" id="collapseAll">' + t('收起全部') + '</button></span></div><div class="tree">' + d.nodes.map(nodeHtml).join('') +
       (tail > 0 ? '<div class="tail-row"><span>' + t('最新 {n} 条（{r}）尚未摘要', { n: '<b class="num">' + fmt(tail) + '</b>', r: '#' + d.summarized_to + '–#' + (d.records - 1) }) + '</span><button type="button" class="btn small" data-raw="' + Math.max(d.summarized_to, d.records - 60) + '-' + (d.records - 1) + '">' + t('查看原文') + '</button></div>' : '') + '</div></div>'
   } else {
     html += '<div class="notice calm"><span><b>' + t('此对话暂无摘要。') + '</b>' + t('{n} 条原文已完整保存，AI 可按编号读取和搜索；接续时将提供最近的原文。', { n: fmt(d.records) }) + (d.setting.mode === 'agent' ? t('对话内生成只在该对话继续进行时才会写摘要。') : '') + '</span></div>' +
-      '<div class="actions">' + (d.summarizing ? '' : generateButtons().replace(/btn small/g, 'btn')) + '<button type="button" class="btn" data-raw="' + Math.max(0, d.records - 60) + '-' + Math.max(d.records - 1, 0) + '">' + t('查看最近原文') + '</button></div>'
+      '<div class="actions">' + (d.summarizing ? '' : generateButton('生成摘要…', 'btn primary')) + '<button type="button" class="btn" data-raw="' + Math.max(0, d.records - 60) + '-' + Math.max(d.records - 1, 0) + '">' + t('查看最近原文') + '</button></div>'
   }
   $('#detail').innerHTML = html + '</div>'
   bindDetail()
@@ -208,11 +233,7 @@ function bindDetail() {
   for (const b of all('[data-raw]')) b.onclick = () => { const [a, z] = b.dataset.raw.split('-').map(Number); openRaw(a, z) }
   for (const b of all('.seg[data-node]')) b.onclick = () => act(() => revealNode(d.bands.find(x => x.id === b.dataset.node), true))
   for (const b of all('[data-goto]')) b.onclick = () => show(b.dataset.goto)
-  for (const b of all('[data-generate]')) b.onclick = () => act(async () => {
-    const x = await api('/api/summarize', { session: state.sel, backend: b.dataset.generate })
-    toast(x.running ? t('已经在生成中') : t('已开始在后台生成摘要'))
-    await loadDetail()
-  }, b)
+  for (const b of all('[data-generate]')) b.onclick = openGenerate
 }
 // Expand every ancestor of a node (found by range containment), then scroll to it.
 async function revealNode(target, expand = false) {

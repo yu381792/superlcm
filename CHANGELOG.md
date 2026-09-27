@@ -3,7 +3,7 @@
 ## 0.2.0-alpha.1
 
 - The console lives at a fixed address, `http://127.0.0.1:8791/`, with no login token; Host, Origin and JSON-only writes still block other web pages.
-- Catch-up buttons show only methods this computer can run (installed Claude/Codex CLI, saved custom API); `summarize --backend api` runs a one-off pass with the saved custom API.
+- A single 生成摘要 / 补齐摘要 button opens a confirmation that shows how many records and model calls a background pass takes, and offers only methods this computer can run (installed Claude/Codex CLI, saved custom API), each labelled with whose quota or bill it uses; `summarize --backend api` runs a one-off pass with the saved custom API.
 - Keep a private byte-for-byte archive of every indexed record under `originals/`, so originals survive the host moving or deleting its transcript; `node src/cli.js archive` backfills existing conversations and recovers Codex rollouts moved into `archived_sessions/`.
 - Chinese and English interface, following the browser language with a switch in Settings; a test checks every Chinese string has an English translation.
 - Redesign the console into three views: 对话 (list, search, summary-level strip, summary tree, original-record drawer, continue-in-another-tool, rename), 接入 (evidence-based status, guided setup dialog, local import) and 设置 (summary writer, granularity, per-tool overrides, palette and theme). Real tool logos; phone layout; dark mode.
@@ -12,7 +12,6 @@
 - Conversations get a short `#code`, track last activity, and sort newest first. Continuing elsewhere is one line: `通过 SuperLcm 接续对话 #code`.
 - Remove the queued cross-conversation delivery flow (the target now pulls context with `lcm_continue`); old delivery tables are left untouched.
 - Relicense from MIT to AGPL-3.0-only; commercial closed-source licensing is available from the author.
-- One-click background catch-up with the Claude or Codex subscription CLI from a conversation's page.
 
 ## 0.1.0-alpha.12
 

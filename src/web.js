@@ -16,6 +16,7 @@ import { modelCatalog, harnessConnections } from './model-catalog.js'
 import { summaryMode } from './mode.js'
 import { saveApiKey } from './api-credentials.js'
 import { findCli } from './runtime.js'
+import { summaryEstimate } from './summarize.js'
 export { probeMcp } from './mcp-probe.js'
 
 const nonce = () => randomBytes(18).toString('hex')
@@ -43,7 +44,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
   const backends = id => [...(findCli('claude', env) ? ['cli'] : []), ...(findCli('codex', env) ? ['codex-cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
   const routes = {
     'GET /api/conversations': url => ({ ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() }),
-    'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id) } },
+    'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id), estimate: summaryEstimate(store, id) } },
     'GET /api/outline': url => store.outline(session(url), url.searchParams.get('node') || undefined),
     'GET /api/events': url => { const id = session(url); return { source: store.metadata(id), events: store.eventPreviews(id, int(url.searchParams.get('from'), 0), int(url.searchParams.get('to'), 0)) } },
     'GET /api/search': url => store.find(url.searchParams.get('q') || '', { harness: url.searchParams.get('harness') || undefined, limit: 30 }),

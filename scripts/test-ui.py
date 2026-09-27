@@ -59,6 +59,14 @@ try:
   page.locator('#rows .hit').first.click();page.wait_for_selector('.drawer .ev.focus, #detail .node.flash',timeout=5000)
   page.keyboard.press('Escape');page.fill('#q','');page.wait_for_selector('#rows .row')
 
+  # No summary yet: one clear action opens a confirmation that names the method and its cost; cancel starts nothing.
+  summarize_calls=[];page.on('request',lambda r:summarize_calls.append(r.url) if '/api/summarize' in r.url else None)
+  page.locator('#rows .row',has_text='Claude 验证目标').click();page.wait_for_selector('#detail h1:has-text("Claude 验证目标")')
+  page.locator('#detail [data-generate]').click();page.wait_for_selector('.modal #genOpts .target')
+  body=page.locator('.modal').inner_text();assert '额度' in body or '计费' in body,body
+  page.screenshot(path=str(shots/'superlcm-generate.png'))
+  page.locator('.modal [data-close]').last.click();assert page.locator('.modal').count()==0 and not summarize_calls,summarize_calls
+
   # Connect: errors are visible, local import works, setup writes only the temporary homes.
   page.locator('.nav [data-view="connect"]').click();page.wait_for_selector('#tools .tool')
   expected_failure[0]=True

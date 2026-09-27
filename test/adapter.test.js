@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore, importFile } from '../src/store.js'
-import { buildHierarchy, summarizeWithModel } from '../src/summarize.js'
+import { buildHierarchy, summarizeWithModel, summaryEstimate } from '../src/summarize.js'
 import { saveApiKey } from '../src/api-credentials.js'
 import { normalizeApiEndpoint } from '../src/api-endpoint.js'
 import { createServer, request } from 'node:http'
@@ -103,7 +103,9 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
 test('any MCP client reads a chosen Claude conversation without merging other summaries',fixture(async ({dir,store})=>{
   const claude=join(dir,'claude.jsonl');writeFileSync(claude,Array.from({length:32},(_,i)=>line(i)).join(''))
   store.ingest('claude-conversation',claude);store.setOrigin('claude-conversation','claude-code')
+  assert.equal(summaryEstimate(store,'claude-conversation').calls,5,'the confirmation dialog predicts the real number of model calls')
   assert.equal((await buildHierarchy(store,'claude-conversation',{model:'fake',summarize:async text=>'Claude decision: '+text.slice(0,50)})).created,5)
+  assert.equal(summaryEstimate(store,'claude-conversation').calls,0)
   const codex=join(dir,'codex.jsonl')
   const codexLines=Array.from({length:8},(_,i)=>JSON.stringify(i%2?{type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'Codex response '+i}]}}:{type:'event_msg',payload:{type:'user_message',message:'Codex user '+i}})+'\n').join('')
   writeFileSync(codex,codexLines)
