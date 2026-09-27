@@ -58,10 +58,11 @@ for (const b of document.querySelectorAll('.nav button')) b.onclick = () => show
 // The brand always returns to the conversation list (also leaving the phone detail view).
 $('#brand').onclick = event => { event.preventDefault(); $('#conv').classList.remove('show-detail'); show('conversations') }
 // Settings show one section at a time, picked from the side list.
-for (const b of document.querySelectorAll('#setNav button')) b.onclick = () => {
-  for (const x of document.querySelectorAll('#setNav button')) x === b ? x.setAttribute('aria-current', 'true') : x.removeAttribute('aria-current')
-  for (const p of document.querySelectorAll('.set-body .panel')) p.hidden = p.dataset.sec !== b.dataset.sec
+function settingsSection(sec) {
+  for (const x of document.querySelectorAll('#setNav button')) x.dataset.sec === sec ? x.setAttribute('aria-current', 'true') : x.removeAttribute('aria-current')
+  for (const p of document.querySelectorAll('.set-body .panel')) p.hidden = p.dataset.sec !== sec
 }
+for (const b of document.querySelectorAll('#setNav button')) b.onclick = () => settingsSection(b.dataset.sec)
 window.addEventListener('hashchange', () => show(location.hash.slice(1), false))
 $('#statusPill').onclick = () => show('connect')
 document.addEventListener('keydown', event => {
@@ -239,7 +240,7 @@ function bindDetail() {
   })
   for (const b of all('[data-raw]')) b.onclick = () => { const [a, z] = b.dataset.raw.split('-').map(Number); openRaw(a, z) }
   for (const b of all('.seg[data-node]')) b.onclick = () => act(() => revealNode(d.bands.find(x => x.id === b.dataset.node), true))
-  for (const b of all('[data-goto]')) b.onclick = () => show(b.dataset.goto)
+  for (const b of all('[data-goto]')) b.onclick = () => { show(b.dataset.goto); if (b.dataset.goto === 'settings') settingsSection('writer') }
   for (const b of all('[data-generate]')) b.onclick = openGenerate
 }
 // Expand every ancestor of a node (found by range containment), then scroll to it.

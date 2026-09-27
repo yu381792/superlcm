@@ -209,6 +209,8 @@ details > summary { cursor: pointer; font-size: 13px; color: var(--ink2) }
 .tool .ts { font-size: 13px; color: var(--ink2) }
 .tool .tp { font: 12px var(--mono); color: var(--ink3); overflow-wrap: anywhere }
 .tool.dim { opacity: .6 }
+.tool .tw { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--ink2) }
+.tool .tw select { font-size: 12px; padding: 2px 6px; max-width: 100% }
 .state { font-size: 12px; padding: 1px 8px; border-radius: 99px; display: inline-flex; gap: 5px; align-items: center }
 .state.on { background: var(--good-soft); color: var(--good) }
 .state.warn { background: var(--warn-soft); color: var(--warn) }

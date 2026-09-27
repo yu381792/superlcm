@@ -58,9 +58,22 @@ export function page(nonce) {
     <div class="page-inner">
       <div class="page-h"><h1>设置</h1></div>
       <div class="set-layout">
-        <nav class="set-nav" id="setNav" aria-label="设置分类"><button type="button" data-sec="writer" aria-current="true">摘要生成方式</button><button type="button" data-sec="granularity">摘要粒度</button><button type="button" data-sec="per-tool">按工具设置</button><button type="button" data-sec="mcp">AI 可用的 MCP 工具</button><button type="button" data-sec="storage">存储与外观</button></nav>
+        <nav class="set-nav" id="setNav" aria-label="设置分类"><button type="button" data-sec="look" aria-current="true">外观</button><button type="button" data-sec="storage">存储</button><button type="button" data-sec="writer">摘要生成方式</button><button type="button" data-sec="granularity">摘要粒度</button><button type="button" data-sec="mcp">MCP 工具</button></nav>
         <div class="set-body">
-      <div class="panel" data-sec="writer">
+      <div class="panel" data-sec="look">
+        <h2>外观</h2>
+        <div class="fields">
+          <label class="field">配色<select id="palSel">${swatches.map(([id, name]) => `<option value="${id}">${name}</option>`).join('')}</select></label>
+          <label class="field">明暗<select id="themeSel"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+          <label class="field">语言<select id="langSel"><option value="auto">跟随浏览器</option><option value="zh">中文</option><option value="en">English</option></select></label>
+        </div>
+      </div>
+      <div class="panel" data-sec="storage" hidden>
+        <h2>存储</h2>
+        <p class="desc">所有对话、原文存档和摘要都只存在这台电脑上的这个目录里。</p>
+        <div class="fields"><label class="field">数据位置<input id="dataDir" readonly></label></div>
+      </div>
+      <div class="panel" data-sec="writer" hidden>
         <h2>摘要生成方式</h2>
         <p class="desc">摘要仅用于导航，原文始终完整保存。「对话内生成」由当前对话的 AI 顺带完成，它读到的内容大多已在缓存中，费用最低；其他方式会在后台自动补齐。</p>
         <div class="seg-ctl" id="writer"></div>
@@ -77,11 +90,6 @@ export function page(nonce) {
         </div>
         <div class="notice calm"><span id="granEst"></span></div>
       </div>
-      <div class="panel" data-sec="per-tool" hidden>
-        <h2>按工具设置</h2>
-        <p class="desc">未单独设置的工具沿用上方默认值。</p>
-        <div class="tbl-wrap"><table><thead><tr><th>工具</th><th>摘要生成</th><th>实际生效</th></tr></thead><tbody id="perTool"></tbody></table></div>
-      </div>
       <div class="panel" data-sec="mcp" hidden>
         <h2>AI 可用的 MCP 工具</h2>
         <p class="desc">接入后，对话中的 AI 可调用以下工具。接入、导入、重命名等管理操作仅在控制台和命令行中进行。</p>
@@ -92,15 +100,6 @@ export function page(nonce) {
           <div><code>lcm_read</code><span>按编号读取原文，与原始记录逐字一致。</span></div>
           <div><code>lcm_summary_task</code><span>领取待摘要的原文（仅「对话内生成」模式可用）。</span></div>
           <div><code>lcm_summary_submit</code><span>提交摘要，服务器校验原文后保存（同上）。</span></div>
-        </div>
-      </div>
-      <div class="panel" data-sec="storage" hidden>
-        <h2>存储与外观</h2>
-        <div class="fields">
-          <label class="field">数据位置<input id="dataDir" readonly></label>
-          <label class="field">配色<select id="palSel">${swatches.map(([id, name]) => `<option value="${id}">${name}</option>`).join('')}</select></label>
-          <label class="field">外观<select id="themeSel"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
-          <label class="field">语言<select id="langSel"><option value="auto">跟随浏览器</option><option value="zh">中文</option><option value="en">English</option></select></label>
         </div>
       </div>
         </div>

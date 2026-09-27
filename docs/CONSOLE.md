@@ -17,17 +17,16 @@ The detail view shows:
 
 ## 接入 (Connect)
 
-One card per detected tool. The status comes from real evidence: configuration match, then whether a SuperLcm MCP process loaded, then whether the AI has actually called a tool. **接入** opens a dialog that previews the files it will change, applies only after confirmation (official CLI registration + hook merge, with private backups), reads the config back, and runs a load check. Claude is checked by an ephemeral `claude` process that reports `mcp_status` without any prompt; Codex by a protocol and hook self-test. Codex still needs its native `/hooks` trust review.
+One card per detected tool. The status comes from real evidence: configuration match, then whether a SuperLcm MCP process loaded, then whether the AI has actually called a tool. **接入** opens a dialog that previews the files it will change, applies only after confirmation (official CLI registration + hook merge, with private backups), reads the config back, and runs a load check. Claude is checked by an ephemeral `claude` process that reports `mcp_status` without any prompt; Codex by a protocol and hook self-test. Codex still needs its native `/hooks` trust review. Each card also has a **摘要生成** picker that overrides the default summary writer for that tool (default: 沿用默认).
 
 Tools without automatic capture (Hermes, Pi) and past conversations of any supported tool can be imported from **导入本机的历史对话**; only the selected conversation is read, and no model is called.
 
 ## 设置 (Settings)
 
-A side list (a scrolling row on phones) shows one section at a time. Clicking the SuperLcm logo in the top-left always returns to the conversation list.
+A side list (a scrolling row on phones) shows one section at a time, in the order 外观, 存储, 摘要生成方式, 摘要粒度, MCP 工具. Clicking the SuperLcm logo in the top-left always returns to the conversation list.
 
 - **摘要生成方式** — 对话内生成 (the conversation's own AI, via `lcm_summary_task`/`lcm_summary_submit`), Claude 订阅, Codex 订阅, 自定义 API, or 关闭. CLI modes list models from the installed CLI's own catalog. API keys are write-only and stored outside SQLite.
 - **摘要粒度** — first-level segment size (6k / 12k / 24k characters), maximum messages per segment (16 / 32 / 64), and merge width (3 / 4 / 6). Changes apply to new summaries only.
-- **按工具设置** — per-tool overrides of the default writer.
 - Language: follows the browser (Chinese for `zh*`, otherwise English) unless set here. To add a language, add a table to `src/web-i18n.js` keyed by the Chinese source strings and an option to the language menu.
 - Palette (陶橙 default, 松石, 靛青, 石墨) and light/dark follow-system are stored per browser.
 

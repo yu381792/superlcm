@@ -36,9 +36,14 @@ function renderTools() {
       ? '<button type="button" class="btn' + (h.configuration_matches ? '' : ' primary') + '" data-setup="' + esc(h.harness) + '"' + (h.bin ? '' : ' disabled') + '>' + (h.configuration_matches ? t('检查') : t('接入')) + '</button>'
       : h.local_conversations ? '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + t('导入对话') + '</button>' : ''
     return '<div class="tool' + (h.detected ? '' : ' dim') + '">' + mark(h.harness, 'lg') + '<div><div class="tn">' + esc(toolName(h.harness)) + (h.version ? '<span class="tp">' + esc(h.version) + '</span>' : '') + '</div><div class="ts"><span class="state ' + s.cls + '">' + esc(s.text) + '</span></div>' +
-      (h.connection_evidence?.last_call_at ? '<div class="tp">' + t('最近调用：') + esc(h.connection_evidence.last_tool) + ' · ' + ago(Date.parse(h.connection_evidence.last_call_at)) + '</div>' : '') + '</div><div class="actions">' + button + '</div></div>'
+      (h.connection_evidence?.last_call_at ? '<div class="tp">' + t('最近调用：') + esc(h.connection_evidence.last_tool) + ' · ' + ago(Date.parse(h.connection_evidence.last_call_at)) + '</div>' : '') + writerPicker(h) + '</div><div class="actions">' + button + '</div></div>'
   }).join('') || '<div class="empty">' + t('本机未检测到支持的工具。') + '</div>'
   for (const b of $('#tools').querySelectorAll('[data-setup]')) b.onclick = () => openSetup(b.dataset.setup)
+  for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => act(async () => {
+    const x = admin.settings.settings.find(y => y.harness === select.dataset.tool)
+    await api('/api/settings', { scope: 'harness', harness: select.dataset.tool, mode: select.value, model: x?.mode === select.value ? x.model : null })
+    await loadSettings(); toast(t('已保存'))
+  }, select)
   for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
   const importable = state.harnesses.filter(h => h.local_conversations && h.detected)
   $('#importTools').innerHTML = importable.map(h => '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + mark(h.harness, 'sm') + esc(toolName(h.harness)) + '</button>').join('') || '<span class="muted">' + t('本机没有可导入的对话记录。') + '</span>'
@@ -109,7 +114,8 @@ async function openImport(harness) {
 async function loadSettings() {
   const s = admin.settings = await api('/api/settings')
   admin.writer = s.global.mode
-  renderWriter(); renderPerTool(); renderTuning(s.tuning)
+  renderWriter(); renderTuning(s.tuning)
+  if (state.harnesses) renderTools()
   $('#dataDir').value = s.harnesses.find(h => h.index_home)?.index_home || ''
 }
 function renderWriter() {
@@ -146,20 +152,14 @@ $('#saveWriter').onclick = () => act(async () => {
   await loadSettings()
   $('#writerSaved').textContent = t('已保存')
 }, $('#saveWriter'))
-function renderPerTool() {
-  const s = admin.settings, own = new Map(s.settings.map(x => [x.harness, x]))
-  const rows = s.harnesses.filter(h => h.supported || h.detected || own.has(h.harness))
-  $('#perTool').innerHTML = rows.map(h => {
-    const x = own.get(h.harness)
-    return '<tr><td><span class="d-meta">' + mark(h.harness, 'sm') + esc(toolName(h.harness)) + '</span></td><td><select data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('沿用默认') + '</option>' +
-      WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, t]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + t + '</option>').join('') + '</select></td><td class="muted">' + writerLabel(x?.mode || s.global.mode) + '</td></tr>'
-  }).join('')
-  for (const select of $('#perTool').querySelectorAll('select')) select.onchange = () => act(async () => {
-    const x = own.get(select.dataset.tool)
-    if (select.value === 'api') return
-    await api('/api/settings', { scope: 'harness', harness: select.dataset.tool, mode: select.value, model: x?.mode === select.value ? x.model : null })
-    await loadSettings(); toast(t('已保存'))
-  }, select)
+// Per-tool summary writer, shown on each connect card. Custom API stays a global choice unless already saved per tool.
+function writerPicker(h) {
+  const s = admin.settings
+  if (!s) return ''
+  const x = s.settings.find(y => y.harness === h.harness)
+  if (!h.supported && !h.detected && !x) return ''
+  return '<label class="tw">' + t('摘要生成') + '<select data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('沿用默认（{w}）', { w: writerLabel(s.global.mode) }) + '</option>' +
+    WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></label>'
 }
 function renderTuning(tuning) {
   for (const [id, value, label] of [['#segSize', tuning.target_chars, v => t('约 {n} 字', { n: fmt(v) })], ['#segMsgs', tuning.batch_size, v => t('{n} 条', { n: v })], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {

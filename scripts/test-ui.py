@@ -88,16 +88,19 @@ try:
    page.screenshot(path=str(shots/('superlcm-setup-'+harness+'.png')))
    page.locator('.modal [data-close]').first.click()
   assert page.locator('#statusText').inner_text().startswith('已接入')
+  assert page.locator('#tools .tool select[data-tool="codex"] option').first.inner_text().startswith('沿用默认')
 
   # Settings: real CLI catalogs, saving, granularity and appearance.
   page.locator('.nav [data-view="settings"]').click()
+  assert page.locator('#setNav button').all_inner_texts()==['外观','存储','摘要生成方式','摘要粒度','MCP 工具']
+  page.locator('#setNav [data-sec="writer"]').click()
   page.locator('#writer .opt[data-w="codex-cli"]').click()
   page.wait_for_function("() => document.querySelectorAll('#wModel option').length>1",timeout=30000)
   with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as saved:page.click('#saveWriter')
   assert saved.value.status==200;page.wait_for_selector('#writerSaved:has-text("已保存")')
   page.locator('#setNav [data-sec="granularity"]').click();assert page.locator('#writer').is_hidden()
   page.select_option('#fanout','6');page.wait_for_selector('#toast:not([hidden])')
-  page.locator('#setNav [data-sec="storage"]').click()
+  page.locator('#setNav [data-sec="look"]').click()
   page.locator('.sw[data-pal="teal"]').click();assert page.evaluate("document.documentElement.dataset.palette")=='teal'
   page.screenshot(path=str(shots/'superlcm-settings.png'),full_page=True)
 
@@ -109,7 +112,7 @@ try:
    if width==390:page.screenshot(path=str(shots/'superlcm-mobile.png'),full_page=True)
   # Language switch: English renders the whole shell and dynamic views without leftover Chinese labels.
   page.set_viewport_size({'width':1440,'height':900});page.evaluate("location.hash='settings'")
-  page.locator('#setNav [data-sec="storage"]').click();page.select_option('#langSel','en');page.wait_for_selector('.nav [data-view="conversations"]:has-text("Conversations")')
+  page.locator('#setNav [data-sec="look"]').click();page.select_option('#langSel','en');page.wait_for_selector('.nav [data-view="conversations"]:has-text("Conversations")')
   page.locator('#setNav [data-sec="writer"]').click();page.wait_for_selector('#writer .opt[data-w="off"]:has-text("Off")')
   page.locator('#brand').click();page.wait_for_selector('#view-conversations:not([hidden])')
   page.evaluate("location.hash='conversations'");page.wait_for_selector('#listCount:has-text("conversations")')
