@@ -203,14 +203,20 @@ details > summary { cursor: pointer; font-size: 13px; color: var(--ink2) }
 .page-inner { max-width: 880px; margin: 0 auto; padding: 32px 24px 60px; display: grid; gap: 24px }
 .page-h h1 { margin: 0; font-size: 22px }
 .page-h p { margin: 6px 0 0; color: var(--ink2) }
-.tools { display: grid; gap: 10px }
-.tool { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center }
-.tool .tn { font-weight: 500; display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
-.tool .ts { font-size: 13px; color: var(--ink2) }
-.tool .tp { font: 12px var(--mono); color: var(--ink3); overflow-wrap: anywhere }
-.tool.dim { opacity: .6 }
-.tool .tw { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--ink2) }
-.tool .tw select { font-size: 12px; padding: 2px 6px; max-width: 100% }
+.tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px }
+.tcard { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; min-width: 0 }
+.tcard.dim { opacity: .6 }
+.tc-h { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 16px 16px 12px }
+.tc-name .tn { font-weight: 600; font-size: 15px }
+.tc-name .tv { font: 12px var(--mono); color: var(--ink3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tc-kv { margin: 0; padding: 4px 16px 12px; display: grid; gap: 8px; flex: 1 }
+.tc-kv div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px }
+.tc-kv dt { color: var(--ink3) }
+.tc-kv dd { margin: 0; color: var(--ink2); min-width: 0 }
+.tc-kv select { width: 100%; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg) }
+.tc-kv select:hover { border-color: var(--ink3) }
+.tc-f { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--line) }
+.page-note { margin: 0; font-size: 13px; color: var(--ink3) }
 .state { font-size: 12px; padding: 1px 8px; border-radius: 99px; display: inline-flex; gap: 5px; align-items: center }
 .state.on { background: var(--good-soft); color: var(--good) }
 .state.warn { background: var(--warn-soft); color: var(--warn) }
@@ -251,7 +257,6 @@ details > summary { cursor: pointer; font-size: 13px; color: var(--ink2) }
 table { width: 100%; border-collapse: collapse; font-size: 13px }
 th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle }
 th { font-weight: 500; color: var(--ink3); font-size: 12px }
-td select { border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; background: var(--bg) }
 .toolref { border: 1px solid var(--line); border-radius: 10px; overflow: hidden }
 .toolref div { display: grid; grid-template-columns: 170px 1fr; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 13px }
 .toolref div:last-child { border-bottom: 0 }
@@ -270,8 +275,7 @@ td select { border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px;
   .top { gap: 12px; padding: 0 12px }
   .top .pill, .swatches { display: none }
   .nav button { padding: 0 8px }
-  .tool { grid-template-columns: auto minmax(0, 1fr) }
-  .tool > .actions { grid-column: 1 / -1 }
+  .tools { grid-template-columns: minmax(0, 1fr) }
   .toolref div { grid-template-columns: 1fr; gap: 2px }
   .lanes { grid-template-columns: 36px minmax(0, 1fr) }
   .axis { padding-left: 46px }

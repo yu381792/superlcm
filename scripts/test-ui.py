@@ -68,13 +68,13 @@ try:
   page.locator('.modal [data-close]').last.click();assert page.locator('.modal').count()==0 and not summarize_calls,summarize_calls
 
   # Connect: errors are visible, local import works, setup writes only the temporary homes.
-  page.locator('.nav [data-view="connect"]').click();page.wait_for_selector('#tools .tool')
+  page.locator('.nav [data-view="connect"]').click();page.wait_for_selector('#tools .tcard')
   expected_failure[0]=True
   page.route('**/api/setup-preview',lambda route:route.fulfill(status=503,content_type='application/json',body=json.dumps({'error':'fixture config unavailable'})))
   page.locator('[data-setup="claude-code"]').click();page.wait_for_selector('.modal .notice.bad:has-text("fixture config unavailable")')
   assert page.locator('#applySetup').is_disabled()
   page.locator('.modal [data-close]').first.click();page.unroute('**/api/setup-preview');expected_failure[0]=False
-  page.locator('#importTools [data-import="codex"]').click();page.wait_for_selector('.local-row')
+  page.locator('#tools [data-import="codex"]').click();page.wait_for_selector('.local-row')
   page.locator('.local-row',has_text='待导入本地记录').locator('button').click()
   page.wait_for_selector('.local-row:has-text("待导入本地记录") [data-open]');page.locator('.modal [data-close]').first.click()
   for harness in ['codex','claude-code']:
@@ -88,7 +88,7 @@ try:
    page.screenshot(path=str(shots/('superlcm-setup-'+harness+'.png')))
    page.locator('.modal [data-close]').first.click()
   assert page.locator('#statusText').inner_text().startswith('已接入')
-  assert page.locator('#tools .tool select[data-tool="codex"] option').first.inner_text().startswith('沿用默认')
+  assert page.locator('#tools .tcard select[data-tool="codex"] option').first.inner_text().startswith('沿用默认')
 
   # Settings: real CLI catalogs, saving, granularity and appearance.
   page.locator('.nav [data-view="settings"]').click()

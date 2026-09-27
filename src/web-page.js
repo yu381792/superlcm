@@ -46,11 +46,7 @@ export function page(nonce) {
     <div class="page-inner">
       <div class="page-h"><h1>接入</h1><p>接入后，该工具的对话会自动存入 SuperLcm，其中的 AI 也可查阅全部已存对话。</p></div>
       <div class="tools" id="tools"></div>
-      <div class="panel">
-        <h2>导入本机的历史对话</h2>
-        <p class="desc">接入之前的对话，或暂不支持自动接入的工具（如 Hermes、Pi），可以从本机记录中挑选导入。只读取你选中的对话，不会调用模型。</p>
-        <div class="actions" id="importTools"></div>
-      </div>
+      <p class="page-note">导入：接入之前的对话，或暂不支持自动接入的工具（如 Hermes、Pi），可以从本机记录中挑选导入。只读取你选中的对话，不会调用模型。</p>
     </div>
   </section>
 

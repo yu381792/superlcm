@@ -9,14 +9,16 @@ const WRITERS = [
 const writerLabel = mode => WRITERS.find(w => w[0] === mode)?.[1] || mode
 const admin = { settings: null, writer: 'agent', catalog: {} }
 
+// Short badge plus a plain-language detail line, both from real evidence.
 function connState(h) {
-  const e = h.connection_evidence
-  if (!h.supported) return { cls: 'off', text: h.local_conversations ? t('暂不支持自动接入，可导入本机对话') : t('暂不支持自动接入') }
-  if (!h.bin) return { cls: 'off', text: t('未找到 {tool} 命令行', { tool: toolName(h.harness) }) }
-  if (!h.configuration_matches) return { cls: 'warn', text: h.configured ? t('配置指向其他位置，需要重新接入') : t('尚未接入') }
-  if (e?.state === 'tool_verified' || e?.last_call_at) return { cls: 'on', text: t('已接入 · AI 已成功调用') }
-  if (e?.state === 'mcp_loaded') return { cls: 'on', text: t('已接入 · 等待首次调用') }
-  return { cls: 'warn', text: t('已写入配置 · 重启 {tool} 后生效', { tool: toolName(h.harness) }) }
+  const e = h.connection_evidence, tool = toolName(h.harness)
+  if (!h.supported) return { cls: 'off', badge: t('仅导入'), text: h.local_conversations ? t('暂不支持自动接入，可导入本机对话') : t('暂不支持自动接入') }
+  if (!h.bin) return { cls: 'off', badge: t('未安装'), text: t('未找到 {tool} 命令行', { tool }) }
+  if (!h.configuration_matches) return { cls: 'warn', badge: t('未接入'), text: h.configured ? t('配置指向其他位置，需要重新接入') : t('接入后，新对话会自动存入 SuperLcm') }
+  if (e?.last_call_at) return { cls: 'on', badge: t('已接入'), text: t('AI 最近一次调用：{t}', { t: ago(Date.parse(e.last_call_at)) }) }
+  if (e?.state === 'tool_verified') return { cls: 'on', badge: t('已接入'), text: t('AI 已成功调用') }
+  if (e?.state === 'mcp_loaded') return { cls: 'on', badge: t('已接入'), text: t('已加载，等待 AI 首次调用') }
+  return { cls: 'warn', badge: t('待重启'), text: t('已写入配置 · 重启 {tool} 后生效', { tool }) }
 }
 
 /* ---------- connect view ---------- */
@@ -31,23 +33,22 @@ function renderStatus() {
 }
 function renderTools() {
   $('#tools').innerHTML = state.harnesses.map(h => {
-    const s = connState(h)
-    const button = h.supported
-      ? '<button type="button" class="btn' + (h.configuration_matches ? '' : ' primary') + '" data-setup="' + esc(h.harness) + '"' + (h.bin ? '' : ' disabled') + '>' + (h.configuration_matches ? t('检查') : t('接入')) + '</button>'
-      : h.local_conversations ? '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + t('导入对话') + '</button>' : ''
-    return '<div class="tool' + (h.detected ? '' : ' dim') + '">' + mark(h.harness, 'lg') + '<div><div class="tn">' + esc(toolName(h.harness)) + (h.version ? '<span class="tp">' + esc(h.version) + '</span>' : '') + '</div><div class="ts"><span class="state ' + s.cls + '">' + esc(s.text) + '</span></div>' +
-      (h.connection_evidence?.last_call_at ? '<div class="tp">' + t('最近调用：') + esc(h.connection_evidence.last_tool) + ' · ' + ago(Date.parse(h.connection_evidence.last_call_at)) + '</div>' : '') + writerPicker(h) + '</div><div class="actions">' + button + '</div></div>'
+    const s = connState(h), count = state.groups?.find(g => g.harness === h.harness)?.n || 0
+    const buttons = (h.supported ? '<button type="button" class="btn' + (h.configuration_matches ? '' : ' primary') + '" data-setup="' + esc(h.harness) + '"' + (h.bin ? '' : ' disabled') + '>' + (h.configuration_matches ? t('检查接入') : t('接入')) + '</button>' : '') +
+      (h.local_conversations && h.detected ? '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + t('导入历史对话') + '</button>' : '')
+    const rows = [[t('状态'), esc(s.text)], [t('已存对话'), count ? t('{n} 个', { n: fmt(count) }) : '<span class="muted">' + t('暂无') + '</span>']]
+    const picker = writerPicker(h); if (picker) rows.push([t('摘要生成'), picker])
+    return '<article class="tcard' + (h.detected ? '' : ' dim') + '"><header class="tc-h">' + mark(h.harness, 'lg') + '<div class="tc-name"><div class="tn">' + esc(toolName(h.harness)) + '</div><div class="tv">' + esc(h.version || (h.detected ? '' : t('本机未检测到'))) + '</div></div><span class="state ' + s.cls + '">' + esc(s.badge) + '</span></header>' +
+      '<dl class="tc-kv">' + rows.map(([k, v]) => '<div><dt>' + k + '</dt><dd>' + v + '</dd></div>').join('') + '</dl>' +
+      (buttons ? '<footer class="tc-f">' + buttons + '</footer>' : '') + '</article>'
   }).join('') || '<div class="empty">' + t('本机未检测到支持的工具。') + '</div>'
   for (const b of $('#tools').querySelectorAll('[data-setup]')) b.onclick = () => openSetup(b.dataset.setup)
+  for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
   for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => act(async () => {
     const x = admin.settings.settings.find(y => y.harness === select.dataset.tool)
     await api('/api/settings', { scope: 'harness', harness: select.dataset.tool, mode: select.value, model: x?.mode === select.value ? x.model : null })
     await loadSettings(); toast(t('已保存'))
   }, select)
-  for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
-  const importable = state.harnesses.filter(h => h.local_conversations && h.detected)
-  $('#importTools').innerHTML = importable.map(h => '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + mark(h.harness, 'sm') + esc(toolName(h.harness)) + '</button>').join('') || '<span class="muted">' + t('本机没有可导入的对话记录。') + '</span>'
-  for (const b of $('#importTools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
 }
 
 // Setup: preview what changes → user confirms → write config → check it loads.
@@ -158,8 +159,8 @@ function writerPicker(h) {
   if (!s) return ''
   const x = s.settings.find(y => y.harness === h.harness)
   if (!h.supported && !h.detected && !x) return ''
-  return '<label class="tw">' + t('摘要生成') + '<select data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('沿用默认（{w}）', { w: writerLabel(s.global.mode) }) + '</option>' +
-    WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></label>'
+  return '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('沿用默认（{w}）', { w: writerLabel(s.global.mode) }) + '</option>' +
+    WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>'
 }
 function renderTuning(tuning) {
   for (const [id, value, label] of [['#segSize', tuning.target_chars, v => t('约 {n} 字', { n: fmt(v) })], ['#segMsgs', tuning.batch_size, v => t('{n} 条', { n: v })], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {

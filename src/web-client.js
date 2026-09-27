@@ -76,6 +76,7 @@ async function loadConversations(reset = true) {
   const data = await api('/api/conversations?offset=' + state.offset + (state.h ? '&harness=' + q(state.h) : ''))
   state.rows.push(...data.sessions); state.total = data.total; state.groups = data.groups; state.offset = data.next_offset
   renderChips(); renderList()
+  if (state.harnesses) renderTools()
   if (!state.sel && state.rows[0] && window.innerWidth > 860) select(state.rows[0].session)
 }
 function renderChips() {
