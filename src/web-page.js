@@ -97,6 +97,7 @@ export function page(token, nonce) {
           <label class="field">数据位置<input id="dataDir" readonly></label>
           <label class="field">配色<select id="palSel">${swatches.map(([id, name]) => `<option value="${id}">${name}</option>`).join('')}</select></label>
           <label class="field">外观<select id="themeSel"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+          <label class="field">语言<select id="langSel"><option value="auto">跟随浏览器</option><option value="zh">中文</option><option value="en">English</option></select></label>
         </div>
       </div>
     </div>
@@ -107,6 +108,7 @@ export function page(token, nonce) {
 <script nonce="${nonce}">
 const token = ${JSON.stringify(token)};
 const ICONS = ${JSON.stringify(icons)};
+${asset('web-i18n.js')}
 ${asset('web-client.js')}
 ${asset('web-admin.js')}
 boot();

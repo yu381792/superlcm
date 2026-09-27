@@ -26,6 +26,7 @@ Tools without automatic capture (Hermes, Pi) and past conversations of any suppo
 - **摘要生成方式** — 对话内生成 (the conversation's own AI, via `lcm_summary_task`/`lcm_summary_submit`), Claude 订阅, Codex 订阅, 自定义 API, or 关闭. CLI modes list models from the installed CLI's own catalog. API keys are write-only and stored outside SQLite.
 - **摘要粒度** — first-level segment size (6k / 12k / 24k characters), maximum messages per segment (16 / 32 / 64), and merge width (3 / 4 / 6). Changes apply to new summaries only.
 - **按工具设置** — per-tool overrides of the default writer.
+- Language: follows the browser (Chinese for `zh*`, otherwise English) unless set here. To add a language, add a table to `src/web-i18n.js` keyed by the Chinese source strings and an option to the language menu.
 - Palette (陶橙 default, 松石, 靛青, 石墨) and light/dark follow-system are stored per browser.
 
 ## How summaries grow

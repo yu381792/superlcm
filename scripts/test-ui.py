@@ -26,7 +26,7 @@ try:
  with sync_playwright() as p:
   chrome=os.environ.get('SUPERLCM_TEST_CHROME') or ('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' if sys.platform=='darwin' else None)
   browser=p.chromium.launch(**({'executable_path':chrome} if chrome else {}),headless=True)
-  context=browser.new_context(viewport={'width':1440,'height':1000},color_scheme='light')
+  context=browser.new_context(viewport={'width':1440,'height':1000},color_scheme='light',locale='zh-CN')
   context.grant_permissions(['clipboard-read','clipboard-write'])
   page=context.new_page();errors=[];expected_failure=[False]
   page.on('pageerror',lambda error:errors.append(str(error)))
@@ -97,6 +97,13 @@ try:
     page.evaluate("v => location.hash = v",view);page.wait_for_selector('#view-'+view+':not([hidden])')
     assert page.evaluate('() => document.documentElement.scrollWidth<=innerWidth'),(width,view)
    if width==390:page.screenshot(path=str(shots/'superlcm-mobile.png'),full_page=True)
+  # Language switch: English renders the whole shell and dynamic views without leftover Chinese labels.
+  page.set_viewport_size({'width':1440,'height':900});page.evaluate("location.hash='settings'")
+  page.select_option('#langSel','en');page.wait_for_selector('.nav [data-view="conversations"]:has-text("Conversations")')
+  page.wait_for_selector('#writer .opt[data-w="off"]:has-text("Off")')
+  page.evaluate("location.hash='conversations'");page.wait_for_selector('#listCount:has-text("conversations")')
+  page.screenshot(path=str(shots/'superlcm-english.png'),full_page=True)
+  page.select_option('#langSel','zh') if page.locator('#langSel').is_visible() else None
   assert not errors,errors
   assert page.locator('#error').is_hidden(),page.locator('#error').inner_text()
   browser.close()

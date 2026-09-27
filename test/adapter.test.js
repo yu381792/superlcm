@@ -330,6 +330,20 @@ test('Codex UserPromptSubmit nudges opted-in agent without a transcript path',fi
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({session_id:'thr_agent',transcript_path:null,cwd:dir,hook_event_name:'UserPromptSubmit'}),encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir},timeout:15000})
   assert.equal(r.status,0,r.stderr);assert.match(r.stdout,/lcm_summary_task/);assert.equal(store.summaries('codex-thr_agent').total,0)
 }))
+test('every Chinese interface string has an English translation',()=>{
+  const src=name=>readFileSync(new URL('../src/'+name,import.meta.url),'utf8')
+  const i18n=src('web-i18n.js'),env={localStorage:{getItem:()=> 'en'},navigator:{language:'en-US'},document:{documentElement:{}}}
+  const {LANGS,t}=new Function('localStorage','navigator','document',i18n+';return {LANGS,t}')(env.localStorage,env.navigator,env.document)
+  const cjk=/[一-龥]/,missing=new Set(),native=new Set(['中文'])
+  for(const file of ['web-client.js','web-admin.js'])for(const [,key] of src(file).matchAll(/\bt\('([^']*)'/g))if(cjk.test(key)&&LANGS.en[key]===undefined)missing.add(key)
+  const html=webPage('tok','n'),shell=html.slice(html.indexOf('<body>'),html.indexOf('<script'))
+  for(const [,text] of shell.matchAll(/>([^<>]+)</g)){const key=text.trim();if(cjk.test(key)&&!native.has(key)&&LANGS.en[key]===undefined)missing.add(key)}
+  for(const [,text] of shell.matchAll(/(?:placeholder|title|aria-label)="([^"]+)"/g))if(cjk.test(text)&&LANGS.en[text]===undefined)missing.add(text)
+  assert.deepEqual([...missing],[])
+  for(const value of Object.values(LANGS.en))assert.doesNotMatch(value,cjk)
+  assert.equal(t('{n} 个对话',{n:3}),'3 conversations')
+  assert.match(t('Claude 报告 SuperLcm 状态：failed'),/^Claude reports SuperLcm status: failed/)
+})
 test('Web console page inlines a syntactically valid script with the new views',()=>{
   const html=webPage('demo-token','nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
   assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/--accent: #C96442/)
