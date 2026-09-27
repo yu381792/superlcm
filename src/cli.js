@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { ClaudeStore, claudeTranscript } from './store.js'
 import { codexTranscript, codexNativeName, codexSessionKey } from './codex.js'
-import { buildHierarchy, summaryWork } from './summarize.js'
+import { buildHierarchy, summaryWork, summaryEstimate } from './summarize.js'
 import { summarizeWithClaudeCli } from './claude-cli.js'
 import { summarizeWithCodexCli } from './codex-cli.js'
 import { startServer } from './mcp.js'
@@ -20,9 +20,20 @@ function scheduleSummary(store,session,mode,model) {
     process.stderr.write('SuperLcm: api mode needs a model ID and a configured scoped API key\n')
     return
   }
-  const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session],{detached:true,windowsHide:true,stdio:'ignore',env:{...process.env,SUPERLCM_HOOK_WORKER:'1',SUPERLCM_SUMMARY_EXPECTED_MODE:mode,SUPERLCM_SUMMARY_EXPECTED_MODEL:model||''}})
+  spawnSummary(session,[],{SUPERLCM_SUMMARY_EXPECTED_MODE:mode,SUPERLCM_SUMMARY_EXPECTED_MODEL:model||''})
+}
+function spawnSummary(session,args,env) {
+  const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session,...args],{detached:true,windowsHide:true,stdio:'ignore',env:{...process.env,SUPERLCM_HOOK_WORKER:'1',...env}})
   child.on('error',error=>process.stderr.write('SuperLcm: background worker could not start: '+error.message+'\n'))
   child.unref()
+}
+// Opt-in catch-up for 对话模型生成: the conversation's AI writes one piece per turn and stops when the
+// conversation stops. Only when the user picked a backfill method: run it once the backlog reaches
+// 3 model calls, or at session end whenever anything is left. The summary lease keeps runs from overlapping.
+function maybeBackfill(store,session,mode,ending) {
+  const backend=store.backfill()
+  if (mode!=='agent' || !backend) return
+  if (summaryEstimate(store,session).calls >= (ending?1:3)) spawnSummary(session,['--backend',backend],{})
 }
 const derivedTitle=(store,session)=>store.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview.replace(/^user:\s*/,'').replace(/\s+/g,' ').trim().slice(0,90)
 if(command==='setup' || command==='doctor-local'){const store=new ClaudeStore();try{const {harnessConnections}=await import('./harness.js');if(command==='doctor-local'||!rest[0])console.log(JSON.stringify(await harnessConnections(store),null,2));else{const {setupPreview,publicPreview,applySetup}=await import('./setup.js');const preview=await setupPreview(store,rest[0]);console.log(JSON.stringify(rest.includes('--apply')?await applySetup(store,rest[0],preview.revision):publicPreview(preview),null,2))}}catch(error){console.error(error.message);process.exitCode=1}finally{store.close()}}
@@ -43,7 +54,7 @@ else if (command==='hermes-hook' || command==='pi-hook') {
       store.markClient(hermes?'hermes':'pi','hook')
       const {mode,model}=effective(store,result.session)
       if(['off','cli','api'].includes(mode))store.setSummaryMode(result.session,mode)
-      if(['on_session_end','on_session_finalize','agent_settled','session_compact','session_shutdown'].includes(event))scheduleSummary(store,result.session,mode,model)
+      if(['on_session_end','on_session_finalize','agent_settled','session_compact','session_shutdown'].includes(event)){scheduleSummary(store,result.session,mode,model);maybeBackfill(store,result.session,mode,['on_session_end','on_session_finalize','session_shutdown'].includes(event))}
     }
   } catch(error) { process.stderr.write('SuperLcm: '+error.message+'\n') }
   finally { store.close() }
@@ -72,7 +83,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
             store.setMetadata(session,{harness:codex?'codex':'claude-code',externalId:input.session_id,name:title||derivedTitle(store,session),nameSource:title?'native':'derived'})
             const {mode,model}=effective(store,session)
             if (['off','cli','api'].includes(mode)) store.setSummaryMode(session,mode)
-            if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) scheduleSummary(store,session,mode,model)
+            if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) { scheduleSummary(store,session,mode,model); maybeBackfill(store,session,mode,event==='SessionEnd') }
             if (event==='UserPromptSubmit' && mode==='agent' && summaryWork(store,session)) process.stdout.write(`SuperLcm in-conversation summary for this conversation (${session}): after answering, call lcm_summary_task {"conversation":"${session}"}, summarize the returned content, then lcm_summary_submit with its batch_id. One task per turn is enough; never claim a summary was saved without tool confirmation.\n`)
           }
           if (event==='SessionStart' && input.source==='compact' && store.source(session)) {

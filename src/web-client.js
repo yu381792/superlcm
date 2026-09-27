@@ -219,7 +219,8 @@ function renderDetail() {
   html += stripHtml(d)
   if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
   else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
-  else if (d.summary_count && tail > 64 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后 {n} 条。', { n: fmt(tail) }) + '</b>' + t('对话模型生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
+  // Count pending work, not records: most records are tool calls with no text and need no summary.
+  else if (d.summary_count && d.estimate?.calls >= 2 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后：还差约 {n} 次摘要（含向上合并）。', { n: fmt(d.estimate.calls) }) + '</b>' + t('对话模型生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
   if (d.summary_count) {
     html += '<div><div class="section-h"><h2>' + t('摘要目录') + '</h2><span class="aside"><button type="button" class="link" id="collapseAll">' + t('收起全部') + '</button></span></div><div class="tree">' + d.nodes.map(nodeHtml).join('') +
       (tail > 0 ? '<div class="tail-row"><span>' + t('最新 {n} 条（{r}）尚未摘要', { n: '<b class="num">' + fmt(tail) + '</b>', r: '#' + d.summarized_to + '–#' + (d.records - 1) }) + '</span><button type="button" class="btn small" data-raw="' + Math.max(d.summarized_to, d.records - 60) + '-' + (d.records - 1) + '">' + t('查看原文') + '</button></div>' : '') + '</div></div>'

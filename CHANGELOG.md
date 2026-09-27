@@ -2,6 +2,7 @@
 
 ## 0.2.0-alpha.1
 
+- Optional 自动补齐 for 对话模型生成 (off by default): pick the Claude or Codex CLI and hooks catch up in the background when summaries fall about 3 calls behind or a conversation ends. The lag notice now counts pending summary calls instead of records.
 - Hermes and Pi connect automatically: 接入 registers SuperLcm's MCP tools and capture hooks (Hermes through its own config code; Pi as one extension file), checks that they load, and for Hermes opens a terminal so its hook approval prompt appears. Hermes messages are kept in SuperLcm's own append-only copy, with compression chains joined into one conversation; Pi session files are indexed byte for byte. The Codex setup dialog reads whether its hooks are trusted and can open Codex for the review.
 - Delete a conversation from its list row or detail page, or clean up old conversations by tool and last activity under 设置 › 存储; deleted conversations are not recaptured by hooks. 接续到其他工具 is now 换个工具继续.
 - The console lives at a fixed address, `http://127.0.0.1:8791/`, with no login token; Host, Origin and JSON-only writes still block other web pages.

@@ -565,3 +565,15 @@ test('bulk delete removes only conversations older than the cutoff and refuses a
     const left=new ClaudeStore(store.dir);assert.deepEqual(left.db.prepare('SELECT session FROM sources').all().map(x=>x.session),['fresh']);left.close()
   } finally { await web.close() }
 }))
+
+test('automatic catch-up is off until chosen, and the setting round-trips', async () => {
+  const { ClaudeStore } = await import('../src/store.js')
+  const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path')
+  const store = new ClaudeStore(mkdtempSync(join(tmpdir(), 'superlcm-backfill-')))
+  try {
+    assert.equal(store.backfill(), null)
+    assert.equal(store.setBackfill('codex-cli'), 'codex-cli')
+    assert.throws(() => store.setBackfill('api'), /Invalid backfill/)
+    assert.equal(store.setBackfill(null), null)
+  } finally { store.close() }
+})

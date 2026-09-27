@@ -75,6 +75,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS summary_tuning(id INTEGER PRIMARY KEY CHECK(id=1), target_chars INTEGER NOT NULL, batch_size INTEGER NOT NULL, fanout INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS deleted_sessions(session TEXT PRIMARY KEY, deleted_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS summary_backfill(id INTEGER PRIMARY KEY CHECK(id=1), backend TEXT NOT NULL CHECK(backend IN ('cli','codex-cli')));
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
@@ -116,6 +117,14 @@ export class ClaudeStore {
     if (!within(target_chars,2000,48000) || !within(batch_size,2,64) || !within(fanout,2,8)) throw new Error('Unsupported summary granularity')
     this.db.prepare('INSERT INTO summary_tuning(id,target_chars,batch_size,fanout) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET target_chars=excluded.target_chars,batch_size=excluded.batch_size,fanout=excluded.fanout').run(target_chars,batch_size,fanout)
     return this.tuning()
+  }
+  // Opt-in: when in-conversation summaries fall behind, catch up in the background with this subscription CLI. Absent = manual only.
+  backfill() { return this.db.prepare('SELECT backend FROM summary_backfill WHERE id=1').get()?.backend || null }
+  setBackfill(backend) {
+    if (backend===null) this.db.prepare('DELETE FROM summary_backfill').run()
+    else if (['cli','codex-cli'].includes(backend)) this.db.prepare('INSERT INTO summary_backfill(id,backend) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET backend=excluded.backend').run(backend)
+    else throw new Error('Invalid backfill method')
+    return this.backfill()
   }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }
   harnessSetting(harness) {
