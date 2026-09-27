@@ -29,13 +29,13 @@ Past conversations of any supported tool can be imported from **导入历史对�
 A side list (a scrolling row on phones) shows one section at a time, in the order 外观, 存储, 摘要, MCP 工具. 摘要 holds the global default: method, model and granularity, saved together with one button. Clicking the SuperLcm logo in the top-left always returns to the conversation list.
 
 - **摘要生成方式** — 对话模型生成 (the conversation's own AI, via `lcm_summary_task`/`lcm_summary_submit`), Claude 订阅, Codex 订阅, 自定义 API, or 关闭. With 对话模型生成, **自动补齐** is off by default (catch up by hand from the conversation page); opting in to the Claude or Codex CLI lets hooks start a background pass when the backlog reaches about 3 model calls or a conversation ends with work left. CLI modes list models from the installed CLI's own catalog. API keys are write-only and stored outside SQLite.
-- **摘要粒度** — first-level segment size (6k / 12k / 24k characters), maximum messages per segment (16 / 32 / 64), and merge width (3 / 4 / 6). Changes apply to new summaries only.
+- **摘要粒度** — first-level segment size (6k / 12k / 24k characters of dialogue) and merge width (3 / 4 / 6). Segments are sized by characters only: each record is sent whole, a segment closes before the record that would pass the target, and a single record longer than a whole segment forms its own segment with its head and tail kept (the middle is marked, and `lcm_read` returns it in full). Tool calls with no text do not count. A hidden cap of 200 messages per segment only guards extreme cases. Changes apply to new summaries only.
 - Language: follows the browser (Chinese for `zh*`, otherwise English) unless set here. To add a language, add a table to `src/web-i18n.js` keyed by the Chinese source strings and an option to the language menu.
 - Palette (陶橙 default, 松石, 靛青, 石墨) and light/dark follow-system are stored per browser.
 
 ## How summaries grow
 
-The planner always merges before it summarizes new text: whenever a level has at least `fanout` adjacent nodes not yet owned by a parent, the next task is to merge them. Otherwise it closes the next first-level segment once it reaches the message or character target. Each task is verified against the original byte ranges before and after the model call, so a changed source fails closed.
+The planner always merges before it summarizes new text: whenever a level has at least `fanout` adjacent nodes not yet owned by a parent, the next task is to merge them. Otherwise it closes the next first-level segment once the next record would push it past the character target. Each task is verified against the original byte ranges before and after the model call, so a changed source fails closed.
 
 ## Tests
 

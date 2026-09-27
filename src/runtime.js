@@ -5,6 +5,9 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 export const runCommand = promisify(execFile)
 export const cliScript = new URL('./cli.js', import.meta.url)
+// Safety ceiling for one summary call, not a setting. Segments are bounded by the 字数 setting (at most 48,000) plus
+// record labels, and merges by fanout × 3,600, so real inputs stay well below this.
+export const MAX_SUMMARY_INPUT = 64000
 export const validModel = id => typeof id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/\[\]-]{0,127}$/.test(id)
 export function paths(env=process.env) {
   const home=env.HOME || env.USERPROFILE || homedir()

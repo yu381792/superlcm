@@ -1,4 +1,4 @@
-import { validModel } from './runtime.js'
+import { validModel, MAX_SUMMARY_INPUT } from './runtime.js'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,8 +9,8 @@ export function codexSubscriptionEnv(env=process.env) {
   for(const key of Object.keys(clean)) if(/^OPENAI_|^AZURE_OPENAI_|^CODEX_(?!HOME$)/.test(key) || ['SUPERLCM_ANTHROPIC_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL'].includes(key)) delete clean[key]
   return clean
 }
-export function summarizeWithCodexCli(text,{model=process.env.SUPERLCM_CODEX_CLI_MODEL||'',bin=process.env.SUPERLCM_CODEX_CLI_BIN||'codex',env=process.env,timeoutMs=90000,cwd=join(home(),'codex-cli-cwd'),spawnProcess=spawn}={}) {
-  if(typeof text!=='string' || !text.trim() || text.length>22000) throw new Error('Codex CLI summary input must be 1–22000 characters')
+export function summarizeWithCodexCli(text,{model=process.env.SUPERLCM_CODEX_CLI_MODEL||'',bin=process.env.SUPERLCM_CODEX_CLI_BIN||'codex',env=process.env,timeoutMs=180000,cwd=join(home(),'codex-cli-cwd'),spawnProcess=spawn}={}) {
+  if(typeof text!=='string' || !text.trim() || text.length>MAX_SUMMARY_INPUT) throw new Error(`Codex CLI summary input must be 1–${MAX_SUMMARY_INPUT} characters`)
   if(typeof model!=='string' || (model && !validModel(model))) throw new Error('Invalid SUPERLCM_CODEX_CLI_MODEL')
   if(!Number.isSafeInteger(timeoutMs) || timeoutMs<1000 || timeoutMs>300000) throw new Error('Invalid Codex CLI timeout')
   mkdirSync(cwd,{recursive:true,mode:0o700})

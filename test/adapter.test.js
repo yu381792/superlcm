@@ -1,3 +1,4 @@
+import './env.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSync, readFileSync, realpathSync, statSync } from 'node:fs'
@@ -576,4 +577,24 @@ test('automatic catch-up is off until chosen, and the setting round-trips', asyn
     assert.throws(() => store.setBackfill('api'), /Invalid backfill/)
     assert.equal(store.setBackfill(null), null)
   } finally { store.close() }
+})
+
+test('segments are sized by characters: whole records up to the target, one oversized record alone with head and tail', async () => {
+  const { summaryWork } = await import('../src/summarize.js')
+  const dir = mkdtempSync(join(tmpdir(), 'superlcm-seg-')), store = new ClaudeStore(join(dir, 'index'))
+  try {
+    store.setTuning({ target_chars: 2000, fanout: 4 })
+    const file = join(dir, 't.jsonl'), line = (role, text) => JSON.stringify({ type: role, message: { role, content: text } }) + '\n'
+    // 5 × 700 characters, then one 9,000-character reply, then more short text.
+    writeFileSync(file, [0, 1, 2, 3, 4].map(i => line(i % 2 ? 'assistant' : 'user', String(i).repeat(700))).join('') + line('assistant', 'H'.repeat(5000) + 'T'.repeat(4000)) + line('user', 'x'.repeat(2500)))
+    importFile(store, file, 'seg', 'claude-code')
+    const first = summaryWork(store, 'seg')
+    assert.equal(first.last - first.first + 1, 2, 'closes before the record that would pass 2,000 characters')
+    assert.ok(first.content.includes('0'.repeat(700)) && first.content.includes('1'.repeat(700)), 'records are sent whole, not cut at 2,400')
+    for (const r of store.eventRows('seg').slice(0, 5)) store.addNode({ session: 'seg', id: 'n' + r.ordinal, level: 0, first: r.ordinal, last: r.ordinal, children: [], summary: 's', digest: 'd', model: 'm' })
+    const big = summaryWork(store, 'seg', { fanout: 99 })
+    assert.equal(big.first, big.last, 'an oversized record forms its own segment')
+    assert.match(big.content, /^\[event \d+\] assistant: H+ …\[\d+ characters omitted; lcm_read event \d+ for the full text\]… T+$/)
+    assert.ok(big.content.length < 2100)
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 })

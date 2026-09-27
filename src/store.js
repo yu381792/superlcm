@@ -112,7 +112,7 @@ export class ClaudeStore {
   }
   // Granularity applies to batches planned from now on; saved nodes keep their original ranges.
   tuning() { return this.db.prepare('SELECT target_chars,batch_size,fanout FROM summary_tuning WHERE id=1').get() || {target_chars:12000,batch_size:32,fanout:4} }
-  setTuning({target_chars,batch_size,fanout}) {
+  setTuning({target_chars,batch_size=this.tuning().batch_size,fanout}) {
     const within=(n,lo,hi)=>Number.isSafeInteger(n)&&n>=lo&&n<=hi
     if (!within(target_chars,2000,48000) || !within(batch_size,2,64) || !within(fanout,2,8)) throw new Error('Unsupported summary granularity')
     this.db.prepare('INSERT INTO summary_tuning(id,target_chars,batch_size,fanout) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET target_chars=excluded.target_chars,batch_size=excluded.batch_size,fanout=excluded.fanout').run(target_chars,batch_size,fanout)

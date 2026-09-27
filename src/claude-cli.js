@@ -1,12 +1,11 @@
-import { validModel } from './runtime.js'
+import { validModel, MAX_SUMMARY_INPUT } from './runtime.js'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { home } from './store.js'
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
-const MAX_INPUT_CHARS = 22000
-const DEFAULT_TIMEOUT_MS = 90000
+const DEFAULT_TIMEOUT_MS = 180000
 
 export function subscriptionEnv(env = process.env) {
   const clean = { ...env, SUPERLCM_CLI_WORKER: '1' }
@@ -16,7 +15,7 @@ export function subscriptionEnv(env = process.env) {
 }
 
 export function summarizeWithClaudeCli(text, { model = 'sonnet', bin = process.env.SUPERLCM_CLAUDE_CLI_BIN || 'claude', env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, cwd = join(home(), 'claude-cli-cwd'), spawnProcess = spawn } = {}) {
-  if (typeof text !== 'string' || !text.trim() || text.length > MAX_INPUT_CHARS) throw new Error('Claude CLI summary input must be nonempty and at most 22000 characters')
+  if (typeof text !== 'string' || !text.trim() || text.length > MAX_SUMMARY_INPUT) throw new Error(`Claude CLI summary input must be nonempty and at most ${MAX_SUMMARY_INPUT} characters`)
   if (typeof model !== 'string' || !validModel(model)) throw new Error('Invalid SUPERLCM_CLAUDE_CLI_MODEL')
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error('Invalid Claude CLI timeout')
   mkdirSync(cwd, { recursive: true, mode: 0o700 })

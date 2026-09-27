@@ -184,7 +184,7 @@ function writerPicker(h) {
     WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>'
 }
 function renderTuning(tuning) {
-  for (const [id, value, label] of [['#segSize', tuning.target_chars, v => t('约 {n} 字', { n: fmt(v) })], ['#segMsgs', tuning.batch_size, v => t('{n} 条', { n: v })], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {
+  for (const [id, value, label] of [['#segSize', tuning.target_chars, v => t('约 {n} 字', { n: fmt(v) })], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {
     const select = $(id)
     if (![...select.options].some(o => o.value === String(value))) select.add(new Option(label(value) + ' · ' + t('当前'), String(value)))
     select.value = String(value)
@@ -193,8 +193,8 @@ function renderTuning(tuning) {
   const big = n => LANG === 'zh' ? (n >= 10000 ? (n / 10000).toFixed(n % 10000 ? 1 : 0) + ' 万' : fmt(n)) : (n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + 'k' : fmt(n))
   $('#granEst').innerHTML = t('按当前设置：每段第 1 层摘要约覆盖 {a} 字原文，第 2 层约 {b} 字，第 3 层约 {c} 字。一段 100 万字的长对话大约产生 {n} 段第 1 层摘要。', { a: '<b>' + big(perL1) + '</b>', b: '<b>' + big(perL2) + '</b>', c: '<b>' + big(perL3) + '</b>', n: Math.ceil(1e6 / perL1) })
 }
-const pickedTuning = () => ({ target_chars: Number($('#segSize').value), batch_size: Number($('#segMsgs').value), fanout: Number($('#fanout').value) })
-for (const id of ['#segSize', '#segMsgs', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
+const pickedTuning = () => ({ target_chars: Number($('#segSize').value), fanout: Number($('#fanout').value) })
+for (const id of ['#segSize', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 
 /* ---------- storage ---------- */
 const bytes = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'

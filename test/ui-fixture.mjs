@@ -5,6 +5,7 @@ import {ClaudeStore} from '../src/store.js'
 import {startWeb} from '../src/web.js'
 import {modelCatalog} from '../src/model-catalog.js'
 import {findCli} from '../src/runtime.js'
+import './env.mjs'
 import {buildHierarchy} from '../src/summarize.js'
 const dir=mkdtempSync(join(tmpdir(),'superlcm-browser-')),store=new ClaudeStore(join(dir,'index'))
 const env={...process.env,HOME:dir,USERPROFILE:dir,CODEX_HOME:join(dir,'codex'),CLAUDE_CONFIG_DIR:join(dir,'claude'),SUPERLCM_CODEX_CLI_BIN:findCli('codex'),SUPERLCM_CLAUDE_CLI_BIN:findCli('claude')}

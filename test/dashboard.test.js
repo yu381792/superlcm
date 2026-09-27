@@ -1,3 +1,4 @@
+import './env.mjs'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
