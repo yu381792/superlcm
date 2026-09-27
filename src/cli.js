@@ -32,6 +32,23 @@ else if (command==='web') {
   try { const web=await startWeb({port});process.stdout.write(`SuperLcm local console: ${web.url}\n`) }
   catch(error) { if(error.code!=='EADDRINUSE')throw error; process.stderr.write(`Port ${port} is already in use. If the console is already running, open http://127.0.0.1:${port}/ ; otherwise pass another port: node src/cli.js web <port>\n`); process.exitCode=1 }
 }
+else if (command==='hermes-hook' || command==='pi-hook') {
+  // Called by Hermes (shell hook, synchronous) and by the SuperLcm Pi extension after each turn.
+  const store=new ClaudeStore(),hermes=command==='hermes-hook'
+  try {
+    const input=await readHook(),event=input.hook_event_name
+    const {captureHermes}=await import('./hermes.js'),{capturePi}=await import('./pi.js')
+    const result=hermes?captureHermes(store,input.session_id,{automatic:true}):capturePi(store,input,{automatic:true})
+    if(!result.skipped&&store.source(result.session)){
+      store.markClient(hermes?'hermes':'pi','hook')
+      const {mode,model}=effective(store,result.session)
+      if(['off','cli','api'].includes(mode))store.setSummaryMode(result.session,mode)
+      if(['on_session_end','on_session_finalize','agent_settled','session_compact','session_shutdown'].includes(event))scheduleSummary(store,result.session,mode,model)
+    }
+  } catch(error) { process.stderr.write('SuperLcm: '+error.message+'\n') }
+  finally { store.close() }
+  if(hermes)process.stdout.write('{}\n')
+}
 else if (command==='hook' || command==='codex-hook' || command==='index' || command==='index-codex' || command==='import' || command==='name' || command==='overview' || command==='summarize') {
   const store=new ClaudeStore()
   try {
@@ -105,4 +122,4 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
   const store=new ClaudeStore()
   try { const results=store.archiveAll(); for(const r of results)if(!r.archived||r.copied||r.found_at)process.stdout.write(JSON.stringify(r)+'\n'); process.stdout.write(`archived ${results.filter(r=>r.archived).length}/${results.length} conversations\n`); if(results.some(r=>!r.archived))process.exitCode=1 }
   finally { store.close() }
-} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|archive|doctor-local|setup <codex|claude-code> [--apply]|hook|codex-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }
+} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|archive|doctor-local|setup <codex|claude-code|hermes|pi> [--apply]|hook|codex-hook|hermes-hook|pi-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }

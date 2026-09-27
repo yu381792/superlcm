@@ -36,6 +36,7 @@ function extract(raw, kind) {
     // and visible Codex rollout messages. Every raw record remains exact on disk.
     let role = record?.role ?? record?.type, item = record
     if (record?.type === 'response_item' && record.payload?.type === 'message') { role=record.payload.role; item=record.payload }
+    if (record?.type === 'message' && record.message?.role) role=record.message.role // Pi session entries
     if (record?.type === 'event_msg') {
       const event=record.payload?.type
       role=event === 'user_message' ? 'user' : event === 'agent_message' ? 'assistant' : null

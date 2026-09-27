@@ -63,7 +63,7 @@ async function openSetup(harness) {
     '<div class="actions">' + (finished ? extra + '<button type="button" class="btn' + (extra ? '' : ' primary') + '" data-close>' + t('完成') + '</button>' : '<button type="button" class="btn primary" id="applySetup"' + (preview?.can_apply && !busy ? '' : ' disabled') + '>' + t('确认接入') + '</button><button type="button" class="btn" data-close' + (busy ? ' disabled' : '') + '>' + t('取消') + '</button>') + '</div></div></div></div>', root => {
     root.querySelector('#applySetup')?.addEventListener('click', apply)
     root.querySelector('#openReview')?.addEventListener('click', event => act(async () => {
-      await api('/api/open-codex-review', {})
+      await api('/api/open-review', { harness })
       reviewOpened = true; showResult(lastCheck)
     }, event.currentTarget))
     root.querySelector('#recheck')?.addEventListener('click', event => act(async () => { showResult(await api('/api/connection-check', { harness })); await loadHarnesses() }, event.currentTarget))
@@ -73,14 +73,15 @@ async function openSetup(harness) {
     const ok = harness === 'claude-code' ? check.ok : check.protocol?.ok
     steps[2][1] = ok ? 'done' : 'fail'
     if (!ok) return render(t('配置已保存，但验证未通过：') + esc(t(check.message || check.protocol?.error || '未知原因')), 'bad', true)
-    if (harness !== 'codex') return render('<b>' + t('接入完成。') + '</b>' + t('新开的 Claude Code 对话会自动加载；已打开的对话需要在 {cmd} 中重连或重开。', { cmd: '<span class="mono">/mcp</span>' }), 'calm', true)
-    const trust = check.hook?.trust_check
-    if (trust?.ok) return render('<b>' + t('接入完成。') + '</b>' + t('Codex 已信任 SuperLcm 的钩子，新开的 Codex 对话即可使用。'), 'calm', true)
+    if (harness === 'claude-code') return render('<b>' + t('接入完成。') + '</b>' + t('新开的 Claude Code 对话会自动加载；已打开的对话需要在 {cmd} 中重连或重开。', { cmd: '<span class="mono">/mcp</span>' }), 'calm', true)
+    if (harness === 'pi') return render('<b>' + t('接入完成。') + '</b>' + t('新开的 Pi 对话会自动加载 SuperLcm；已打开的对话输入 {cmd} 即可加载。', { cmd: '<span class="mono">/reload</span>' }), 'calm', true)
+    const trust = check.hook?.trust_check, tool = toolName(harness)
+    if (trust?.ok) return render('<b>' + t('接入完成。') + '</b>' + t('{tool} 已信任 SuperLcm 的钩子，新开的对话即可使用。', { tool }), 'calm', true)
     const count = trust?.checked && trust.untrusted.length ? t('（尚未信任 {n} 个）', { n: trust.untrusted.length }) : ''
     const text = reviewOpened
-      ? '<b>' + t('已在终端打开 Codex。') + '</b>' + t('在它弹出的「Hooks need review」里选择信任，然后回来点「重新检查」。')
-      : '<b>' + t('还差一步：') + '</b>' + t('Codex 要求你亲自确认一次新钩子。点「打开 Codex 确认」，在弹出的界面里选择信任即可。') + count
-    render(text, 'calm', true, '<button type="button" class="btn primary" id="openReview">' + t('打开 Codex 确认') + '</button><button type="button" class="btn" id="recheck">' + t('重新检查') + '</button>')
+      ? '<b>' + t('已在终端打开 {tool}。', { tool }) + '</b>' + (harness === 'codex' ? t('在它弹出的「Hooks need review」里选择信任，然后回来点「重新检查」。') : t('它会逐个询问是否允许 SuperLcm 的钩子，输入 y 允许，然后回来点「重新检查」。'))
+      : '<b>' + t('还差一步：') + '</b>' + t('{tool} 要求你亲自确认一次新钩子。点「打开 {tool} 确认」，在弹出的界面里允许即可。', { tool }) + count
+    render(text, 'calm', true, '<button type="button" class="btn primary" id="openReview">' + t('打开 {tool} 确认', { tool }) + '</button><button type="button" class="btn" id="recheck">' + t('重新检查') + '</button>')
   }
   render(t('正在检查…'))
   try {

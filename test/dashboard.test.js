@@ -82,28 +82,38 @@ test('authenticated Web workflow detects, indexes, pages nodes and gates setup',
  }finally{await web.close()}
 }))
 
-test('Hermes detected SQLite snapshots are immutable and isolated',fixture(({env,store})=>{
+test('Hermes conversations are mirrored losslessly, compression chains merge, hooks append new rows',fixture(({env,store})=>{
  env.HERMES_HOME=join(env.HOME,'hermes');mkdirSync(env.HERMES_HOME);const file=join(env.HERMES_HOME,'state.db'),db=new DatabaseSync(file)
- db.exec('CREATE TABLE sessions(id TEXT,title TEXT,started_at REAL);CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,active INTEGER)')
- db.prepare('INSERT INTO sessions VALUES(?,?,?)').run('hermes-1','Hermes source',1000)
- db.prepare('INSERT INTO messages VALUES(?,?,?,?,?)').run(1,'hermes-1','user','first visible decision',1)
- db.prepare('INSERT INTO messages VALUES(?,?,?,?,?)').run(2,'hermes-1','assistant','inactive branch',0)
- const list=localConversations(store,'hermes',{env});assert.equal(list.total,1);assert.equal(list.conversations[0].name,'Hermes source');assert.equal(store.sources().length,0)
- const first=indexLocalConversation(store,'hermes',list.conversations[0].key,{env});assert.equal(first.import_kind,'snapshot');assert.equal(first.added,1);assert.match(store.exact(first.session,0),/first visible/);assert.equal(indexLocalConversation(store,'hermes',list.conversations[0].key,{env}).added,0)
- db.prepare('UPDATE messages SET content=? WHERE id=1').run('corrected native record');db.close()
- const second=indexLocalConversation(store,'hermes',list.conversations[0].key,{env});assert.notEqual(second.session,first.session);assert.match(store.exact(first.session,0),/first visible/);assert.match(store.exact(second.session,0),/corrected native/);assert.equal(store.resolveSession('hermes-1','hermes').ambiguous,true)
+ db.exec('CREATE TABLE sessions(id TEXT,title TEXT,started_at REAL,parent_session_id TEXT,end_reason TEXT,source TEXT,model_config TEXT);CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,tool_name TEXT,active INTEGER)')
+ const session=db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?)'),message=db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?)')
+ session.run('h1','Hermes source',1000,null,'compression','tui',null);session.run('h2',null,2000,'h1',null,'tui',null);session.run('sub','Delegated',1500,'h1','agent_close','subagent','{"_delegate_from":"h1"}')
+ message.run(1,'h1','user','first decision',null,0);message.run(2,'h1','tool','tool output kept',"terminal",1);message.run(3,'h2','assistant','after compaction',null,1);message.run(4,'sub','user','separate subagent',null,1)
+ const list=localConversations(store,'hermes',{env});assert.deepEqual(list.conversations.map(c=>c.conversation_id),['h1'],'continuations and delegated subagent runs are not listed separately')
+ const saved=indexLocalConversation(store,'hermes',list.conversations.find(c=>c.conversation_id==='h1').key,{env})
+ assert.equal(saved.session,'hermes-h1');assert.equal(store.stats('hermes-h1').records,3,'inactive and tool rows are kept');assert.match(store.exact('hermes-h1',1),/tool output kept/);assert.equal(store.metadata('hermes-h1').name,'Hermes source')
+ message.run(5,'h2','user','new turn',null,1);db.prepare("UPDATE messages SET content='rewritten' WHERE id=1").run();db.close()
+ const hook=spawnSync(process.execPath,[script,'hermes-hook','--home',store.dir],{env:{...env,SUPERLCM_SUMMARY_MODE:'off'},input:JSON.stringify({hook_event_name:'on_session_end',session_id:'h2'}),encoding:'utf8',timeout:10000})
+ assert.equal(hook.status,0,hook.stderr);assert.equal(hook.stdout.trim(),'{}')
+ const again=new ClaudeStore(store.dir);try{assert.equal(again.stats('hermes-h1').records,4,'the hook appended the new row to the same conversation');assert.match(again.exact('hermes-h1',0),/first decision/,'the mirrored original is not rewritten')
+ again.deleteSession('hermes-h1')}finally{again.close()}
+ const skip=spawnSync(process.execPath,[script,'hermes-hook','--home',store.dir],{env,input:JSON.stringify({hook_event_name:'on_session_end',session_id:'h2'}),encoding:'utf8',timeout:10000})
+ assert.equal(skip.status,0);const after=new ClaudeStore(store.dir);try{assert.equal(after.source('hermes-h1'),undefined,'a deleted conversation is not recaptured')}finally{after.close()}
 }))
-test('Pi snapshots retain active leaf ancestry and never mix branches',fixture(({env,store})=>{
- env.PI_CODING_AGENT_DIR=join(env.HOME,'pi-agent');const root=configFiles('pi',env).transcripts;mkdirSync(root,{recursive:true});const file=join(root,'session.jsonl')
- const records=[{type:'session',id:'pi-1',version:3},{type:'message',id:'a',parentId:null,message:{role:'user',content:[{type:'text',text:'root question'}]}},{type:'message',id:'b',parentId:'a',message:{role:'assistant',content:[{type:'text',text:'abandoned answer'}]}},{type:'message',id:'c',parentId:'a',message:{role:'assistant',content:[{type:'text',text:'chosen answer'}]}}]
+test('Pi session files are indexed byte for byte with every branch, and the hook appends new lines',fixture(({env,store})=>{
+ env.PI_CODING_AGENT_DIR=join(env.HOME,'pi-agent');const root=configFiles('pi',env).transcripts;mkdirSync(join(root,'--proj--'),{recursive:true});const file=join(root,'--proj--','session.jsonl')
+ const records=[{type:'session',id:'pi-1',version:3},{type:'message',id:'a',parentId:null,message:{role:'user',content:[{type:'text',text:'root question'}]}},{type:'message',id:'b',parentId:'a',message:{role:'assistant',content:[{type:'text',text:'abandoned answer'}]}},{type:'message',id:'c',parentId:'a',message:{role:'toolResult',content:[{type:'text',text:'tool result'}]}}]
  writeFileSync(file,records.map(x=>JSON.stringify(x)).join('\n')+'\n')
- const list=localConversations(store,'pi',{env});assert.equal(list.total,1);assert.equal(list.conversations[0].conversation_id,'pi-1');const saved=indexLocalConversation(store,'pi',list.conversations[0].key,{env});assert.equal(saved.added,2);assert.equal(store.search(saved.session,'abandoned').events.length,0);assert.equal(store.search(saved.session,'chosen').events.length,1)
- assert.equal(localConversations(store,'pi',{env}).conversations[0].indexed,true)
+ const list=localConversations(store,'pi',{env});const saved=indexLocalConversation(store,'pi',list.conversations[0].key,{env})
+ assert.equal(saved.session,'pi-pi-1');assert.equal(store.stats('pi-pi-1').records,4);assert.equal(store.search('pi-pi-1','abandoned').events.length,1);assert.match(store.exact('pi-pi-1',3),/tool result/)
+ writeFileSync(file,JSON.stringify({type:'message',id:'d',parentId:'c',message:{role:'assistant',content:[{type:'text',text:'next answer'}]}})+'\n',{flag:'a'})
+ const hook=spawnSync(process.execPath,[script,'pi-hook','--home',store.dir],{env:{...env,SUPERLCM_SUMMARY_MODE:'off'},input:JSON.stringify({hook_event_name:'turn_end',session_id:'pi-1',session_file:file}),encoding:'utf8',timeout:10000})
+ assert.equal(hook.status,0,hook.stderr);const again=new ClaudeStore(store.dir);try{assert.equal(again.stats('pi-pi-1').records,5)}finally{again.close()}
+ const outside=join(env.HOME,'elsewhere.jsonl');writeFileSync(outside,JSON.stringify(records[0])+'\n');assert.throws(()=>indexLocalConversation(store,'pi','0'.repeat(64),{env}),/no longer available/)
 }))
-test('inventory includes Hermes/Pi without inventing MCP support',fixture(async({env,store})=>{
- env.HERMES_HOME=join(env.HOME,'hermes');mkdirSync(env.HERMES_HOME);writeFileSync(join(env.HERMES_HOME,'state.db'),'');env.PI_CODING_AGENT_DIR=join(env.HOME,'pi');mkdirSync(join(env.PI_CODING_AGENT_DIR,'sessions'),{recursive:true})
- const rows=await harnessConnections(store,{env,runCommand:async(bin,args)=>{if(args[0]==='--version')return {stdout:'metadata-version\n'};throw Error('no mcp')}})
- for(const name of ['hermes','pi']){const row=rows.find(x=>x.harness===name);assert.equal(row.detected,true);assert.equal(row.local_conversations,true);assert.equal(row.supported,false);assert.equal(row.configuration_matches,false);await assert.rejects(setupPreview(store,name,{env}),/暂未实现/)}
+test('Pi setup writes only its own extension file and refuses to overwrite a foreign one',fixture(async({env,store})=>{
+ env.PI_CODING_AGENT_DIR=join(env.HOME,'pi');const p=await setupPreview(store,'pi',{env});assert.equal(p.files.mcp,join(env.PI_CODING_AGENT_DIR,'extensions','superlcm.ts'))
+ if(p.can_apply){const r=await applySetup(store,'pi',p.revision,{env});assert.equal(r.configuration_verified,true);assert.match(readFileSync(p.files.mcp,'utf8'),/^\/\/ SuperLcm for Pi/);assert.equal((await setupPreview(store,'pi',{env})).mcp_action,'preserve')}
+ mkdirSync(join(env.PI_CODING_AGENT_DIR,'extensions'),{recursive:true});writeFileSync(p.files.mcp,'// someone else\n');const foreign=await setupPreview(store,'pi',{env});assert.equal(foreign.can_apply,false)
 }))
 
 test('generated hook command handles spaces/quotes and writes explicit index home',{skip:process.platform==='win32'},fixture(async({env,dir})=>{

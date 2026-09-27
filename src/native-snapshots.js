@@ -5,6 +5,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, realpathSync, statS
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { configFiles } from './harness.js'
+import { continuationSql } from './hermes.js'
 const hash=x=>createHash('sha256').update(x).digest('hex')
 const key=(path,id)=>hash('hermes\0'+path+'\0'+id)
 const columns=(db,table)=>new Set(db.prepare('PRAGMA table_info('+table+')').all().map(x=>x.name))
@@ -12,9 +13,9 @@ function hermesDb(path){const db=new DatabaseSync(path,{readOnly:true});try{cons
 export function hermesConversations(store,{env=process.env,offset=0,limit=30}={}){
  const file=configFiles('hermes',env).transcripts;if(!existsSync(file))return {harness:'hermes',root:file,conversations:[],total:0,next_offset:null}
  const path=realpathSync(file),{db,s}=hermesDb(path)
- try{const name=s.has('display_name')&&s.has('title')?"COALESCE(NULLIF(display_name,''),NULLIF(title,''),id)":s.has('title')?'COALESCE(title,id)':'id';const visible=s.has('hidden')?' WHERE COALESCE(hidden,0)=0':'';const total=db.prepare('SELECT count(*) AS n FROM sessions'+visible).get().n
+ try{const name=s.has('display_name')&&s.has('title')?"COALESCE(NULLIF(display_name,''),NULLIF(title,''),id)":s.has('title')?'COALESCE(title,id)':'id';const visible=' c WHERE '+(s.has('hidden')?'COALESCE(c.hidden,0)=0 AND ':'')+"NOT (EXISTS (SELECT 1 FROM sessions p WHERE p.id=c.parent_session_id AND p.end_reason='compression') AND "+continuationSql(db)+')'+(s.has('model_config')?" AND json_extract(CASE WHEN json_valid(c.model_config) THEN c.model_config ELSE '{}' END,'$._delegate_from') IS NULL":'');const total=db.prepare('SELECT count(*) AS n FROM sessions'+visible).get().n
  const rows=db.prepare('SELECT id,'+name+' AS title,started_at FROM sessions'+visible+' ORDER BY started_at DESC,id LIMIT ? OFFSET ?').all(limit,offset)
- return {harness:'hermes',root:path,total,next_offset:offset+rows.length<total?offset+rows.length:null,conversations:rows.map(x=>{const known=store.resolveSession(x.id,'hermes').matches;const summaries=known.reduce((sum,row)=>sum+store.summaries(row.session).total,0);return {key:key(path,x.id),harness:'hermes',conversation_id:x.id,name:x.title,session:known[0]?.session||null,path,bytes:0,updated_at:new Date(Number(x.started_at)*1000).toISOString(),indexed:known.length>0,summary_count:summaries,can_index:true,import_kind:'snapshot',error:null}})}
+ return {harness:'hermes',root:path,total,next_offset:offset+rows.length<total?offset+rows.length:null,conversations:rows.map(x=>{const known=[store.source('hermes-'+String(x.id).replace(/[^\w.-]/g,'_').slice(0,180)),...store.resolveSession(x.id,'hermes').matches].filter(Boolean);const summaries=known.reduce((sum,row)=>sum+store.summaries(row.session).total,0);return {key:key(path,x.id),harness:'hermes',conversation_id:x.id,name:x.title,session:known[0]?.session||null,path,bytes:0,updated_at:new Date(Number(x.started_at)*1000).toISOString(),indexed:known.length>0,summary_count:summaries,can_index:true,import_kind:'live-mirror',error:null}})}
  }finally{db.close()}
 }
 function visibleContent(value){if(typeof value!=='string')return value||'';if(!/^[\[{]/.test(value.trim()))return value;try{const x=JSON.parse(value);return Array.isArray(x)?x:value}catch{return value}}

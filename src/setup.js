@@ -3,11 +3,33 @@ import { dirname, join } from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { configFiles, readJson, mcpRegistration, matchingMcp, script } from './harness.js'
 import { findCli, runCommand as run, commandOptions } from './runtime.js'
+import { readHermesConfig, writeHermesConfig, hermesPython, HERMES_EVENTS } from './hermes-config.js'
+import { piExtension } from './pi.js'
 const hash=text=>createHash('sha256').update(text).digest('hex')
 const read=file=>existsSync(file)?readFileSync(file,'utf8'):null
 const quoted=text=>process.platform==='win32'?'"'+text.replaceAll('"','\"')+'"':"'"+text.replaceAll("'","'\\''")+"'"
 const active=new Set()
+export const hookCommandFor=(store,word)=>[process.execPath,script,word,'--home',store.dir].map(quoted).join(' ')
+// Hermes: MCP server + per-turn shell hooks, written through Hermes' own config code.
+async function hermesPreview(store,env){
+  const files={mcp:configFiles('hermes',env).mcp,hooks:configFiles('hermes',env).mcp},bin=findCli('hermes',env),py=hermesPython(env)
+  const cfg=py?await readHermesConfig(env):{mcp:null,hooks:{}}
+  const reg={found:!!cfg.mcp,enabled:cfg.mcp?.enabled!==false,config:cfg.mcp},matches=matchingMcp(reg,store),conflict=reg.found&&!matches
+  const command=hookCommandFor(store,'hermes-hook'),added=HERMES_EVENTS.filter(event=>!(cfg.hooks?.[event]||[]).some(h=>h?.command===command))
+  const mcp={command:process.execPath,args:[script,'mcp'],env:{SUPERLCM_HOME:store.dir,SUPERLCM_CLIENT:'hermes'}}
+  const revision=hash(JSON.stringify({harness:'hermes',raw:read(files.mcp),index:store.dir,script}))
+  return {harness:'hermes',revision,can_apply:!!bin&&!!py&&!conflict,blocker:!bin?'未找到 CLI，请先安装对应宿主':!py?'找不到 Hermes 自带的 Python，无法安全修改它的配置':conflict?'同名 superlcm 指向不同命令或索引；不覆盖已有配置，请先核对路径':null,files,index_home:store.dir,hook_events_added:added,hook_command:command,mcp_action:matches?'preserve':'register',requires_review:true,notes:['通过 Hermes 自己的配置代码写入，保留其他设置。','完成后启动一次 Hermes，确认允许 SuperLcm 的钩子。'],_next:{mcp:matches?null:mcp,hooks:Object.fromEntries(added.map(event=>[event,{command,timeout:15}]))}}
+}
+// Pi: one auto-discovered extension file (tools + per-turn capture); no MCP support in Pi itself.
+function piPreview(store,env){
+  const file=join(configFiles('pi',env).hooks,'superlcm.ts'),files={mcp:file,hooks:file},bin=findCli('pi',env)
+  const content=piExtension({node:process.execPath,script,home:store.dir}),current=read(file)
+  const ours=current===null||current.startsWith('// SuperLcm for Pi'),same=current===content
+  return {harness:'pi',revision:hash(JSON.stringify({harness:'pi',current,content})),can_apply:!!bin&&ours,blocker:!bin?'未找到 CLI，请先安装对应宿主':!ours?'同名扩展文件不是 SuperLcm 生成的；不覆盖，请先核对 '+file:null,files,index_home:store.dir,hook_events_added:same?[]:['session_start','turn_end','session_compact','session_shutdown'],hook_command:null,mcp_action:same?'preserve':'register',requires_review:false,notes:['只新增一个扩展文件，不改 Pi 的设置。','新开的 Pi 对话会自动加载。'],_next:{content}}
+}
 export async function setupPreview(store,harness,{env=process.env,runCommand=run}={}) {
+  if(harness==='hermes')return hermesPreview(store,env)
+  if(harness==='pi')return piPreview(store,env)
   if(!['codex','claude-code'].includes(harness))throw Error('此 harness 暂未实现自动接入；不会写入猜测的配置')
   const files=configFiles(harness,env),bin=findCli(harness==='codex'?'codex':'claude',env)
   const raw=read(files.hooks),current=readJson(files.hooks)
@@ -40,7 +62,13 @@ export async function applySetup(store,harness,revision,options={}) {
     if(!p.can_apply)throw Error(p.blocker)
     const backups=[]
     const backupDir=join(store.dir,'config-backups');mkdirSync(backupDir,{recursive:true,mode:0o700})
-    for(const file of [p.files.mcp,p.files.hooks])if(existsSync(file)){const name=harness+'-'+hash(file).slice(0,10)+'-'+Date.now()+'-'+randomBytes(3).toString('hex')+'.bak';const path=join(backupDir,name);writeFileSync(path,readFileSync(file),{flag:'wx',mode:0o600});backups.push({file,backup:path})}
+    for(const file of new Set([p.files.mcp,p.files.hooks]))if(existsSync(file)){const name=harness+'-'+hash(file).slice(0,10)+'-'+Date.now()+'-'+randomBytes(3).toString('hex')+'.bak';const path=join(backupDir,name);writeFileSync(path,readFileSync(file),{flag:'wx',mode:0o600});backups.push({file,backup:path})}
+    if(harness==='hermes'||harness==='pi'){
+      if(harness==='hermes'&&(p._next.mcp||p.hook_events_added.length))await writeHermesConfig(options.env||process.env,p._next)
+      if(harness==='pi'&&p.mcp_action==='register'){mkdirSync(dirname(p.files.mcp),{recursive:true});const temp=p.files.mcp+'.superlcm-'+randomBytes(6).toString('hex');writeFileSync(temp,p._next.content,{flag:'wx',mode:0o644});renameSync(temp,p.files.mcp)}
+      const after=await setupPreview(store,harness,options),verified=after.mcp_action==='preserve'&&!after.hook_events_added.length
+      return {saved:true,configuration_verified:verified,state:verified?'awaiting_client_reload':'configuration_unverified',harness,backups,hook_events_added:p.hook_events_added,mcp_action:p.mcp_action,requires_review:p.requires_review,trust_granted:false}
+    }
     if(p.mcp_action==='register') {
       const [bin,...args]=p.mcp_command
       try{await (options.runCommand||run)(bin,args,commandOptions(options.env||process.env))}catch{throw Error('官方 CLI 注册 MCP 失败；未写 hook。备份位于 '+backupDir)}

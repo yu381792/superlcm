@@ -5,7 +5,7 @@ Queries actual model catalogs without sending a model prompt.
 import json,os,pathlib,subprocess,sys,hashlib
 from playwright.sync_api import sync_playwright
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-config_paths=[pathlib.Path.home()/'.codex/config.toml',pathlib.Path.home()/'.codex/hooks.json',pathlib.Path.home()/'.claude.json',pathlib.Path.home()/'.claude/settings.json']
+config_paths=[pathlib.Path.home()/'.codex/config.toml',pathlib.Path.home()/'.codex/hooks.json',pathlib.Path.home()/'.claude.json',pathlib.Path.home()/'.claude/settings.json',pathlib.Path.home()/'.hermes/config.yaml',pathlib.Path.home()/'.hermes/shell-hooks-allowlist.json',pathlib.Path.home()/'.pi/agent/extensions/superlcm.ts']
 def hashes():
  result={}
  for p in config_paths:
@@ -77,7 +77,8 @@ try:
   page.locator('#tools [data-import="codex"]').click();page.wait_for_selector('.local-row')
   page.locator('.local-row',has_text='待导入本地记录').locator('button').click()
   page.wait_for_selector('.local-row:has-text("待导入本地记录") [data-open]');page.locator('.modal [data-close]').first.click()
-  for harness in ['codex','claude-code']:
+  for harness in ['codex','claude-code','hermes','pi']:
+   if not page.locator('[data-setup="'+harness+'"]:not([disabled])').count():print('skip',harness,'(not installed)');continue
    page.locator('[data-setup="'+harness+'"]').click()
    page.wait_for_function("() => document.getElementById('applySetup') && !document.getElementById('applySetup').disabled",timeout=30000)
    with page.expect_response(lambda r:'/api/setup-apply' in r.url) as setup:page.click('#applySetup')
@@ -86,8 +87,8 @@ try:
    note=page.locator('.modal .notice').inner_text();print('setup',harness,note,flush=True)
    assert page.locator('.modal .steps li:nth-child(3).done').count()==1,note
    page.screenshot(path=str(shots/('superlcm-setup-'+harness+'.png')))
-   if harness=='codex' and page.locator('#openReview').count():
-    page.click('#openReview');page.wait_for_selector('.modal .notice:has-text("已在终端打开 Codex")');page.wait_for_selector('#recheck')
+   if harness in ('codex','hermes') and page.locator('#openReview').count():
+    page.click('#openReview');page.wait_for_selector('.modal .notice:has-text("已在终端打开")');page.wait_for_selector('#recheck')
    page.locator('.modal [data-close]').first.click()
   assert page.locator('#statusText').inner_text().startswith('已接入')
   assert page.locator('#tools .tcard select[data-tool="codex"] option').first.inner_text().startswith('默认（')
@@ -132,7 +133,7 @@ try:
   assert page.locator('#error').is_hidden(),page.locator('#error').inner_text()
   browser.close()
  assert before==hashes(),'Real user configurations changed'
- print(json.dumps({'ok':True,'views':3,'merged_levels':True,'continue':True,'local_import':True,'fixture_setup':['codex','claude-code'],'real_catalog':'codex','real_user_settings_unchanged':True},ensure_ascii=False))
+ print(json.dumps({'ok':True,'views':3,'merged_levels':True,'continue':True,'local_import':True,'fixture_setup':['codex','claude-code','hermes','pi'],'real_catalog':'codex','real_user_settings_unchanged':True},ensure_ascii=False))
 finally:
  server.terminate()
  try:server.wait(8)

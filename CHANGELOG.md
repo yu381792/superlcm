@@ -2,6 +2,7 @@
 
 ## 0.2.0-alpha.1
 
+- Hermes and Pi connect automatically: 接入 registers SuperLcm's MCP tools and capture hooks (Hermes through its own config code; Pi as one extension file), checks that they load, and for Hermes opens a terminal so its hook approval prompt appears. Hermes messages are kept in SuperLcm's own append-only copy, with compression chains joined into one conversation; Pi session files are indexed byte for byte. The Codex setup dialog reads whether its hooks are trusted and can open Codex for the review.
 - Delete a conversation from its list row or detail page, or clean up old conversations by tool and last activity under 设置 › 存储; deleted conversations are not recaptured by hooks. 接续到其他工具 is now 换个工具继续.
 - The console lives at a fixed address, `http://127.0.0.1:8791/`, with no login token; Host, Origin and JSON-only writes still block other web pages.
 - A single 生成摘要 / 补齐摘要 button opens a confirmation that shows how many records and model calls a background pass takes, and offers only methods this computer can run (installed Claude/Codex CLI, saved custom API), each labelled with whose quota or bill it uses; `summarize --backend api` runs a one-off pass with the saved custom API.

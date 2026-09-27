@@ -72,7 +72,7 @@ export function startServer(store = new ClaudeStore(), input = process.stdin, ou
       }
       let result
       switch (msg.method) {
-        case 'initialize': {observe(msg.params?.clientInfo?.name);result={protocolVersion:legacyVersions.includes(msg.params?.protocolVersion)?msg.params.protocolVersion:legacyVersions[0],capabilities:{tools:{}},serverInfo:{name:'superlcm',version},instructions};break}
+        case 'initialize': {observe(process.env.SUPERLCM_CLIENT||msg.params?.clientInfo?.name);result={protocolVersion:legacyVersions.includes(msg.params?.protocolVersion)?msg.params.protocolVersion:legacyVersions[0],capabilities:{tools:{}},serverInfo:{name:'superlcm',version},instructions};break}
         case 'server/discover': observe(msg.params?._meta?.['io.modelcontextprotocol/clientInfo']?.name);result={resultType:'complete',supportedVersions:[modernVersion,...legacyVersions],capabilities:{tools:{}},_meta:{'io.modelcontextprotocol/serverInfo':{name:'superlcm',version}},instructions};break
         case 'ping': result={};break
         case 'tools/list': result={tools:listTools(store)};break

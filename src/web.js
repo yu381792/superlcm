@@ -67,8 +67,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'GET /api/harnesses': async () => ({ harnesses: await discovery(store, { env }) }),
     'GET /api/local-conversations': url => localConversations(store, url.searchParams.get('harness'), { env, offset: int(url.searchParams.get('offset'), 0) }),
     'POST /api/index-local': async req => { const x = await body(req); return indexLocalConversation(store, x.harness, x.key, { env }) },
-    // Opens Codex itself so its own startup review can ask the user to trust new hooks; SuperLcm never trusts them.
-    'POST /api/open-codex-review': async req => { await body(req); return openInTerminal(findCli('codex', env), { dir: store.dir, name: 'open-codex', cwd: env.HOME, ...terminal }) },
+    // Opens the tool itself so its own startup screen asks the user to approve new hooks; SuperLcm never approves them.
+    'POST /api/open-review': async req => { const x = await body(req); if (!['codex', 'hermes'].includes(x.harness)) throw new Error('Unsupported tool'); return openInTerminal(findCli(x.harness, env), { dir: store.dir, name: 'open-' + x.harness, cwd: env.HOME, ...terminal }) },
     'POST /api/delete': async req => { const x = await body(req); return store.deleteSession(x.session) },
     'POST /api/delete-preview': async req => { const x = await body(req); const rows = store.staleSessions(x.before_ms, x.harness || undefined); return { count: rows.length, records: rows.reduce((n, r) => n + r.records, 0), sample: rows.slice(0, 8).map(r => ({ name: r.name || r.session, harness: r.harness, updated_ms: r.updated_ms })) } },
     // The client confirms the exact count it previewed, so a conversation that became stale meanwhile is not removed unseen.

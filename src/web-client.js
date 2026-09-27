@@ -311,7 +311,7 @@ async function openContinue() {
   if (!state.target || !tools.some(h => h.harness === state.target)) state.target = (tools.find(h => h.configuration_matches && h.harness !== d.source.harness) || tools[0])?.harness
   const render = () => {
     const tool = tools.find(h => h.harness === state.target), ready = tool?.configuration_matches
-    const quoted = "'" + x.line.replace(/'/g, "'\\''") + "'", cmd = { 'claude-code': 'claude ' + quoted, codex: 'codex ' + quoted }[state.target]
+    const quoted = "'" + x.line.replace(/'/g, "'\\''") + "'", cmd = { 'claude-code': 'claude ' + quoted, codex: 'codex ' + quoted, pi: 'pi ' + quoted }[state.target]
     overlay('<div class="modal" role="dialog" aria-labelledby="ctitle"><div class="card"><div class="card-h"><div><h3 id="ctitle">' + t('换个工具继续') + '</h3><p>' + t('在目标工具中新建对话，发送下方指令即可接续。原文完整保留，可随时查证。') + '</p></div><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
       '<div><div class="section-h"><h2>' + t('目标工具') + '</h2></div><div class="targets">' + tools.map(h => '<button type="button" class="target" data-t="' + esc(h.harness) + '" aria-pressed="' + (h.harness === state.target) + '"><span class="t1">' + mark(h.harness, 'sm') + esc(toolName(h.harness)) + '</span><span class="t2">' + (h.configuration_matches ? t('已接入') : h.supported ? t('未接入') : t('暂不支持自动接入')) + (h.harness === d.source.harness ? ' · ' + t('当前来源') : '') + '</span></button>').join('') + '</div></div>' +
       (ready

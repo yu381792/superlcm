@@ -4,12 +4,12 @@ import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findCli, paths, runCommand as run, commandOptions } from './runtime.js'
 export const script = fileURLToPath(new URL('./cli.js',import.meta.url))
-export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:false,local:true},{id:'pi',label:'Pi',bin:'pi',supported:false,local:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
+export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:true,local:true},{id:'pi',label:'Pi',bin:'pi',supported:true,local:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
 export function configFiles(harness,env=process.env) {
   const p=paths(env)
   if(harness==='codex')return {mcp:join(p.codex,'config.toml'),hooks:join(p.codex,'hooks.json'),transcripts:join(p.codex,'sessions')}
   if(harness==='claude-code')return {mcp:env.CLAUDE_CONFIG_DIR?join(p.claude,'.claude.json'):join(p.home,'.claude.json'),hooks:join(p.claude,'settings.json'),transcripts:join(p.claude,'projects')}
-  if(harness==='hermes'){const home=env.HERMES_HOME||join(p.home,'.hermes');return {mcp:join(home,'config.yaml'),hooks:join(home,'hooks'),transcripts:join(home,'state.db')}}
+  if(harness==='hermes'){const home=env.HERMES_HOME||join(p.home,'.hermes');return {mcp:join(home,'config.yaml'),hooks:join(home,'config.yaml'),transcripts:join(home,'state.db')}}
   if(harness==='pi'){const home=env.PI_CODING_AGENT_DIR||join(p.home,'.pi','agent');return {mcp:join(home,'settings.json'),hooks:join(home,'extensions'),transcripts:join(home,'sessions')}}
   throw Error('Unsupported local harness adapter')
 }
@@ -48,11 +48,13 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     if(!detected&&!def.supported)return null
     let version=null
     if(bin)try{version=(await runCommand(bin,['--version'],{...commandOptions(env),timeout:3000})).stdout.trim().split('\n')[0].slice(0,100)}catch{}
-    const reg=def.supported?await mcpRegistration(def.id,{env,runCommand}):{found:false}
-    const hook=def.supported?hookInspection(def.id,env):{status:'unsupported',events:[]}
+    const native=['codex','claude-code'].includes(def.id)
+    let reg={found:false},hook={status:'unsupported',events:[]},plan=null
+    if(native){reg=await mcpRegistration(def.id,{env,runCommand});hook=hookInspection(def.id,env)}
+    else if(def.supported&&bin){try{const {setupPreview}=await import('./setup.js');plan=await setupPreview(store,def.id,{env,runCommand});reg={found:plan.mcp_action==='preserve'||(plan.can_apply===false&&!!plan.blocker&&/同名/.test(plan.blocker))};hook={status:plan.hook_events_added.length?'missing':'configured',events:[]}}catch(error){reg={found:false,error:error.message}}}
     const hookSeen=seen.find(c=>c.kind==='hook'&&c.client===def.id)?.seen_at||null
     const mcpSeen=seen.find(c=>c.kind==='mcp-self-reported'&&(def.id==='claude-code'?/claude/i:/codex/i).test(c.client)&&!c.client.includes('self-test'))?.seen_at||null
-    return {harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:def.supported&&matchingMcp(reg,store),config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:def.supported?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
+    return {harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:native?matchingMcp(reg,store):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
   }))
   for(const x of store.harnessSettings())if(!rows.some(r=>r?.harness===x.harness))rows.push({harness:x.harness,label:x.harness,supported:false,detected:false,configured:false,hook:{status:'unsupported'},connection:'unverified'})
   return rows.filter(Boolean)

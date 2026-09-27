@@ -19,7 +19,13 @@ Run `node src/cli.js web`, then open **接入** and click **接入** on the dete
     node src/cli.js setup codex --apply
     node src/cli.js setup claude-code --apply
 
-Hermes (`HERMES_HOME`) and Pi (`PI_CODING_AGENT_DIR`) are also detected and offer explicit native-store snapshot import; automatic MCP/hook setup for those two is not implemented yet. See [capabilities and test contract](CONSOLE.md).
+Hermes (`HERMES_HOME`, default `~/.hermes`) and Pi (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`) are supported too. See [capabilities and test contract](CONSOLE.md).
+
+**Hermes.** Setup edits `config.yaml` only through Hermes' own Python (`load_config` / `save_config` / `_save_mcp_server`, run with the interpreter of the installed `hermes` launcher), adding the `superlcm` MCP server (with `SUPERLCM_CLIENT=hermes`, since Hermes' MCP client sends no name) and `on_session_end` / `on_session_finalize` shell hooks that run `cli.js hermes-hook`. Hermes asks once, in a terminal, whether to allow new hooks; SuperLcm only reads `shell-hooks-allowlist.json`. Hermes stores messages in `state.db` and may rewrite them, so each hook appends every new message row (tool and inactive rows included) to SuperLcm's own JSONL copy under `SUPERLCM_HOME/hermes/` and indexes that copy as `hermes-<root id>`. A compression continuation (parent ended by compression, child not branched, delegated or reset) joins the same conversation; branches and subagents do not.
+
+**Pi.** Setup writes one auto-discovered file, `extensions/superlcm.ts`, and refuses if a file of that name that SuperLcm did not write already exists. The extension reports `session_start`, `turn_end`, `agent_settled`, `session_compact` and `session_shutdown` to `cli.js pi-hook`, which indexes the append-only session file byte for byte (all branches), and registers the SuperLcm MCP tools as Pi tools; `/superlcm-status` lists them. Open Pi sessions pick it up after `/reload`.
+
+In-conversation summaries (`agent` mode) get no per-turn nudge in Hermes or Pi yet; choose a background method for those tools. Conversations imported earlier as one-off snapshots stay as separate entries.
 
 ## Local Web control console (opt-in)
 
