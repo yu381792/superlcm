@@ -18,13 +18,13 @@ Claude Code, Codex, Hermes and Pi compact long conversations and lose detail. Su
 
 Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then:
 
-1. **接入 (Connect)** — pick Claude Code, Codex, Hermes or Pi and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. Codex and Hermes ask you to approve new hooks once; the console checks whether that is still needed and can open the tool in a terminal so its own approval prompt appears.
+1. **接入 (Connect)** — pick Claude Code, Codex, Hermes or Pi and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
 2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **换个工具继续** to get the one-line handoff for another tool.
 3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (the default: it writes each part from memory right after it happens, which costs almost nothing and works in every connected tool), your Claude or Codex subscription CLI in the background, or a custom API (any Anthropic or OpenAI-compatible endpoint), so no subscription is required. Tune segment size and merge width.
 
 Terminal equivalents: `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
-Hermes keeps its transcripts in a SQLite database and rewrites them on compression, so SuperLcm keeps its own append-only copy of every message row and joins a compression chain into one conversation. Pi session files are append-only and are indexed byte for byte, all branches included. In-conversation summaries (对话模型生成) are not nudged per turn in Hermes or Pi yet; pick a background method for those tools.
+Hermes keeps its transcripts in a SQLite database and rewrites them on compression, so SuperLcm keeps its own append-only copy of every message row and joins a compression chain into one conversation. Pi session files are append-only and are indexed byte for byte, all branches included.
 
 ## MCP tools
 

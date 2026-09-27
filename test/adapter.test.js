@@ -515,18 +515,30 @@ test('merge work is planned as soon as four summaries exist, before the next raw
   assert.equal(store.setTuning({target_chars:24000,batch_size:64,fanout:6}).fanout,6)
 }))
 
-test('Codex hook trust is read from Codex hooks/list and never written',fixture(async ({dir})=>{
+test('Codex hook trust is read from hooks/list, and written only on request for SuperLcm hooks',fixture(async ({dir})=>{
   const fake=(status)=>{const bin=join(dir,'codex-'+status);writeFileSync(bin,'#!'+process.execPath+`
 let b='';process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const m=JSON.parse(b.slice(0,i));b=b.slice(i+1)
 if(m.id===1)console.log(JSON.stringify({id:1,result:{}}))
 if(m.id===2)console.log(JSON.stringify({id:2,result:{data:[{hooks:[
 {eventName:'stop',handlerType:'command',command:'node /x/src/cli.js codex-hook',enabled:true,trustStatus:'trusted'},
-{eventName:'sessionStart',handlerType:'command',command:'node /x/src/cli.js codex-hook',enabled:true,trustStatus:'${status}'},
+{eventName:'sessionStart',handlerType:'command',command:"'/n/node' '/x/src/cli.js' 'codex-hook' '--home' '/h'",enabled:true,trustStatus:'${status}'},
 {eventName:'stop',handlerType:'command',command:'other-tool',enabled:true,trustStatus:'untrusted'}]}]}}))}})
 `);chmodSync(bin,0o755);return bin}
   assert.deepEqual(await codexHookTrust({bin:fake('trusted'),cwd:dir}),{checked:true,total:2,trusted:2,untrusted:[],ok:true})
   assert.deepEqual(await codexHookTrust({bin:fake('untrusted'),cwd:dir}),{checked:true,total:2,trusted:1,untrusted:['sessionStart'],ok:false})
   assert.equal((await codexHookTrust({bin:join(dir,'missing'),cwd:dir})).checked,false)
+  // approve:true records Codex's own trust for SuperLcm's exact command only, through config/batchWrite.
+  const log=join(dir,'writes.json'),bin=join(dir,'codex-approve');writeFileSync(bin,'#!'+process.execPath+`
+const fs=require('node:fs');let b='',trusted=false;process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const m=JSON.parse(b.slice(0,i));b=b.slice(i+1)
+if(m.id===1)console.log(JSON.stringify({id:1,result:{}}))
+if(m.id===2||m.id===4)console.log(JSON.stringify({id:m.id,result:{data:[{hooks:[
+{key:'k-ours',currentHash:'sha256:ours',eventName:'stop',handlerType:'command',command:'node /x/src/cli.js codex-hook',enabled:true,trustStatus:trusted?'trusted':'untrusted'},
+{key:'k-other',currentHash:'sha256:other',eventName:'stop',handlerType:'command',command:'node /y/cli.js codex-hook --evil',enabled:true,trustStatus:'untrusted'}]}]}}))
+if(m.id===3){fs.writeFileSync(${JSON.stringify(log)},JSON.stringify(m.params));trusted=true;console.log(JSON.stringify({id:3,result:{status:'ok'}}))}}})
+`);chmodSync(bin,0o755)
+  const approved=await codexHookTrust({bin,cwd:dir,approve:true,command:'node /x/src/cli.js codex-hook'})
+  assert.deepEqual(JSON.parse(readFileSync(log,'utf8')).edits,[{keyPath:'hooks.state',mergeStrategy:'upsert',value:{'k-ours':{trusted_hash:'sha256:ours'}}}],'only the exact SuperLcm command is trusted')
+  assert.equal(approved.approved,true)
 }))
 
 test('opening Codex for its own hook review launches only the fixed CLI in a terminal',fixture(async ({dir})=>{

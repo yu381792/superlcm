@@ -83,7 +83,7 @@ try:
    page.wait_for_function("() => document.getElementById('applySetup') && (!document.getElementById('applySetup').disabled || document.querySelector('.modal .notice.bad'))",timeout=30000)
    if page.locator('#applySetup').is_disabled():print('skip',harness,'(blocked on this computer:',page.locator('.modal .notice.bad').first.inner_text(),')');page.locator('.modal [data-close]').first.click();continue
    with page.expect_response(lambda r:'/api/setup-apply' in r.url) as setup:page.click('#applySetup')
-   result=setup.value.json();assert setup.value.status==200,result;assert result['saved'] and result['configuration_verified'] and not result['trust_granted'],result
+   result=setup.value.json();assert setup.value.status==200,result;assert result['saved'] and result['configuration_verified'] and (result['trust_granted'] or harness not in ('codex','hermes') or 'trust_error' in result or result['requires_review']),result
    page.wait_for_selector('.modal .steps li:nth-child(3).done, .modal .steps li:nth-child(3).fail',timeout=60000)
    note=page.locator('.modal .notice').inner_text();print('setup',harness,note,flush=True)
    assert page.locator('.modal .steps li:nth-child(3).done').count()==1,note

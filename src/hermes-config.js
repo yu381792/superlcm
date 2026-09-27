@@ -90,3 +90,13 @@ export function hermesHookTrust(command, env = process.env) {
   const untrusted = HERMES_EVENTS.filter(event => !approvals.some(a => a.event === event && a.command === command))
   return { checked: true, total: HERMES_EVENTS.length, trusted: HERMES_EVENTS.length - untrusted.length, untrusted, ok: !untrusted.length }
 }
+// After the user confirmed in the console: record the approvals exactly as Hermes' own first-use prompt does
+// (agent.shell_hooks._record_approval, the documented allowlist file), for SuperLcm's hook command only.
+export function approveHermesHooks(env, command) {
+  return runPython(env, `import json, sys
+from agent.shell_hooks import _record_approval
+x = json.load(sys.stdin)
+for event in x["events"]:
+    _record_approval(event, x["command"])
+print("SUPERLCM_JSON " + json.dumps({"approved": True}))`, { events: HERMES_EVENTS, command })
+}

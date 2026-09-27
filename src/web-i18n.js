@@ -33,6 +33,8 @@ const LANGS = {
     '「对话模型生成」由正在聊天的 AI 在刚聊完一段时凭记忆顺手写，几乎不多花钱，任何接入的工具都能用；另外几种是在后台单独调用模型来写，不占用主对话。': 'In-conversation is written by the AI you are chatting with, from memory right after each part, costs almost nothing and works in every connected tool; the others call a model separately in the background and leave the main conversation alone.',
     '正在聊天的 AI 凭记忆顺手写，几乎不多花钱': 'Written from memory by the AI you are chatting with; costs almost nothing',
     '领取下一段待写的摘要（仅「对话模型生成」模式可用）。': 'Get the next summary piece to write (In-conversation mode only).',
+    '同时替我在 {tool} 里允许': 'Also approve it in {tool} for me',
+    '相当于替你在 {tool} 里点一次「允许」，只针对 SuperLcm 自己的钩子。不勾的话，接入后要打开 {tool} 亲自确认。': 'Same as clicking Allow in {tool} yourself, for SuperLcm\'s own hooks only. Leave it unchecked to approve them in {tool} after connecting.',
     '对话模型生成': 'In-conversation', 'Claude 订阅': 'Claude subscription',
     'Codex 订阅': 'Codex subscription', '自定义 API': 'Custom API', '不生成摘要，原文照常保存': 'No summaries; originals are still stored',
     '暂不支持自动接入，可导入本机对话': 'No automatic setup yet; local conversations can be imported', '未找到 {tool} 命令行': '{tool} CLI not found', '尚未接入': 'Not connected',

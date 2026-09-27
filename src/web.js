@@ -76,7 +76,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'GET /api/storage': () => store.storageStats(),
     'POST /api/connection-check': async req => { const x = await body(req); return x.harness === 'claude-code' ? claudeProbe(store, { env }) : testHarness(store, x.harness, { env }) },
     'POST /api/setup-preview': async req => { const x = await body(req); return publicPreview(await setupPreview(store, x.harness, { env })) },
-    'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env }) },
+    'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env, approveHooks: x.approve_hooks === true }) },
     'GET /api/models': url => catalog(url.searchParams.get('backend'), { env }),
     'GET /api/settings': async () => ({
       global: { ...(store.globalSetting() || { mode: summaryMode(env), model: null, api_provider: null, api_url: null, configured: false }), api_key_configured: store.hasApiCredential('global') },

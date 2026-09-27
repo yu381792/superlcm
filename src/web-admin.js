@@ -56,13 +56,17 @@ function renderTools() {
 async function openSetup(harness) {
   const name = toolName(harness)
   const steps = [[t('检查本机配置'), ''], [t('写入 SuperLcm 配置（先备份原文件）'), ''], [t('验证能否正常加载'), '']]
-  let preview = null, busy = false, lastCheck = null, reviewOpened = false
+  let preview = null, busy = false, lastCheck = null, reviewOpened = false, approveHooks = true
+  const needsApproval = harness === 'codex' || harness === 'hermes'
   const render = (message = '', cls = 'calm', finished = false, extra = '') => overlay('<div class="modal" role="dialog" aria-labelledby="stitle"><div class="card"><div class="card-h"><div><h3 id="stitle">' + t('接入 {tool}', { tool: esc(name) }) + '</h3><p>' + t('接入后，{tool} 的对话会自动保存，其中的 AI 也能查阅全部已存对话。', { tool: esc(name) }) + '</p></div><button type="button" class="x" data-close aria-label="' + t('关闭') + '"' + (busy ? ' disabled' : '') + '>×</button></div><div class="card-b">' +
     '<ol class="steps">' + steps.map(([t, s]) => '<li class="' + s + '"><span>' + esc(t) + '</span></li>').join('') + '</ol>' +
     (preview ? '<details><summary>' + t('将修改的文件') + '</summary><div class="packet">' + esc([t('MCP 配置：') + preview.files.mcp + (preview.mcp_action === 'preserve' ? t('（已存在，保持不变）') : ''), t('事件钩子：') + preview.files.hooks + (preview.hook_events_added.length ? t('（新增 {list}）', { list: preview.hook_events_added.join(', ') }) : t('（已齐全）')), t('数据位置：') + preview.index_home].join('\n')) + '</div></details>' : '') +
     (message ? '<div class="notice ' + cls + '"><span>' + message + '</span></div>' : '') +
+    // Codex and Hermes ask the user to approve new hooks; offer to do that step for them (their own documented way).
+    (!finished && needsApproval && preview?.can_apply ? '<label class="check"><input type="checkbox" id="approveHooks"' + (approveHooks ? ' checked' : '') + (busy ? ' disabled' : '') + '><span><b>' + t('同时替我在 {tool} 里允许', { tool: esc(name) }) + '</b>' + t('相当于替你在 {tool} 里点一次「允许」，只针对 SuperLcm 自己的钩子。不勾的话，接入后要打开 {tool} 亲自确认。', { tool: esc(name) }) + '</span></label>' : '') +
     '<div class="actions">' + (finished ? extra + '<button type="button" class="btn' + (extra ? '' : ' primary') + '" data-close>' + t('完成') + '</button>' : '<button type="button" class="btn primary" id="applySetup"' + (preview?.can_apply && !busy ? '' : ' disabled') + '>' + t('确认接入') + '</button><button type="button" class="btn" data-close' + (busy ? ' disabled' : '') + '>' + t('取消') + '</button>') + '</div></div></div></div>', root => {
     root.querySelector('#applySetup')?.addEventListener('click', apply)
+    root.querySelector('#approveHooks')?.addEventListener('change', event => { approveHooks = event.target.checked })
     root.querySelector('#openReview')?.addEventListener('click', event => act(async () => {
       await api('/api/open-review', { harness })
       reviewOpened = true; showResult(lastCheck)
@@ -93,7 +97,7 @@ async function openSetup(harness) {
   async function apply() {
     busy = true; render(t('正在写入…'))
     try {
-      const x = await api('/api/setup-apply', { harness, revision: preview.revision, confirm: true })
+      const x = await api('/api/setup-apply', { harness, revision: preview.revision, confirm: true, approve_hooks: needsApproval && approveHooks })
       if (!x.configuration_verified) throw new Error(t('配置已写入，但读回时不一致'))
       steps[1][1] = 'done'; render(t('正在验证…'))
       const check = await api('/api/connection-check', { harness })

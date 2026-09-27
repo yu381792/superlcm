@@ -300,3 +300,9 @@ th { font-weight: 500; color: var(--ink3); font-size: 12px }
   .set-nav button { white-space: nowrap; flex: none }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+
+.check{display:flex;gap:10px;align-items:flex-start;margin:12px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:10px;cursor:pointer;line-height:1.55}
+.check input{margin-top:4px;accent-color:var(--accent)}
+.check b{display:block}
+.check span{color:var(--ink2)}
+.check b{color:var(--ink)}
