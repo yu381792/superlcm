@@ -62,7 +62,7 @@ function settingsSection(sec) {
   for (const x of document.querySelectorAll('#setNav button')) x.dataset.sec === sec ? x.setAttribute('aria-current', 'true') : x.removeAttribute('aria-current')
   for (const p of document.querySelectorAll('.set-body .panel')) p.hidden = p.dataset.sec !== sec
 }
-for (const b of document.querySelectorAll('#setNav button')) b.onclick = () => settingsSection(b.dataset.sec)
+for (const b of document.querySelectorAll('#setNav button')) b.onclick = () => { settingsSection(b.dataset.sec); if (b.dataset.sec === 'storage') act(loadStorage) }
 window.addEventListener('hashchange', () => show(location.hash.slice(1), false))
 $('#statusPill').onclick = () => show('connect')
 document.addEventListener('keydown', event => {
@@ -88,16 +88,35 @@ function renderList() {
   if (state.query) return
   $('#rows').innerHTML = state.rows.length ? state.rows.map(c => {
     const pct = c.records ? Math.round(Math.min(c.summarized_to, c.records) / c.records * 100) : 0
-    return '<button type="button" class="row" role="option" aria-selected="' + (c.session === state.sel) + '" data-id="' + esc(c.session) + '">' + mark(c.harness) +
+    return '<div class="row-wrap"><button type="button" class="row" role="option" aria-selected="' + (c.session === state.sel) + '" data-id="' + esc(c.session) + '">' + mark(c.harness) +
       '<span class="name">' + esc(c.name) + '</span><span class="meta"><span class="num">' + t('{n} 条', { n: fmt(c.records) }) + '</span><span>·</span><span>' + ago(c.updated_ms) + '</span>' +
-      (c.summary_count ? '<span class="mini" title="' + t('摘要覆盖 {n}%', { n: pct }) + '"><i style="width:' + pct + '%"></i></span>' : '<span>' + t('暂无摘要') + '</span>') + '</span></button>'
+      (c.summary_count ? '<span class="mini" title="' + t('摘要覆盖 {n}%', { n: pct }) + '"><i style="width:' + pct + '%"></i></span>' : '<span>' + t('暂无摘要') + '</span>') + '</span></button>' + delButton(c) + '</div>'
   }).join('') : '<div class="empty"><span>' + t('还没有对话记录。') + '</span><button type="button" class="btn primary" id="goConnect">' + t('接入第一个工具') + '</button></div>'
   $('#listCount').textContent = t('{n} 个对话', { n: state.total })
   $('#more').hidden = state.offset === null
   for (const b of $('#rows').querySelectorAll('.row')) b.onclick = () => select(b.dataset.id)
+  for (const b of $('#rows').querySelectorAll('[data-del]')) b.onclick = () => { const c = state.rows.find(x => x.session === b.dataset.del); if (c) openDelete(c) }
   const go = $('#goConnect'); if (go) go.onclick = () => show('connect')
 }
 $('#more').onclick = () => act(() => loadConversations(false), $('#more'))
+const TRASH = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5M6.8 7v4M9.2 7v4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+function delButton(c) { return '<button type="button" class="row-del" data-del="' + esc(c.session) + '" title="' + t('删除对话') + '" aria-label="' + t('删除对话') + '">' + TRASH + '</button>' }
+// Delete one conversation from SuperLcm after an explicit confirmation. The tool's own transcript is untouched.
+function openDelete(c) {
+  overlay('<div class="modal" role="dialog" aria-labelledby="dtitle"><div class="card" style="width:min(460px,100%)"><div class="card-h"><h3 id="dtitle">' + t('删除对话？') + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
+    '<p style="margin:0"><b>' + esc(c.name) + '</b></p>' +
+    '<p style="margin:0">' + t('将从 SuperLcm 中删除它的 {n} 条原文存档和全部摘要，删除后无法恢复。', { n: fmt(c.records) }) + '</p>' +
+    '<p class="muted" style="margin:0">' + t('{tool} 里的原始对话不受影响。之后这个对话即使继续，SuperLcm 也不会再自动收录；需要时可以在「接入」页重新导入。', { tool: esc(toolName(c.harness)) }) + '</p>' +
+    '<div class="actions"><button type="button" class="btn danger" id="delGo">' + t('删除') + '</button><button type="button" class="btn" data-close>' + t('取消') + '</button></div></div></div></div>', root => {
+    const go = root.querySelector('#delGo')
+    go.onclick = () => act(async () => {
+      await api('/api/delete', { session: c.session })
+      closeOverlay(); toast(t('已删除'))
+      if (state.sel === c.session) { state.sel = null; state.detail = null; $('#detail').innerHTML = ''; $('#conv').classList.remove('show-detail') }
+      await loadConversations()
+    }, go)
+  })
+}
 
 /* ---------- search ---------- */
 let searchTimer
@@ -196,7 +215,7 @@ function renderDetail() {
   const d = state.detail, c = d.source, tail = d.records - d.summarized_to
   let html = '<div class="detail-inner"><button type="button" class="btn small back" id="back">← ' + t('返回列表') + '</button>' +
     '<div class="d-head"><div class="d-title"><h1 title="' + esc(c.name) + '">' + esc(c.name) + '</h1><div class="d-meta">' + mark(c.harness, 'sm') + '<span>' + esc(toolName(c.harness)) + '</span><span class="tag" title="' + t('对话编号，接续时使用') + '">#' + esc(c.code) + '</span><span class="num">' + t('{n} 条原文', { n: fmt(d.records) }) + '</span><span>' + t('更新于 {t}', { t: ago(d.updated_ms) }) + '</span></div></div>' +
-    '<div class="actions"><button type="button" class="btn" id="rename">' + t('重命名') + '</button><button type="button" class="btn primary" id="continue">' + t('接续到其他工具') + '</button></div></div>'
+    '<div class="actions"><button type="button" class="btn icon" id="delete" title="' + t('删除对话') + '" aria-label="' + t('删除对话') + '">' + TRASH + '</button><button type="button" class="btn" id="rename">' + t('重命名') + '</button><button type="button" class="btn primary" id="continue">' + t('换个工具继续') + '</button></div></div>'
   html += stripHtml(d)
   if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
   else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
@@ -232,6 +251,7 @@ function bindDetail() {
   $('#back').onclick = () => $('#conv').classList.remove('show-detail')
   $('#continue').onclick = () => act(openContinue, $('#continue'))
   $('#rename').onclick = openRename
+  $('#delete').onclick = () => openDelete({ ...d.source, session: state.sel, records: d.records })
   const collapse = $('#collapseAll'); if (collapse) collapse.onclick = () => { state.open.clear(); renderDetail() }
   for (const b of all('[data-toggle]')) b.onclick = () => act(async () => {
     const id = b.dataset.toggle, node = findNode(id)
@@ -292,7 +312,7 @@ async function openContinue() {
   const render = () => {
     const tool = tools.find(h => h.harness === state.target), ready = tool?.configuration_matches
     const quoted = "'" + x.line.replace(/'/g, "'\\''") + "'", cmd = { 'claude-code': 'claude ' + quoted, codex: 'codex ' + quoted }[state.target]
-    overlay('<div class="modal" role="dialog" aria-labelledby="ctitle"><div class="card"><div class="card-h"><div><h3 id="ctitle">' + t('接续到其他工具') + '</h3><p>' + t('在目标工具中新建对话，发送下方指令即可接续。原文完整保留，可随时查证。') + '</p></div><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
+    overlay('<div class="modal" role="dialog" aria-labelledby="ctitle"><div class="card"><div class="card-h"><div><h3 id="ctitle">' + t('换个工具继续') + '</h3><p>' + t('在目标工具中新建对话，发送下方指令即可接续。原文完整保留，可随时查证。') + '</p></div><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
       '<div><div class="section-h"><h2>' + t('目标工具') + '</h2></div><div class="targets">' + tools.map(h => '<button type="button" class="target" data-t="' + esc(h.harness) + '" aria-pressed="' + (h.harness === state.target) + '"><span class="t1">' + mark(h.harness, 'sm') + esc(toolName(h.harness)) + '</span><span class="t2">' + (h.configuration_matches ? t('已接入') : h.supported ? t('未接入') : t('暂不支持自动接入')) + (h.harness === d.source.harness ? ' · ' + t('当前来源') : '') + '</span></button>').join('') + '</div></div>' +
       (ready
         ? '<div><div class="section-h"><h2>' + t('在 {tool} 新对话中发送', { tool: esc(toolName(state.target)) }) + '</h2></div><div class="say"><div class="say-h"><span>' + t('接续指令') + '</span><button type="button" class="btn small" id="cp1">' + t('复制') + '</button></div><div class="say-b">' + esc(x.line) + '</div></div></div>' +

@@ -47,7 +47,8 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           const session=codex ? codexSessionKey(input.session_id) : input.session_id
           const file=input.transcript_path ? (codex ? codexTranscript(input.transcript_path,{cwd:input.cwd}) : claudeTranscript(input.transcript_path)) : null
           const shouldIndex=['Stop','PostCompact','SessionEnd','SessionStart','UserPromptSubmit'].includes(event)
-          if (shouldIndex && file) result=store.ingest(session,file)
+          // A conversation the user deleted in SuperLcm is not captured again automatically.
+          if (shouldIndex && file && !store.isDeleted(session)) result=store.ingest(session,file)
           if (store.source(session)) {
             store.markClient(codex?'codex':'claude-code','hook')
             const title=codex ? (file?codexNativeName(input.session_id,file):null) : store.nativeClaudeTitle(session)

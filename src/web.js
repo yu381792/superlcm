@@ -69,6 +69,11 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'POST /api/index-local': async req => { const x = await body(req); return indexLocalConversation(store, x.harness, x.key, { env }) },
     // Opens Codex itself so its own startup review can ask the user to trust new hooks; SuperLcm never trusts them.
     'POST /api/open-codex-review': async req => { await body(req); return openInTerminal(findCli('codex', env), { dir: store.dir, name: 'open-codex', cwd: env.HOME, ...terminal }) },
+    'POST /api/delete': async req => { const x = await body(req); return store.deleteSession(x.session) },
+    'POST /api/delete-preview': async req => { const x = await body(req); const rows = store.staleSessions(x.before_ms, x.harness || undefined); return { count: rows.length, records: rows.reduce((n, r) => n + r.records, 0), sample: rows.slice(0, 8).map(r => ({ name: r.name || r.session, harness: r.harness, updated_ms: r.updated_ms })) } },
+    // The client confirms the exact count it previewed, so a conversation that became stale meanwhile is not removed unseen.
+    'POST /api/delete-bulk': async req => { const x = await body(req); const rows = store.staleSessions(x.before_ms, x.harness || undefined); if (rows.length !== x.expect_count) throw new Error('The matching conversations changed; preview again'); for (const r of rows) store.deleteSession(r.session); return { deleted: rows.length } },
+    'GET /api/storage': () => store.storageStats(),
     'POST /api/connection-check': async req => { const x = await body(req); return x.harness === 'claude-code' ? claudeProbe(store, { env }) : testHarness(store, x.harness, { env }) },
     'POST /api/setup-preview': async req => { const x = await body(req); return publicPreview(await setupPreview(store, x.harness, { env })) },
     'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env }) },

@@ -12,8 +12,9 @@ The detail view shows:
 - **摘要目录** — the top-level summaries (nodes not yet merged upward). Higher nodes expand into their children; first-level nodes open the original records.
 - **原文 drawer** — the exact records for a range, with tool calls and system records collapsed. This is the same text `lcm_read` returns.
 - **生成摘要 / 补齐摘要** — when a conversation has no summary, in-conversation summaries fall far behind, or the last pass failed, one button opens a confirmation dialog. It says how many records will be summarized and about how many model calls that takes (a dry run of the planner), and lists only the methods this computer can run, each with whose quota or bill it uses: Claude subscription (local `claude` CLI), Codex subscription (local `codex` CLI), or the custom API saved in Settings. Nothing starts until **开始生成**, which calls `POST /api/summarize` to spawn `cli.js summarize … --backend`. With no method available the notice links to Settings; when the unsummarized part is shorter than one segment, no button is shown. The view polls while a pass holds the summary lease.
-- **接续到其他工具** — pick a target tool and copy the one-line handoff (or a terminal command). The packet preview shows exactly what `lcm_continue` returns.
+- **换个工具继续** — pick a target tool and copy the one-line handoff (or a terminal command). The packet preview shows exactly what `lcm_continue` returns.
 - **重命名** — a manual name that later hook updates do not overwrite.
+- **删除** — the trash button on a list row (on hover) or in the detail header asks for confirmation, then removes that conversation's records, summaries and SuperLcm's archived copy. The tool's own transcript is untouched. A deleted conversation is remembered, so hooks do not capture it again if it continues; importing it again from 接入 revives it.
 
 ## 接入 (Connect)
 
@@ -22,6 +23,8 @@ A two-column grid of tool cards (one column on phones). Each card shows a status
 Tools without automatic capture (Hermes, Pi) and past conversations of any supported tool can be imported from **导入本机的历史对话**; only the selected conversation is read, and no model is called.
 
 ## 设置 (Settings)
+
+**存储** shows the data folder, counts and sizes, and **清理旧对话**: pick a tool and a last-activity cutoff (30 / 90 / 180 / 365 days), preview the matching conversations, then confirm to delete them. The server re-checks that the matching set has not changed since the preview.
 
 A side list (a scrolling row on phones) shows one section at a time, in the order 外观, 存储, 摘要, MCP 工具. 摘要 holds the global default: method, model and granularity, saved together with one button. Clicking the SuperLcm logo in the top-left always returns to the conversation list.
 

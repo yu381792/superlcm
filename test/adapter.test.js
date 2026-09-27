@@ -537,3 +537,31 @@ test('opening Codex for its own hook review launches only the fixed CLI in a ter
   openInTerminal('C:\\codex.exe',{dir,platform:'win32',spawnProcess});assert.deepEqual(calls[1],['cmd.exe','/c','start','""','cmd.exe','/k','C:\\codex.exe'])
   assert.throws(()=>openInTerminal(null,{dir,spawnProcess}),/CLI not found/)
 }))
+
+test('deleting a conversation removes SuperLcm data only, stays deleted for hooks, and re-import revives it',fixture(async ({dir,store})=>{
+  const src=join(dir,'talk.jsonl');writeFileSync(src,Array.from({length:10},(_,i)=>line(i)).join(''))
+  store.ingest('talk',src);store.setOrigin('talk','claude-code')
+  await buildHierarchy(store,'talk',{model:'fake',summarize:async()=> 'summary'})
+  const archive=store.archivePath('talk');assert.ok(statSync(archive).size>0)
+  const before=readFileSync(src)
+  assert.deepEqual(store.deleteSession('talk'),{session:'talk',deleted:true,records:10})
+  assert.equal(store.source('talk'),undefined)
+  for(const table of ['events','nodes','event_fts','node_fts','session_origins'])assert.equal(store.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE session=?`).get('talk').n,0,table)
+  assert.throws(()=>statSync(archive),/ENOENT/,'SuperLcm archive copy removed')
+  assert.deepEqual(readFileSync(src),before,'the host transcript is never touched')
+  assert.equal(store.isDeleted('talk'),true,'hooks skip a deleted conversation')
+  store.ingest('talk',src);assert.equal(store.isDeleted('talk'),false);assert.equal(store.stats('talk').records,10,'explicit re-import revives it')
+}))
+test('bulk delete removes only conversations older than the cutoff and refuses a changed set',fixture(async ({dir,store})=>{
+  for(const name of ['old1','old2','fresh']){const f=join(dir,name+'.jsonl');writeFileSync(f,line(0)+line(1));store.ingest(name,f);store.setOrigin(name,'codex')}
+  const now=Date.now();store.db.prepare('UPDATE sources SET updated_ms=? WHERE session IN (?,?)').run(now-100*86400000,'old1','old2');store.db.prepare('UPDATE sources SET updated_ms=? WHERE session=?').run(now,'fresh')
+  const web=await startWeb({store:new ClaudeStore(store.dir)})
+  try {
+    const post=(path,body)=>fetch(web.url+path.slice(1),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json())
+    const before_ms=now-90*86400000
+    const preview=await post('/api/delete-preview',{before_ms});assert.equal(preview.count,2);assert.equal(preview.records,4)
+    assert.match((await post('/api/delete-bulk',{before_ms,expect_count:3})).error,/changed/)
+    assert.deepEqual(await post('/api/delete-bulk',{before_ms,expect_count:2}),{deleted:2})
+    const left=new ClaudeStore(store.dir);assert.deepEqual(left.db.prepare('SELECT session FROM sources').all().map(x=>x.session),['fresh']);left.close()
+  } finally { await web.close() }
+}))

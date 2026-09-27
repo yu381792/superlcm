@@ -92,6 +92,12 @@ try:
   assert page.locator('#statusText').inner_text().startswith('已接入')
   assert page.locator('#tools .tcard select[data-tool="codex"] option').first.inner_text().startswith('默认（')
 
+  # Delete: the row button asks first; cancel keeps it, confirm removes only that conversation.
+  page.locator('.nav [data-view="conversations"]').click();page.wait_for_selector('#rows .row')
+  target=page.locator('#rows .row-wrap',has_text='待导入本地记录');target.hover();target.locator('.row-del').click()
+  page.wait_for_selector('.modal #delGo');page.locator('.modal [data-close]').last.click();assert target.count()==1
+  target.hover();target.locator('.row-del').click();page.click('#delGo')
+  page.wait_for_selector('#rows .row-wrap:has-text("待导入本地记录")',state='detached');assert page.locator('#rows .row').count()==2
   # Settings: real CLI catalogs, saving, granularity and appearance.
   page.locator('.nav [data-view="settings"]').click()
   assert page.locator('#setNav button').all_inner_texts()==['外观','存储','摘要','MCP 工具']
@@ -103,6 +109,7 @@ try:
   page.select_option('#fanout','6');page.wait_for_selector('#writerSaved:has-text("未保存")')
   with page.expect_response(lambda r:'/api/tuning' in r.url) as tuned:page.click('#saveWriter')
   assert tuned.value.json()['fanout']==6;page.wait_for_selector('#writerSaved:has-text("已保存")')
+  page.locator('#setNav [data-sec="storage"]').click();page.wait_for_selector('#storeStats div');page.wait_for_selector('#cleanPreview:has-text("没有符合条件")')
   page.locator('#setNav [data-sec="look"]').click()
   page.locator('.sw[data-pal="teal"]').click();assert page.evaluate("document.documentElement.dataset.palette")=='teal'
   page.screenshot(path=str(shots/'superlcm-settings.png'),full_page=True)

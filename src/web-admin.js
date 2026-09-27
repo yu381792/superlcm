@@ -190,6 +190,41 @@ function renderTuning(tuning) {
 const pickedTuning = () => ({ target_chars: Number($('#segSize').value), batch_size: Number($('#segMsgs').value), fanout: Number($('#fanout').value) })
 for (const id of ['#segSize', '#segMsgs', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 
+/* ---------- storage ---------- */
+const bytes = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'
+let cleanPlan = null
+async function loadStorage() {
+  const x = await api('/api/storage')
+  $('#storeStats').innerHTML = [[fmt(x.conversations), t('个对话')], [fmt(x.records), t('条原文')], [bytes(x.originals_bytes), t('原文存档')], [bytes(x.index_bytes), t('索引与摘要')]].map(([v, k]) => '<div><b>' + v + '</b><span>' + k + '</span></div>').join('')
+  const tools = (state.groups || []).map(g => g.harness), current = $('#cleanTool').value
+  $('#cleanTool').innerHTML = '<option value="">' + t('全部工具') + '</option>' + tools.map(h => '<option value="' + esc(h) + '">' + esc(toolName(h)) + '</option>').join('')
+  $('#cleanTool').value = tools.includes(current) ? current : ''
+  await previewClean()
+}
+async function previewClean() {
+  const days = Number($('#cleanAge').value), before_ms = Date.now() - days * 86400000, harness = $('#cleanTool').value
+  const x = await api('/api/delete-preview', { before_ms, harness })
+  cleanPlan = x.count ? { before_ms, harness, expect_count: x.count, records: x.records } : null
+  $('#cleanPreview').innerHTML = x.count ? t('符合条件的有 {n} 个对话，共 {r} 条原文。', { n: '<b>' + fmt(x.count) + '</b>', r: fmt(x.records) }) + '<br><span class="muted">' + x.sample.map(c => esc(c.name)).join('、') + (x.count > x.sample.length ? ' …' : '') + '</span>' : t('没有符合条件的对话。')
+  $('#cleanGo').disabled = !x.count
+  $('#cleanGo').textContent = x.count ? t('删除这 {n} 个对话', { n: fmt(x.count) }) : t('删除这些对话')
+}
+for (const id of ['#cleanTool', '#cleanAge']) $(id).onchange = () => act(previewClean)
+$('#cleanGo').onclick = () => {
+  const plan = cleanPlan; if (!plan) return
+  overlay('<div class="modal" role="dialog" aria-labelledby="bctitle"><div class="card" style="width:min(460px,100%)"><div class="card-h"><h3 id="bctitle">' + t('删除 {n} 个对话？', { n: fmt(plan.expect_count) }) + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
+    '<p style="margin:0">' + t('将从 SuperLcm 中删除这些对话的 {r} 条原文存档和全部摘要，删除后无法恢复。各工具里的原始对话不受影响。', { r: fmt(plan.records) }) + '</p>' +
+    '<div class="actions"><button type="button" class="btn danger" id="bulkGo">' + t('删除') + '</button><button type="button" class="btn" data-close>' + t('取消') + '</button></div></div></div></div>', root => {
+    const go = root.querySelector('#bulkGo')
+    go.onclick = () => act(async () => {
+      const x = await api('/api/delete-bulk', { before_ms: plan.before_ms, harness: plan.harness, expect_count: plan.expect_count })
+      closeOverlay(); toast(t('已删除 {n} 个对话', { n: fmt(x.deleted) }))
+      state.sel = null; state.detail = null; $('#detail').innerHTML = ''
+      await loadConversations(); await loadStorage()
+    }, go)
+  })
+}
+
 /* ---------- appearance ---------- */
 function prefs(key, value) {
   try { if (value === undefined) return localStorage.getItem('slcm-' + key); localStorage.setItem('slcm-' + key, value) } catch { return null }

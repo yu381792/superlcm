@@ -73,6 +73,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS global_summary_settings(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS summary_tuning(id INTEGER PRIMARY KEY CHECK(id=1), target_chars INTEGER NOT NULL, batch_size INTEGER NOT NULL, fanout INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
+      CREATE TABLE IF NOT EXISTS deleted_sessions(session TEXT PRIMARY KEY, deleted_ms INTEGER NOT NULL);
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
@@ -313,6 +314,7 @@ export class ClaudeStore {
   }
   ingest(session, path, kind = 'jsonl') {
     if (!['jsonl','text'].includes(kind)) throw new Error('Unsupported source type')
+    this.db.prepare('DELETE FROM deleted_sessions WHERE session=?').run(session) // an explicit (re)index revives a deleted conversation
     const file = this.#verifySource(session, path, kind)
     const src = this.source(session)
     if (src.offset > 0) this.archive(session)
@@ -348,6 +350,40 @@ export class ClaudeStore {
   }
   // Private copy of every indexed byte, so originals survive the host moving or deleting its transcript.
   // The copy is exactly source bytes [0, offset), so event offsets address it unchanged.
+  // Deleted conversations stay deleted: automatic capture (hooks) checks this before indexing again.
+  isDeleted(session) { return Boolean(this.db.prepare('SELECT 1 FROM deleted_sessions WHERE session=?').get(session)) }
+  // Remove one conversation from SuperLcm: records, summaries, settings and SuperLcm's own copies.
+  // The host tool's transcript is never touched.
+  deleteSession(session) {
+    const src = this.source(session)
+    if (!src) throw new Error('Unknown session')
+    const records = this.stats(session).records
+    const ownCopy = !relative(this.dir, src.path).startsWith('..') && !isAbsolute(relative(this.dir, src.path))
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const deliveries = this.db.prepare('SELECT id FROM deliveries WHERE source_session=? OR target_session=?').all(session, session).map(x => x.id)
+      for (const id of deliveries) { this.db.prepare('DELETE FROM delivery_packets WHERE id=?').run(id); this.db.prepare('DELETE FROM deliveries WHERE id=?').run(id) }
+      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+      this.db.prepare('INSERT INTO deleted_sessions(session,deleted_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET deleted_ms=excluded.deleted_ms').run(session, Date.now())
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    const files = [this.archivePath(session)]
+    // Import and snapshot copies live under the index; remove them unless another conversation still uses them.
+    if (ownCopy && !this.db.prepare('SELECT 1 FROM sources WHERE path=?').get(src.path)) files.push(src.path)
+    for (const file of files) try { unlinkSync(file) } catch {}
+    return { session, deleted: true, records }
+  }
+  // Conversations whose last activity is before a cutoff, optionally for one tool.
+  staleSessions(beforeMs, harness) {
+    if (!Number.isSafeInteger(beforeMs)) throw new Error('Invalid cutoff')
+    return this.db.prepare("SELECT s.session,COALESCE(o.harness,'legacy') AS harness,o.display_name AS name,s.updated_ms,(SELECT COUNT(*) FROM events e WHERE e.session=s.session) AS records FROM sources s LEFT JOIN session_origins o ON o.session=s.session WHERE s.updated_ms IS NOT NULL AND s.updated_ms<?" + (harness ? " AND COALESCE(o.harness,'legacy')=?" : '') + ' ORDER BY s.updated_ms').all(...(harness ? [beforeMs, harness] : [beforeMs]))
+  }
+  storageStats() {
+    const size = file => { try { return statSync(file).size } catch { return 0 } }
+    const row = this.db.prepare('SELECT (SELECT COUNT(*) FROM sources) AS conversations,(SELECT COUNT(*) FROM events) AS records,(SELECT COUNT(*) FROM nodes) AS summaries').get()
+    const originals = this.db.prepare('SELECT session FROM sources').all().reduce((n, x) => n + size(this.archivePath(x.session)), 0)
+    return { ...row, index_bytes: size(join(this.dir, 'lcm.sqlite')) + size(join(this.dir, 'lcm.sqlite-wal')), originals_bytes: originals, dir: this.dir }
+  }
   archivePath(session) { return join(this.dir, 'originals', hash(String(session)).slice(0, 40) + '.raw') }
   #archiveWriter(session, offset) {
     const path = this.archivePath(session)

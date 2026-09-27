@@ -68,6 +68,15 @@ export function page(nonce) {
         <h2>存储</h2>
         <p class="desc">所有对话、原文存档和摘要都只存在这台电脑上的这个目录里。</p>
         <div class="fields"><label class="field">数据位置<input id="dataDir" readonly></label></div>
+        <div class="stat-row" id="storeStats"></div>
+        <h3>清理旧对话</h3>
+        <p class="desc">按最后更新时间批量删除。只删除 SuperLcm 里的原文存档和摘要，各工具里的原始对话不受影响。</p>
+        <div class="fields">
+          <label class="field">工具<select id="cleanTool"></select></label>
+          <label class="field">最后更新早于<select id="cleanAge"><option value="30">30 天前</option><option value="90" selected>90 天前</option><option value="180">半年前</option><option value="365">一年前</option></select></label>
+        </div>
+        <div class="notice calm"><span id="cleanPreview"></span></div>
+        <div class="actions"><button type="button" class="btn danger" id="cleanGo" disabled>删除这些对话</button></div>
       </div>
       <div class="panel" data-sec="summary" hidden>
         <h2>摘要（全局默认）</h2>
