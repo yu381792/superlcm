@@ -1,6 +1,6 @@
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
-import { normalizeApiEndpoint } from './api-endpoint.js'
+import { normalizeApiEndpoint, loopbackEndpoint } from './api-endpoint.js'
 import { readApiKey } from './api-credentials.js'
 import { createHash } from 'node:crypto'
 import { closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
@@ -163,15 +163,16 @@ export class ClaudeStore {
     const chosen=this.effectiveSetting(session,env)
     if(chosen.mode!=='api')return null
     const scope=chosen.scope==='harness'?'harness:'+chosen.harness:'global'
-    return readApiKey(this.dir,scope) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null)
+    // '' = no key needed (a local gateway); null = not configured.
+    return readApiKey(this.dir,scope) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(chosen.api_url) ? '' : null)
   }
   // A saved custom API (this conversation's tool first, then global) usable for a one-off catch-up in any mode.
   apiConfig(session,env=process.env) {
     const harness=this.metadata(session).harness
     for (const [scope,choice] of [['harness:'+harness,harness!=='legacy'?this.harnessSetting(harness):null],['global',this.globalSetting()]]) {
       if (choice?.mode!=='api') continue
-      const apiKey=readApiKey(this.dir,scope) || (scope==='global' && !choice.api_url && !choice.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null)
-      if (apiKey) return {model:choice.model,api_provider:choice.api_provider,api_url:choice.api_url,apiKey}
+      const apiKey=readApiKey(this.dir,scope) || (scope==='global' && !choice.api_url && !choice.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(choice.api_url) ? '' : null)
+      if (apiKey!==null) return {model:choice.model,api_provider:choice.api_provider,api_url:choice.api_url,apiKey}
     }
     return null
   }

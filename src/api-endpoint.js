@@ -1,3 +1,5 @@
+// A local gateway on this computer (plain HTTP on numeric loopback) may need no key at all.
+export function loopbackEndpoint(address){try{const url=new URL(address);return url.protocol==='http:'&&['127.0.0.1','[::1]'].includes(url.hostname)}catch{return false}}
 export function normalizeApiEndpoint(provider,address) {
   if(!['anthropic','openai'].includes(provider))throw new Error('API protocol must be Anthropic Messages or OpenAI Chat Completions')
   if(typeof address!=='string'||!address.trim()||address.length>2048)throw new Error('Enter an API HTTPS endpoint URL')

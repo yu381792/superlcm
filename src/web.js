@@ -15,6 +15,7 @@ import { continuePacket } from './context.js'
 import { modelCatalog, harnessConnections } from './model-catalog.js'
 import { summaryMode } from './mode.js'
 import { saveApiKey } from './api-credentials.js'
+import { loopbackEndpoint } from './api-endpoint.js'
 import { findCli } from './runtime.js'
 import { summaryEstimate } from './summarize.js'
 import { writerTool } from './cli-writers.js'
@@ -95,7 +96,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       store.validateSetting(x.mode, model, provider, address)
       if (x.mode === 'api') {
         if (key !== undefined && typeof key !== 'string') throw new Error('API key must be text')
-        if (!key && !store.hasApiCredential(scope)) throw new Error('Enter and save an API key for this setting')
+        if (!key && !store.hasApiCredential(scope) && !loopbackEndpoint(address)) throw new Error('Enter and save an API key for this setting')
         if (key) saveApiKey(store.dir, scope, key)
       } else if (key) throw new Error('API key is accepted only for custom API mode')
       const result = x.scope === 'global' ? store.setGlobalSetting(x.mode, model, provider, address) : store.setHarnessSetting(x.harness, x.mode, model, provider, address)

@@ -628,3 +628,14 @@ test('a card warns when the tool wrote a conversation after the last SuperLcm ho
   assert.equal(captureStale(Date.parse('2026-09-27T15:19:30Z'),'2026-09-27 14:00:00',now),false,'still being written')
   assert.equal(captureStale(null,null,now),false)
 })
+
+test('a local gateway on this computer needs no API key',fixture(async ({dir,store})=>{
+  let seen;const fetchImpl=async(url,init)=>{seen={url,headers:init.headers};return {ok:true,json:async()=>({choices:[{message:{content:'Local gateway summary'}}]})}}
+  assert.equal(await summarizeWithModel('decision',{model:'gpt-6-luna',apiProvider:'openai',apiURL:'http://127.0.0.1:10100/v1',fetchImpl}),'Local gateway summary')
+  assert.equal(seen.url,'http://127.0.0.1:10100/v1/chat/completions');assert.equal(seen.headers.authorization,undefined)
+  await assert.rejects(summarizeWithModel('decision',{model:'m',apiProvider:'openai',apiURL:'https://api.example.com/v1',fetchImpl}),/credential/)
+  const file=join(dir,'gw.txt');writeFileSync(file,'A user decision\n');importFile(store,file,'gw','claude-code')
+  store.setHarnessSetting('claude-code','api','gpt-6-luna','openai','http://127.0.0.1:10100/v1')
+  assert.equal(store.apiCredential('gw'),'');assert.equal(store.apiConfig('gw').apiKey,'')
+  store.setHarnessSetting('claude-code','api','m','openai','https://api.example.com/v1');assert.equal(store.apiCredential('gw'),null);assert.equal(store.apiConfig('gw'),null)
+}))

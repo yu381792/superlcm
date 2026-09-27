@@ -2,6 +2,7 @@
 
 ## 0.2.0-alpha.1
 
+- Custom API accepts a local gateway on this computer without an API key (no authorization header is sent).
 - A tool card shows 没在存 when Codex or Claude Code wrote a conversation after SuperLcm's hooks last ran (for example Codex waiting for re-approval after reconnecting), instead of still saying 已接入.
 - MCP tools now declare what they do (read-only lookups; summary tools that write only SuperLcm's own summaries; nothing destructive or networked). Codex no longer asks for approval before each SuperLcm call, which in non-interactive runs made every lookup fail. The Codex hook-trust check counts only SuperLcm's exact hook command.
 - Three ways to write summaries: 对话模型生成 (now also the default on a fresh install; before, an unsaved setting fell back to the Claude CLI), 本工具后台写 and 自定义 API. 本工具后台写 replaces Claude 订阅 / Codex 订阅: a conversation is summarized by a background run of its own tool, now including Hermes (`hermes chat --source tool`) and Pi (`pi -p --no-session`), with the account, provider and model configured in that tool (Claude and Codex runs no longer strip provider settings or ignore the Codex config). Each tool card picks the model from that tool's own list. Background runs are never captured as conversations: Hermes and Pi hooks now also skip them. Older settings are converted once when the index opens.

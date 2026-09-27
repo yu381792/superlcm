@@ -14,7 +14,7 @@ const effective=(store,session)=>store.effectiveSetting(session)
 const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>resolve(JSON.parse(text)))})
 function scheduleSummary(store,session,mode,model) {
   if (!['cli','api'].includes(mode) || !summaryWork(store,session)) return
-  if (mode==='api' && (!(model||process.env.SUPERLCM_CLAUDE_MODEL) || !store.apiCredential(session))) {
+  if (mode==='api' && (!(model||process.env.SUPERLCM_CLAUDE_MODEL) || store.apiCredential(session)===null)) {
     store.setStatus(session,'summary_unconfigured')
     process.stderr.write('SuperLcm: api mode needs a model ID and a configured scoped API key\n')
     return
@@ -116,7 +116,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         if (!backend && process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
         result=mode==='api'
-          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?.apiKey||store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL})
+          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL})
           : await (async()=>{
             // 本工具后台写: this conversation's own tool (or, for an imported one, any installed tool), as configured.
             const tool=writerTool(store.metadata(rest[0]).harness)

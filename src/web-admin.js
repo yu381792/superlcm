@@ -158,7 +158,7 @@ function renderWriter() {
   if (mode === 'api') html = '<label class="field">' + t('接口协议') + '<select id="wProvider"><option value="anthropic">Anthropic Messages</option><option value="openai"' + (same && g.api_provider === 'openai' ? ' selected' : '') + '>' + t('OpenAI 兼容') + '</option></select></label>' +
     '<label class="field">' + t('接口地址') + '<input id="wUrl" type="url" value="' + esc(same && g.api_url || 'https://api.anthropic.com/v1/messages') + '"></label>' +
     '<label class="field">' + t('模型 ID') + '<input id="wModelId" value="' + esc(same && g.model || '') + '" placeholder="' + t('例如 claude-sonnet-5') + '"></label>' +
-    '<label class="field">' + t('API 密钥') + '<input id="wKey" type="password" autocomplete="new-password" placeholder="' + (g.api_key_configured ? t('已保存，留空保持不变') : t('首次保存必须填写')) + '"></label>'
+    '<label class="field">' + t('API 密钥') + '<input id="wKey" type="password" autocomplete="new-password" placeholder="' + (g.api_key_configured ? t('已保存，留空保持不变') : t('首次保存必须填写；本机地址不需要可留空')) + '"></label>'
   $('#writerFields').innerHTML = html
   $('#writerSaved').textContent = ''
   const provider = $('#wProvider')
