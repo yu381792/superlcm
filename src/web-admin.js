@@ -55,14 +55,33 @@ function renderTools() {
 async function openSetup(harness) {
   const name = toolName(harness)
   const steps = [[t('检查本机配置'), ''], [t('写入 SuperLcm 配置（先备份原文件）'), ''], [t('验证能否正常加载'), '']]
-  let preview = null, busy = false
-  const render = (message = '', cls = 'calm', finished = false) => overlay('<div class="modal" role="dialog" aria-labelledby="stitle"><div class="card"><div class="card-h"><div><h3 id="stitle">' + t('接入 {tool}', { tool: esc(name) }) + '</h3><p>' + t('接入后，{tool} 的对话会自动保存，其中的 AI 也能查阅全部已存对话。', { tool: esc(name) }) + '</p></div><button type="button" class="x" data-close aria-label="' + t('关闭') + '"' + (busy ? ' disabled' : '') + '>×</button></div><div class="card-b">' +
+  let preview = null, busy = false, lastCheck = null, reviewOpened = false
+  const render = (message = '', cls = 'calm', finished = false, extra = '') => overlay('<div class="modal" role="dialog" aria-labelledby="stitle"><div class="card"><div class="card-h"><div><h3 id="stitle">' + t('接入 {tool}', { tool: esc(name) }) + '</h3><p>' + t('接入后，{tool} 的对话会自动保存，其中的 AI 也能查阅全部已存对话。', { tool: esc(name) }) + '</p></div><button type="button" class="x" data-close aria-label="' + t('关闭') + '"' + (busy ? ' disabled' : '') + '>×</button></div><div class="card-b">' +
     '<ol class="steps">' + steps.map(([t, s]) => '<li class="' + s + '"><span>' + esc(t) + '</span></li>').join('') + '</ol>' +
     (preview ? '<details><summary>' + t('将修改的文件') + '</summary><div class="packet">' + esc([t('MCP 配置：') + preview.files.mcp + (preview.mcp_action === 'preserve' ? t('（已存在，保持不变）') : ''), t('事件钩子：') + preview.files.hooks + (preview.hook_events_added.length ? t('（新增 {list}）', { list: preview.hook_events_added.join(', ') }) : t('（已齐全）')), t('数据位置：') + preview.index_home].join('\n')) + '</div></details>' : '') +
     (message ? '<div class="notice ' + cls + '"><span>' + message + '</span></div>' : '') +
-    '<div class="actions">' + (finished ? '<button type="button" class="btn primary" data-close>' + t('完成') + '</button>' : '<button type="button" class="btn primary" id="applySetup"' + (preview?.can_apply && !busy ? '' : ' disabled') + '>' + t('确认接入') + '</button><button type="button" class="btn" data-close' + (busy ? ' disabled' : '') + '>' + t('取消') + '</button>') + '</div></div></div></div>', root => {
+    '<div class="actions">' + (finished ? extra + '<button type="button" class="btn' + (extra ? '' : ' primary') + '" data-close>' + t('完成') + '</button>' : '<button type="button" class="btn primary" id="applySetup"' + (preview?.can_apply && !busy ? '' : ' disabled') + '>' + t('确认接入') + '</button><button type="button" class="btn" data-close' + (busy ? ' disabled' : '') + '>' + t('取消') + '</button>') + '</div></div></div></div>', root => {
     root.querySelector('#applySetup')?.addEventListener('click', apply)
+    root.querySelector('#openReview')?.addEventListener('click', event => act(async () => {
+      await api('/api/open-codex-review', {})
+      reviewOpened = true; showResult(lastCheck)
+    }, event.currentTarget))
+    root.querySelector('#recheck')?.addEventListener('click', event => act(async () => { showResult(await api('/api/connection-check', { harness })); await loadHarnesses() }, event.currentTarget))
   })
+  function showResult(check) {
+    lastCheck = check
+    const ok = harness === 'claude-code' ? check.ok : check.protocol?.ok
+    steps[2][1] = ok ? 'done' : 'fail'
+    if (!ok) return render(t('配置已保存，但验证未通过：') + esc(t(check.message || check.protocol?.error || '未知原因')), 'bad', true)
+    if (harness !== 'codex') return render('<b>' + t('接入完成。') + '</b>' + t('新开的 Claude Code 对话会自动加载；已打开的对话需要在 {cmd} 中重连或重开。', { cmd: '<span class="mono">/mcp</span>' }), 'calm', true)
+    const trust = check.hook?.trust_check
+    if (trust?.ok) return render('<b>' + t('接入完成。') + '</b>' + t('Codex 已信任 SuperLcm 的钩子，新开的 Codex 对话即可使用。'), 'calm', true)
+    const count = trust?.checked && trust.untrusted.length ? t('（尚未信任 {n} 个）', { n: trust.untrusted.length }) : ''
+    const text = reviewOpened
+      ? '<b>' + t('已在终端打开 Codex。') + '</b>' + t('在它弹出的「Hooks need review」里选择信任，然后回来点「重新检查」。')
+      : '<b>' + t('还差一步：') + '</b>' + t('Codex 要求你亲自确认一次新钩子。点「打开 Codex 确认」，在弹出的界面里选择信任即可。') + count
+    render(text, 'calm', true, '<button type="button" class="btn primary" id="openReview">' + t('打开 Codex 确认') + '</button><button type="button" class="btn" id="recheck">' + t('重新检查') + '</button>')
+  }
   render(t('正在检查…'))
   try {
     preview = await api('/api/setup-preview', { harness })
@@ -76,15 +95,8 @@ async function openSetup(harness) {
       if (!x.configuration_verified) throw new Error(t('配置已写入，但读回时不一致'))
       steps[1][1] = 'done'; render(t('正在验证…'))
       const check = await api('/api/connection-check', { harness })
-      const ok = harness === 'claude-code' ? check.ok : check.protocol?.ok
-      steps[2][1] = ok ? 'done' : 'fail'
       busy = false
-      const trust = check.hook?.trust_check
-      const next = harness === 'codex'
-        ? trust?.ok ? '<b>' + t('接入完成。') + '</b>' + t('Codex 已信任 SuperLcm 的钩子，新开的 Codex 对话即可使用。')
-          : '<b>' + t('还差一步：') + '</b>' + t('在 Codex 中输入 {cmd} 信任 SuperLcm 的钩子，然后新开一个对话即可使用。', { cmd: '<span class="mono">/hooks</span>' }) + (trust?.checked && trust.untrusted.length ? t('（尚未信任 {n} 个）', { n: trust.untrusted.length }) : '')
-        : '<b>' + t('接入完成。') + '</b>' + t('新开的 Claude Code 对话会自动加载；已打开的对话需要在 {cmd} 中重连或重开。', { cmd: '<span class="mono">/mcp</span>' })
-      render(ok ? next : t('配置已保存，但验证未通过：') + esc(t(check.message || check.protocol?.error || '未知原因')), ok ? 'calm' : 'bad', true)
+      showResult(check)
       await loadHarnesses()
     } catch (error) { busy = false; steps[1][1] ||= 'fail'; render(t('接入失败：') + esc(error.message), 'bad') }
   }

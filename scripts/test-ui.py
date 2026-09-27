@@ -86,6 +86,8 @@ try:
    note=page.locator('.modal .notice').inner_text();print('setup',harness,note,flush=True)
    assert page.locator('.modal .steps li:nth-child(3).done').count()==1,note
    page.screenshot(path=str(shots/('superlcm-setup-'+harness+'.png')))
+   if harness=='codex' and page.locator('#openReview').count():
+    page.click('#openReview');page.wait_for_selector('.modal .notice:has-text("已在终端打开 Codex")');page.wait_for_selector('#recheck')
    page.locator('.modal [data-close]').first.click()
   assert page.locator('#statusText').inner_text().startswith('已接入')
   assert page.locator('#tools .tcard select[data-tool="codex"] option').first.inner_text().startswith('默认（')

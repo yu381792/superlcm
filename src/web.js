@@ -17,6 +17,7 @@ import { summaryMode } from './mode.js'
 import { saveApiKey } from './api-credentials.js'
 import { findCli } from './runtime.js'
 import { summaryEstimate } from './summarize.js'
+import { openInTerminal } from './open-terminal.js'
 export { probeMcp } from './mcp-probe.js'
 
 const nonce = () => randomBytes(18).toString('hex')
@@ -36,7 +37,7 @@ const int = (value, fallback) => { const n = value === null || value === undefin
 const shortName = name => { const flat = String(name).replace(/\s+/g, ' ').trim(); return flat.length > 24 ? flat.slice(0, 23) + '…' : flat }
 const continueLine = source => `通过 SuperLcm 接续对话 #${source.code}「${shortName(source.name)}」，继续之前的任务。`
 
-export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', env = process.env, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, spawnWorker = spawn } = {}) {
+export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', env = process.env, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, spawnWorker = spawn, terminal = {} } = {}) {
   if (host !== '127.0.0.1') throw new Error('Web console is loopback-only')
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local Web port')
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
@@ -66,6 +67,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'GET /api/harnesses': async () => ({ harnesses: await discovery(store, { env }) }),
     'GET /api/local-conversations': url => localConversations(store, url.searchParams.get('harness'), { env, offset: int(url.searchParams.get('offset'), 0) }),
     'POST /api/index-local': async req => { const x = await body(req); return indexLocalConversation(store, x.harness, x.key, { env }) },
+    // Opens Codex itself so its own startup review can ask the user to trust new hooks; SuperLcm never trusts them.
+    'POST /api/open-codex-review': async req => { await body(req); return openInTerminal(findCli('codex', env), { dir: store.dir, name: 'open-codex', cwd: env.HOME, ...terminal }) },
     'POST /api/connection-check': async req => { const x = await body(req); return x.harness === 'claude-code' ? claudeProbe(store, { env }) : testHarness(store, x.harness, { env }) },
     'POST /api/setup-preview': async req => { const x = await body(req); return publicPreview(await setupPreview(store, x.harness, { env })) },
     'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env }) },

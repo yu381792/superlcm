@@ -18,6 +18,7 @@ for(const [h,id,name] of [['codex','source','Codex 架构来源'],['claude-code'
  const session=h==='codex'?'codex-'+id:id;store.ingest(session,file);store.setMetadata(session,{harness:h,externalId:id,name,nameSource:'manual'})
  if(id==='source')await buildHierarchy(store,session,{model:'fixture-only',summarize:async()=> 'Fixture: keep each conversation isolated and source-verifiable.'})
 }
-const web=await startWeb({store,env,catalog:kind=>modelCatalog(kind)})
+// Never open a real terminal from the browser test.
+const web=await startWeb({store,env,catalog:kind=>modelCatalog(kind),terminal:{spawnProcess:()=>({on(){},unref(){}})}})
 console.log(JSON.stringify({url:web.url,dir}));
 process.on('SIGTERM',async()=>{await web.close();rmSync(dir,{recursive:true,force:true});process.exit(0)})

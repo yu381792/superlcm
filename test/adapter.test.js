@@ -11,6 +11,7 @@ import { createServer, request } from 'node:http'
 import { summarizeWithClaudeCli, subscriptionEnv } from '../src/claude-cli.js'
 import { summaryMode } from '../src/mode.js'
 import { codexHookTrust } from '../src/codex-hook-trust.js'
+import { openInTerminal } from '../src/open-terminal.js'
 import { call, startServer, tools } from '../src/mcp.js'
 import { PassThrough } from 'node:stream'
 import { createInterface } from 'node:readline'
@@ -525,4 +526,14 @@ if(m.id===2)console.log(JSON.stringify({id:2,result:{data:[{hooks:[
   assert.deepEqual(await codexHookTrust({bin:fake('trusted'),cwd:dir}),{checked:true,total:2,trusted:2,untrusted:[],ok:true})
   assert.deepEqual(await codexHookTrust({bin:fake('untrusted'),cwd:dir}),{checked:true,total:2,trusted:1,untrusted:['sessionStart'],ok:false})
   assert.equal((await codexHookTrust({bin:join(dir,'missing'),cwd:dir})).checked,false)
+}))
+
+test('opening Codex for its own hook review launches only the fixed CLI in a terminal',fixture(async ({dir})=>{
+  const calls=[],spawnProcess=(cmd,args)=>{calls.push([cmd,...args]);return {on(){},unref(){}}}
+  assert.deepEqual(openInTerminal("/opt/co'dex",{dir,name:'open-codex',platform:'darwin',spawnProcess}),{opened:true,how:'Terminal'})
+  const file=join(dir,'open-codex.command')
+  assert.deepEqual(calls[0],['open','-a','Terminal',file])
+  assert.equal(readFileSync(file,'utf8'),"#!/bin/sh\ncd \"$HOME\" && exec '/opt/co'\\''dex'\n")
+  openInTerminal('C:\\codex.exe',{dir,platform:'win32',spawnProcess});assert.deepEqual(calls[1],['cmd.exe','/c','start','""','cmd.exe','/k','C:\\codex.exe'])
+  assert.throws(()=>openInTerminal(null,{dir,spawnProcess}),/CLI not found/)
 }))
