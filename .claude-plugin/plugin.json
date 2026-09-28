@@ -1,11 +1,23 @@
 {
   "name": "superlcm",
-  "displayName": "SuperLcm",
+  "displayName": "SuperLcm — Permanent context. Turn your context into an archive.",
   "version": "0.2.0",
-  "description": "Never lose a conversation: saves every Claude Code conversation on your computer, keeps layered summaries, and lets Claude find and quote the exact original text later, even after compaction. Also connects Codex, Hermes and Pi to the same local history.",
-  "author": { "name": "yu381792" },
+  "description": "Permanent context: turn your context into an archive. SuperLcm saves every Claude Code conversation word for word on your computer, files layered summaries like the chapters of a book, and lets Claude find and quote the exact original later, even after compaction. Codex, Hermes and Pi share the same archive, so a conversation can be continued in another tool.",
+  "author": {
+    "name": "yu381792"
+  },
   "homepage": "https://github.com/yu381792/superlcm",
   "repository": "https://github.com/yu381792/superlcm",
   "license": "AGPL-3.0-only",
-  "keywords": ["memory", "recall", "conversation-history", "summaries", "compaction", "mcp", "codex", "hermes", "pi"]
+  "keywords": [
+    "memory",
+    "recall",
+    "conversation-history",
+    "summaries",
+    "compaction",
+    "mcp",
+    "codex",
+    "hermes",
+    "pi"
+  ]
 }
