@@ -19,5 +19,8 @@
     "codex",
     "hermes",
     "pi"
-  ]
+  ],
+  "privacyPolicyUrl": "https://github.com/yu381792/superlcm/blob/main/PRIVACY.md",
+  "supportUrl": "https://github.com/yu381792/superlcm/issues",
+  "documentationUrl": "https://github.com/yu381792/superlcm/blob/main/docs/SETUP.md"
 }
