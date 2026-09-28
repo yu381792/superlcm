@@ -2,6 +2,14 @@
 
 `node src/cli.js web` serves the console at the fixed address `http://127.0.0.1:8791/` (pass another port as an argument if 8791 is taken; if the console is already running, the command says so). The server binds only to 127.0.0.1 and needs no login. It refuses requests whose Host header is not `127.0.0.1:<port>` (which stops DNS-rebinding pages), refuses cross-origin writes, accepts writes only as JSON (so a foreign web page cannot send them without a failing preflight), and serves a strict CSP. Web pages on other sites cannot read its responses. Any program running as your user on this computer can open it, the same as it can read the index files directly. Opening the page never calls a model.
 
+### Opening it from your other devices (Tailscale)
+
+The console can be shared inside your own Tailscale network, never on the public internet:
+
+    tailscale serve --bg --https=8791 http://127.0.0.1:8791
+
+and start the console with `SUPERLCM_WEB_REMOTE_HOSTS=<this-mac>.<tailnet>.ts.net:8791` plus `SUPERLCM_WEB_TAILSCALE_USERS` set to `*` (any device on the tailnet) or a comma list of Tailscale logins. Then open `https://<this-mac>.<tailnet>.ts.net:8791/` on the other device. SuperLcm accepts that Host only for requests tailscaled forwards from this computer; Funnel (public) requests, which tailscaled marks with `Tailscale-Funnel-Request`, are refused even if Funnel is turned on for that port, and writes still have to come from the same page. Anyone admitted can do everything the console can (read every stored conversation, change connections, delete), so admit only devices you trust. To keep it running across restarts, run `node src/cli.js web` from a launchd agent (macOS) with those two variables.
+
 ## 对话 (Conversations)
 
 The list shows every stored conversation, newest activity first, with its tool logo, record count, last update and summary coverage. Filter chips are built from the tools that actually have conversations. The search box (shortcut `/`) matches conversation names, `#codes`, summaries and original text (substring match, works for Chinese).

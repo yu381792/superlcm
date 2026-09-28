@@ -169,3 +169,28 @@ test('对话模型生成: the per-turn note asks for a piece from memory; after 
   assert.equal(after.batch_id,fresh.batch_id,'same piece');assert.equal(after.from_memory,undefined);assert.match(after.content,/point 2 about/,'the compacted piece comes with its originals')
  }finally{again.close()}
 }))
+
+test('the console opens from your own Tailscale devices only when configured',async()=>{
+  const { request } = await import('node:http')
+  const dir=mkdtempSync(join(tmpdir(),'superlcm-tailnet-')),store=new ClaudeStore(join(dir,'index'))
+  const host='mac.example.ts.net:8791'
+  const web=await startWeb({store,env:{...process.env,HOME:dir,SUPERLCM_WEB_REMOTE_HOSTS:host,SUPERLCM_WEB_TAILSCALE_USERS:'me@example.com'},discovery:async()=>[],catalog:async()=>({models:[]})})
+  const port=web.server.address().port
+  const send=(headers,method='GET',body)=>new Promise((resolve,reject)=>{const r=request({host:'127.0.0.1',port,path:'/api/settings',method,headers},res=>{res.resume();resolve(res.statusCode)});r.on('error',reject);r.end(body)})
+  try{
+    assert.equal(await send({host,'tailscale-user-login':'me@example.com'}),200)
+    assert.equal(await send({host}),403,'no Tailscale login (e.g. Funnel)')
+    assert.equal(await send({host,'tailscale-user-login':'someone@else.com'}),403)
+    assert.equal(await send({host:'evil.example:8791','tailscale-user-login':'me@example.com'}),403)
+    const json={host,'tailscale-user-login':'me@example.com','content-type':'application/json'}
+    assert.equal(await send({...json,origin:'https://'+host},'POST','{}'),400,'same-origin write reaches the route')
+    assert.equal(await send({...json,origin:'https://evil.example'},'POST','{}'),403)
+  }finally{await web.close();rmSync(dir,{recursive:true,force:true})}
+  // '*' admits any tailnet device (also tagged ones without a login), never Funnel traffic.
+  const open=await startWeb({store:new ClaudeStore(join(mkdtempSync(join(tmpdir(),'superlcm-any-')),'i')),env:{...process.env,SUPERLCM_WEB_REMOTE_HOSTS:host,SUPERLCM_WEB_TAILSCALE_USERS:'*'},discovery:async()=>[],catalog:async()=>({models:[]})})
+  try{const p=open.server.address().port,get=headers=>new Promise(resolve=>request({host:'127.0.0.1',port:p,path:'/api/settings',headers},res=>{res.resume();resolve(res.statusCode)}).end())
+    assert.equal(await get({host}),200);assert.equal(await get({host,'tailscale-user-login':'other@example.com'}),200);assert.equal(await get({host,'tailscale-funnel-request':'?1'}),403)}finally{await open.close()}
+  // Without the settings, only 127.0.0.1 works.
+  const plain=await startWeb({store:new ClaudeStore(join(mkdtempSync(join(tmpdir(),'superlcm-plain-')),'i')),env:{...process.env,SUPERLCM_WEB_REMOTE_HOSTS:''},discovery:async()=>[],catalog:async()=>({models:[]})})
+  try{const p=plain.server.address().port;assert.equal(await new Promise(resolve=>request({host:'127.0.0.1',port:p,path:'/api/settings',headers:{host,'tailscale-user-login':'me@example.com'}},res=>{res.resume();resolve(res.statusCode)}).end()),403)}finally{await plain.close()}
+})

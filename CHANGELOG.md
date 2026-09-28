@@ -2,6 +2,7 @@
 
 ## 0.2.0-alpha.1
 
+- Open the console from your own Tailscale devices (`tailscale serve`, tailnet only): `SUPERLCM_WEB_REMOTE_HOSTS` and `SUPERLCM_WEB_TAILSCALE_USERS` (`*` or specific logins); Funnel traffic is always refused.
 - Custom API accepts a local gateway on this computer without an API key (no authorization header is sent).
 - A tool card shows 没在存 when Codex or Claude Code wrote a conversation after SuperLcm's hooks last ran (for example Codex waiting for re-approval after reconnecting), instead of still saying 已接入.
 - MCP tools now declare what they do (read-only lookups; summary tools that write only SuperLcm's own summaries; nothing destructive or networked). Codex no longer asks for approval before each SuperLcm call, which in non-interactive runs made every lookup fail. The Codex hook-trust check counts only SuperLcm's exact hook command.

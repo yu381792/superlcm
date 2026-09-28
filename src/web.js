@@ -104,10 +104,21 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     },
     'POST /api/probe': async req => { await body(req); return probeMcp({ env: { ...process.env, SUPERLCM_HOME: store.dir } }) }
   }
+  // Optional: open the console from your own devices through `tailscale serve` (tailnet only, never Funnel).
+  // SUPERLCM_WEB_REMOTE_HOSTS lists the Host values served that way (e.g. mac.example.ts.net:8791).
+  // SUPERLCM_WEB_TAILSCALE_USERS: '*' admits every device on the tailnet; otherwise only these Tailscale logins
+  // (tailscaled adds Tailscale-User-Login for a signed-in user). Funnel (public internet) traffic, which
+  // tailscaled marks with Tailscale-Funnel-Request, is always refused.
+  const list = value => String(value || '').split(',').map(x => x.trim()).filter(Boolean)
+  const remoteHosts = list(env.SUPERLCM_WEB_REMOTE_HOSTS), tailnetUsers = list(env.SUPERLCM_WEB_TAILSCALE_USERS)
+  const tailnetRequest = req => remoteHosts.includes(req.headers.host) && !req.headers['tailscale-funnel-request'] &&
+    (tailnetUsers.includes('*') || tailnetUsers.includes(req.headers['tailscale-user-login'])) &&
+    ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://127.0.0.1')
-      if (req.headers.host !== `127.0.0.1:${server.address()?.port}`) return json(res, 403, { error: 'Loopback Host required' })
+      const local = req.headers.host === `127.0.0.1:${server.address()?.port}`
+      if (!local && !tailnetRequest(req)) return json(res, 403, { error: 'Loopback Host required' })
       // No login: the Host check stops DNS rebinding, browsers cannot read cross-origin responses,
       // and writes need a same-origin JSON request, which a foreign page cannot send without a failing preflight.
       if (url.pathname === '/' && req.method === 'GET') {
@@ -117,7 +128,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
         return res.end(page(n))
       }
       if (req.method === 'POST') {
-        if (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${server.address()?.port}`) return json(res, 403, { error: 'Cross-origin mutation refused' })
+        const own = local ? `http://127.0.0.1:${server.address()?.port}` : `https://${req.headers.host}`
+        if (req.headers.origin && req.headers.origin !== own) return json(res, 403, { error: 'Cross-origin mutation refused' })
         if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) return json(res, 415, { error: 'JSON request required' })
       }
       const route = routes[`${req.method} ${url.pathname}`]
