@@ -1,5 +1,11 @@
 # Contributing
 
+## License of contributions
+
+SuperLcm is AGPL-3.0 and is also offered under commercial licenses. Before a pull request can be merged, you need to accept the [Contributor License Agreement](CLA.md): your contribution stays AGPL-3.0 for everyone, and you also allow the maintainer to include it in commercially licensed releases. You keep your copyright. Tick the confirmation in the pull request template to accept it.
+
+## Development
+
 Use Node.js >=22.16. No runtime dependencies are required. Run npm run validate and npm pack --dry-run before proposing a change. Tests must use temporary roots and fake provider responses, never personal accounts or live inference.
 
 ## Add a harness
