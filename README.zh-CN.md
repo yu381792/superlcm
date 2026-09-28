@@ -1,3 +1,5 @@
+<p align="center"><img src=".claude-plugin/icon.svg" width="88" alt="SuperLcm"></p>
+
 <h1 align="center">SuperLcm</h1>
 
 <p align="center"><b>永久上下文，把上下文变成档案馆。</b></p>
