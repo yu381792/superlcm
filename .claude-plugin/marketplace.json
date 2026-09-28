@@ -2,7 +2,7 @@
   "name": "superlcm",
   "description": "SuperLcm: lossless local conversation memory for Claude Code, Codex, Hermes and Pi.",
   "owner": {
-    "name": "yu381792"
+    "name": "ygc381792"
   },
   "plugins": [
     {
