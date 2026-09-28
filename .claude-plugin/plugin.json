@@ -1,0 +1,11 @@
+{
+  "name": "superlcm",
+  "displayName": "SuperLcm",
+  "version": "0.2.0",
+  "description": "Never lose a conversation: saves every Claude Code conversation on your computer, keeps layered summaries, and lets Claude find and quote the exact original text later, even after compaction. Also connects Codex, Hermes and Pi to the same local history.",
+  "author": { "name": "yu381792" },
+  "homepage": "https://github.com/yu381792/superlcm",
+  "repository": "https://github.com/yu381792/superlcm",
+  "license": "AGPL-3.0-only",
+  "keywords": ["memory", "recall", "conversation-history", "summaries", "compaction", "mcp", "codex", "hermes", "pi"]
+}

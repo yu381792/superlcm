@@ -1,4 +1,4 @@
-import { accessSync, constants, realpathSync } from 'node:fs'
+import { accessSync, constants, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, delimiter, isAbsolute, join, resolve, sep } from 'node:path'
 import { execFile, spawnSync } from 'node:child_process'
@@ -25,6 +25,10 @@ export function findCli(name,env=process.env) {
 // Background summary runs use a tool exactly as the user configured it (account, provider, model). The marker
 // makes SuperLcm's own hooks skip that run, so a summary job is never captured as a conversation.
 export function workerEnv(env=process.env){const clean={...env,SUPERLCM_CLI_WORKER:'1'};delete clean.SUPERLCM_ANTHROPIC_API_KEY;return clean}
+// Whether the SuperLcm Claude plugin is switched on in the user's Claude settings (plugin id superlcm@<marketplace>).
+export function claudePluginEnabled(env=process.env){
+  try{return Object.entries(JSON.parse(readFileSync(join(paths(env).claude,'settings.json'),'utf8')).enabledPlugins||{}).some(([id,on])=>on===true&&/^superlcm@/.test(id))}catch{return false}
+}
 export const commandOptions = env => ({env,timeout:12000,maxBuffer:2*1024*1024,windowsHide:true})
 
 // Node that the connected tools should launch SuperLcm with. Prefer one that no AI tool ships inside its

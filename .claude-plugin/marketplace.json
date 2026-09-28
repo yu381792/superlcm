@@ -1,0 +1,14 @@
+{
+  "name": "superlcm",
+  "description": "SuperLcm: lossless local conversation memory for Claude Code, Codex, Hermes and Pi.",
+  "owner": {
+    "name": "yu381792"
+  },
+  "plugins": [
+    {
+      "name": "superlcm",
+      "source": "./",
+      "description": "Lossless local conversation history with layered summaries and exact-source recall, shared across Claude Code, Codex, Hermes and Pi."
+    }
+  ]
+}

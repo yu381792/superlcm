@@ -4,6 +4,7 @@ import { codexTranscript, codexNativeName, codexSessionKey } from './codex.js'
 import { buildHierarchy, summaryWork } from './summarize.js'
 import { summarizeWith, writerTool, WRITER_CLI } from './cli-writers.js'
 import { startServer } from './mcp.js'
+import { claudePluginEnabled } from './runtime.js'
 import { startWeb, defaultPort } from './web.js'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -60,6 +61,8 @@ else if (command==='hermes-hook' || command==='pi-hook') {
   finally { store.close() }
   process.stdout.write(JSON.stringify(reply)+'\n')
 }
+// The Claude plugin brings its own hooks; an older hook in Claude's settings then stays quiet, so each turn is handled once.
+else if (command==='hook' && process.env.SUPERLCM_VIA_PLUGIN!=='1' && claudePluginEnabled()) {}
 else if (command==='hook' || command==='codex-hook' || command==='index' || command==='index-codex' || command==='import' || command==='name' || command==='overview' || command==='summarize') {
   const store=new ClaudeStore()
   try {

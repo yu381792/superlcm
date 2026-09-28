@@ -12,7 +12,7 @@ Claude Code, Codex, Hermes and Pi compact long conversations and lose detail. Su
 - **Chinese and English interface**, following the browser language; switch under Settings. Translations live in `src/web-i18n.js`, and a test fails if any Chinese string lacks an English entry.
 - **Local only.** Node.js 22.16+, no runtime dependencies, loopback-only console, no cloud service.
 
-## Quick start
+## Quick start (from a checkout)
 
     node src/cli.js web
 
@@ -25,6 +25,17 @@ Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then
 Terminal equivalents: `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
 Hermes keeps its transcripts in a SQLite database and rewrites them on compression, so SuperLcm keeps its own append-only copy of every message row and joins a compression chain into one conversation. Pi session files are append-only and are indexed byte for byte, all branches included.
+
+## Install as a Claude plugin
+
+In Claude Code:
+
+    /plugin marketplace add yu381792/superlcm
+    /plugin install superlcm@superlcm
+
+The plugin brings the capture hooks and lookup tools for Claude Code itself; `/superlcm:console` opens the console, where Codex, Hermes and Pi are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
+
+Plugin updates replace the plugin folder, so tools connected from the plugin's console are pointed at a fixed entry file in the SuperLcm folder (`~/.superlcm-claude/superlcm.js`) that follows updates. If Claude Code was connected from the console before, the older hooks in Claude's settings stay quiet once the plugin is enabled; remove the older `superlcm` MCP entry with `claude mcp remove superlcm -s user` so the tools are not listed twice.
 
 ## MCP tools
 

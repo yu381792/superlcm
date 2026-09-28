@@ -3,7 +3,9 @@ import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from 'n
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findCli, paths, runCommand as run, commandOptions, preferredNode } from './runtime.js'
-export const script = fileURLToPath(new URL('./cli.js',import.meta.url))
+import { refreshPluginEntry } from './plugin-entry.js'
+// The file other tools are connected to: this cli.js, or the stable entry when running from the Claude plugin.
+export const script = refreshPluginEntry() || fileURLToPath(new URL('./cli.js',import.meta.url))
 export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:true,local:true},{id:'pi',label:'Pi',bin:'pi',supported:true,local:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
 export function configFiles(harness,env=process.env) {
   const p=paths(env)
