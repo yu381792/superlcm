@@ -1,8 +1,10 @@
 # Contributing
 
-## License of contributions
+## How to help
 
-SuperLcm is AGPL-3.0 and is also offered under commercial licenses. Before a pull request can be merged, you need to accept the [Contributor License Agreement](CLA.md): your contribution stays AGPL-3.0 for everyone, and you also allow the maintainer to include it in commercially licensed releases. You keep your copyright. Tick the confirmation in the pull request template to accept it.
+SuperLcm is maintained by one person and kept deliberately small. The best way to help is an [issue](https://github.com/yu381792/superlcm/issues): a bug with steps to reproduce, or a clear use case. Issues are read, but not every request will be taken up, and there is no response-time promise.
+
+Pull requests are generally not merged. If a small fix is invited in an issue, it needs the [Contributor License Agreement](CLA.md) first: your contribution stays AGPL-3.0 for everyone, and you also allow the maintainer to include it in commercially licensed releases. You keep your copyright.
 
 ## Development
 
