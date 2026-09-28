@@ -43,3 +43,13 @@ Real local read-only discovery found Codex 0.155.1, Claude Code 2.1.280, Hermes 
 - GitHub repository visibility and npm publication were not changed.
 
 Repeatable commands and scope: [console contract](CONSOLE.md).
+
+## Cross-tool handoff (2026-09-28, real tools on macOS)
+
+Each tool was asked to `lcm_continue` a conversation captured by another tool, then `lcm_read` one record; every quoted record matched the archive byte for byte.
+
+- Claude Code continued Codex conversation #1bc05 and read record 3.
+- Codex continued Claude Code conversation #64b3a and read record 2.
+- Hermes continued Claude Code conversation #64b3a and read record 2.
+- Codex continued a summarized Claude Code conversation (2 levels, 18 summaries), answered a detail from the outline and quoted the source record by number.
+- Pi continued the same summarized conversation, received the level-2 outline and found the same detail in the quoted record.

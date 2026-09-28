@@ -1,10 +1,8 @@
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.png"><img src="docs/images/banner-light.png" alt="SuperLcm — Permanent context. Turn your context into an archive." width="640"></picture></p>
+<h1 align="center">SuperLcm</h1>
+
+<p align="center"><b>Permanent context. Turn your context into an archive.</b></p>
 
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
-
-# SuperLcm
-
-**Permanent context. Turn your context into an archive.**
 
 Everything you and your agent say is kept, word for word, on your own computer. Summaries are filed in layers like the chapters of a book, and any detail can be pulled back out and quoted exactly, even long after the context window has been compacted. It works across Claude Code, Codex, Hermes and Pi, and a conversation started in one can be continued in another.
 

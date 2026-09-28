@@ -1,10 +1,8 @@
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.png"><img src="docs/images/banner-light.png" alt="SuperLcm — 永久上下文，把上下文变成档案馆" width="640"></picture></p>
+<h1 align="center">SuperLcm</h1>
+
+<p align="center"><b>永久上下文，把上下文变成档案馆。</b></p>
 
 <p align="center"><a href="README.md">English</a> · <b>中文</b></p>
-
-# SuperLcm
-
-**永久上下文，把上下文变成档案馆。**
 
 你和 AI 说过的每一句话，一字不差地存在你自己的电脑上。摘要像一本书的章节那样一层层归档，任何细节都能原样调出来引用，哪怕上下文早就被压缩过好几轮。Claude Code、Codex、Hermes、Pi 共用同一座档案馆，在一个工具里开的头，可以到另一个工具里接着干。
 
