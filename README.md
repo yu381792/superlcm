@@ -1,16 +1,75 @@
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.png"><img src="docs/images/banner-light.png" alt="SuperLcm — Permanent context. Turn your context into an archive." width="640"></picture></p>
+
+<p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
+
 # SuperLcm
 
-**Lossless, never-ending conversations across Claude Code, Codex and other MCP tools.**
+**Permanent context. Turn your context into an archive.**
 
-**原文完整入库，分层摘要导航，随时按编号读回原文；额度用完或想换工具时，一句话在另一个工具里接着聊。**
+Everything you and your agent say is kept, word for word, on your own computer. Summaries are filed in layers like the chapters of a book, and any detail can be pulled back out and quoted exactly, even long after the context window has been compacted. It works across Claude Code, Codex, Hermes and Pi, and a conversation started in one can be continued in another.
 
-Claude Code, Codex, Hermes and Pi compact long conversations and lose detail. SuperLcm keeps every original record in a local index, builds a layered summary tree over it, and gives the AI in any connected tool six MCP tools to navigate that tree and read the exact originals. Native compaction stays in charge of the live context; SuperLcm makes sure nothing it drops is gone.
+## Compaction throws pages away. SuperLcm files them.
 
-- **Lossless.** Every indexed record is copied byte for byte into SuperLcm's own archive and checked with SHA-256, so originals stay readable even after Claude Code or Codex moves or deletes its transcript. `lcm_read` returns the exact original text.
-- **Layered summaries.** First-level summaries cover segments of the conversation (about 12,000 characters each, adjustable); every 4 adjacent summaries merge into one higher level, so a very long conversation still fits in a short outline.
-- **Switch tools mid-task.** Out of Claude quota, or want a second opinion? Open Codex and say `通过 SuperLcm 接续对话 #6e94e`. `lcm_continue` hands over the outline plus the most recent messages, and the new conversation can read any earlier detail on demand.
-- **Chinese and English interface**, following the browser language; switch under Settings. Translations live in `src/web-i18n.js`, and a test fails if any Chinese string lacks an English entry.
-- **Local only.** Node.js 22.16+, no runtime dependencies, loopback-only console, no cloud service.
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/compare-en-dark.gif"><img src="docs/images/compare-en-light.gif" alt="Animation: ordinary compaction squeezes 18 messages into ever shorter summaries and loses the port number; SuperLcm files every message, builds L1 and L2 summary cards, and reads record #005 back word for word."></picture>
+
+Both sides start with the same 18 messages and a context window that holds six. Ordinary compaction squeezes everything into one shorter summary each time, and the originals are gone. SuperLcm saves each group of messages in full, writes a summary card that points back to them, and binds the cards into a higher level. Asked many turns later which port the console uses, the agent follows the path down with `lcm_find`, `lcm_outline` and `lcm_read` and quotes the original.
+
+## Move a whole conversation, summaries and all, into another tool
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-en-dark.gif"><img src="docs/images/handoff-en-light.gif" alt="Animation: Claude Code hits its usage limit; in Codex one sentence continues conversation #6e94e, lcm_continue brings over the outline and the latest messages, and lcm_read fetches an older record from the shared archive."></picture>
+
+- **Pick up exactly where you stopped.** Out of quota, rate-limited, or want a second model's opinion: say `Continue #6e94e via SuperLcm` in the other tool and the task continues.
+- **No retelling, no giant paste.** `lcm_continue` hands over the layered outline and the latest messages, so the new agent starts with a small, focused context instead of the whole transcript.
+- **Every detail still one call away.** The whole conversation stays in the archive. When an early decision matters, the new agent reads that record word for word with `lcm_read`.
+- **Any direction, back and forth.** Claude Code, Codex, Hermes and Pi all read and write the same archive, and the continued work is archived too, so the task can be handed back the same way.
+
+## How it works
+
+**Every turn is saved as it happens.** Your messages, the agent's replies and its tool calls are copied from the tool's own transcript into a local database after each turn, byte for byte and checked with SHA-256. Each record gets a number, so it can be cited later like a page in a ledger. Nothing is uploaded; the archive is one SQLite file in your home folder.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig1-en-dark.png"><img src="docs/images/fig1-en-light.png" alt="Example records as they land in the archive, numbered #1841 to #1845" width="560"></picture>
+
+**Summaries in layers, each one pointing at its pages.** A run of messages (about 12,000 characters, adjustable) becomes a short summary; every 4 neighbouring summaries become a higher one. The top reads like a table of contents for the whole conversation, and every entry carries the record numbers it came from. A summary is a signpost, never a replacement.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig2-en-dark.png"><img src="docs/images/fig2-en-light.png" alt="Summary tree: one L2 volume over three L1 chapters over the original records" width="560"></picture>
+
+**The agent reads the original before it answers.** After a compaction the agent is told where the full record lives, and its lookup tools search summaries and original text (Chinese and English), open the outline, and read exact records checked against the source transcript.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig3-en-dark.png"><img src="docs/images/fig3-en-light.png" alt="The notice the agent sees after compaction, followed by lcm_find and lcm_read returning record #1842" width="560"></picture>
+
+## Four tools, one archive
+
+| Tool | How it connects |
+|---|---|
+| Claude Code | As a Claude plugin (below), or from the console |
+| Codex | From the console: hooks and MCP tools added to Codex's own config |
+| Hermes | From the console, written through Hermes' own config code |
+| Pi | From the console: one extension file with the same tools and per-turn capture |
+
+## Who writes the summaries
+
+Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use, **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
+
+## Compaction vs. an archive
+
+| | Ordinary compaction | SuperLcm |
+|---|---|---|
+| The original words | Out of the agent's reach after compaction | Kept in full, readable by record number |
+| Summary shape | One flat summary, shorter each time | Layers like a book, each pointing at its pages |
+| A detail from 300 turns ago | Survives only if the summary kept it | Found by search, quoted exactly |
+| Continuing in another tool | Start over and re-explain | One sentence, with outline and recent messages |
+| Where it lives | — | A file on your computer |
+
+## Install as a Claude plugin
+
+In Claude Code:
+
+    /plugin marketplace add yu381792/superlcm
+    /plugin install superlcm@superlcm
+
+The plugin brings the capture hooks and lookup tools for Claude Code itself; `/superlcm:console` opens the console, where Codex, Hermes and Pi are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
+
+Plugin updates replace the plugin folder, so tools connected from the plugin's console are pointed at a fixed entry file in the SuperLcm folder (`~/.superlcm-claude/superlcm.js`) that follows updates. If Claude Code was connected from the console before, the older hooks in Claude's settings stay quiet once the plugin is enabled; remove the older `superlcm` MCP entry with `claude mcp remove superlcm -s user` so the tools are not listed twice.
 
 ## Quick start (from a checkout)
 
@@ -25,17 +84,6 @@ Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then
 Terminal equivalents: `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
 Hermes keeps its transcripts in a SQLite database and rewrites them on compression, so SuperLcm keeps its own append-only copy of every message row and joins a compression chain into one conversation. Pi session files are append-only and are indexed byte for byte, all branches included.
-
-## Install as a Claude plugin
-
-In Claude Code:
-
-    /plugin marketplace add yu381792/superlcm
-    /plugin install superlcm@superlcm
-
-The plugin brings the capture hooks and lookup tools for Claude Code itself; `/superlcm:console` opens the console, where Codex, Hermes and Pi are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
-
-Plugin updates replace the plugin folder, so tools connected from the plugin's console are pointed at a fixed entry file in the SuperLcm folder (`~/.superlcm-claude/superlcm.js`) that follows updates. If Claude Code was connected from the console before, the older hooks in Claude's settings stay quiet once the plugin is enabled; remove the older `superlcm` MCP entry with `claude mcp remove superlcm -s user` so the tools are not listed twice.
 
 ## MCP tools
 
