@@ -38,9 +38,8 @@ Real local read-only discovery found Codex 0.155.1, Claude Code 2.1.280, Hermes 
 - No paid API call, subscription inference or token-consuming summary generation was tested.
 - No native hook trust was forged. Test fixture setup is not proof of a live user session trusting or loading those hooks.
 - No proof that a live model consumed queued context; queued/hook-issued states remain distinct.
-- Hermes/Pi automatic MCP/hook setup is not implemented.
 - Real Linux/Windows installation was not tested here; cross-platform CI remains a release prerequisite.
-- GitHub repository visibility and npm publication were not changed.
+- The GitHub repository is public (2026-09-28); npm publication was not changed.
 
 Repeatable commands and scope: [console contract](CONSOLE.md).
 
