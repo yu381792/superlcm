@@ -255,6 +255,18 @@ test('CLI model metadata uses real catalog and explicit cache fallback',fixture(
   const claude=await modelCatalog('cli',{readClaude:async()=>[{value:'opus[1m]',resolvedModel:'claude-real[1m]',displayName:'Actual CLI model'}]});assert.equal(claude.models[0].id,'opus[1m]');assert.equal(claude.models[0].resolved_model,'claude-real[1m]');assert.equal(claude.source,'Claude CLI · initialize.models')
   const failed=await modelCatalog('cli',{readClaude:async()=>{throw Error('No catalog')}});assert.deepEqual(failed.models,[]);assert.equal(failed.status,'unavailable')
 }))
+test('a custom API saved on a tool before added models existed becomes an added model with its key',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'superlcm-models-'));try{
+    let store=new ClaudeStore(dir);store.db.exec('DROP TABLE api_models')
+    store.db.prepare("INSERT OR REPLACE INTO harness_summary_settings(harness,mode,model,api_provider,api_url,api_ref) VALUES('claude-code','api','luna','openai','https://old.example.test/v1/chat/completions',NULL)").run()
+    saveApiKey(store.dir,'harness:claude-code','old-secret-123456');store.close()
+    store=new ClaudeStore(dir);try{
+      const [m]=store.apiModels();assert.equal(m.model,'luna');assert.equal(store.harnessSetting('claude-code').api_ref,m.id)
+      assert.equal(store.hasApiCredential('model:'+m.id),true);assert.equal(store.harnessKeyScope('claude-code'),'model:'+m.id)
+    }finally{store.close()}
+  }finally{rmSync(dir,{recursive:true,force:true})}
+})
+
 test('custom API settings require scoped endpoint, model and private write-only key',fixture(async ({dir,store})=>{
   const path=join(dir,'api-source.txt');writeFileSync(path,'source message\n');importFile(store,path,'api-session','codex')
   assert.throws(()=>store.setGlobalSetting('api',null,'openai','https://api.example.test/v1/chat/completions'),/model ID/)
@@ -392,7 +404,7 @@ test('Web console page inlines a syntactically valid script with the new views',
   const html=webPage('nonce'),js=html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)?.[1]
   assert.ok(js);assert.doesNotThrow(()=>new Function(js));assert.match(html,/--accent: #C96442/)
   for(const view of ['conversations','connect','settings'])assert.match(html,new RegExp('id="view-'+view+'"'))
-  for(const label of ['对话','接入','设置','摘要','生成方式','粒度'])assert.match(html,new RegExp('>'+label+'<'))
+  for(const label of ['对话','接入','设置','摘要','自定义 API 模型','粒度'])assert.match(html,new RegExp('>'+label+'<'))
   assert.match(js,/对话模型生成/);assert.match(js,/function boot\(/);assert.doesNotMatch(html,/lcm_sessions|lcm_deliver|当前会话 AI/)
 })
 test('local Web console needs no login, refuses foreign writes and probes actual MCP protocol',fixture(async ({store})=>{
@@ -411,7 +423,7 @@ test('local Web console needs no login, refuses foreign writes and probes actual
     const original=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.equal(typeof original.global.mode,'string')
     const saved=await fetch(base+'/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify({scope:'global',mode:'off'})});assert.equal(saved.status,200);assert.equal(store.globalSetting().mode,'off')
     store.markClient('codex','hook')
-    const configured=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.ok(configured.harnesses.some(h=>h.harness==='codex'))
+    const configured=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.equal(configured.index_home,store.dir);assert.deepEqual(configured.api_models,[])
     const post=body=>fetch(base+'/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify(body)})
     assert.equal((await post({scope:'harness',harness:'codex',mode:'cli',model:'opus'})).status,200);assert.equal(store.harnessSetting('codex').model,'opus')
     assert.equal((await post({scope:'harness',harness:'bogus',mode:'off'})).status,400)
@@ -421,6 +433,20 @@ test('local Web console needs no login, refuses foreign writes and probes actual
     const apiResponse=await post({...apiSetting,api_key:'web-secret-123456'});assert.equal(apiResponse.status,200);assert.doesNotMatch(await apiResponse.text(),/web-secret-123456/)
     const apiRead=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.equal(apiRead.global.api_key_configured,true);assert.equal(JSON.stringify(apiRead).includes('web-secret-123456'),false);assert.equal(store.globalSetting().model,'gpt-test')
     assert.equal((await post({...apiSetting,model:'gpt-updated'})).status,200,'blank key retains the saved credential')
+    // Added API models: one key per model, reused for the same endpoint, picked per tool, never echoed.
+    const addModel=body=>fetch(base+'/api/api-models',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify(body)})
+    const endpoint={api_provider:'openai',api_url:'https://models.example.test/v1/chat/completions'}
+    assert.equal((await addModel({...endpoint,model:'m-one'})).status,400,'a remote model needs a key');assert.equal(store.apiModels().length,0)
+    const one=await addModel({...endpoint,model:'m-one',api_key:'model-secret-123456'});const oneText=await one.text();assert.equal(one.status,200);assert.doesNotMatch(oneText,/model-secret/)
+    const two=await addModel({...endpoint,model:'m-two'}).then(r=>r.json());assert.equal(two.key_configured,true,'same endpoint reuses the key')
+    assert.equal((await addModel({...endpoint,model:'m-two'})).status,400,'no duplicates')
+    assert.equal((await post({scope:'harness',harness:'codex',mode:'api',api_ref:two.id})).status,200)
+    assert.equal(store.harnessSetting('codex').model,'m-two');assert.equal(store.harnessKeyScope('codex'),'model:'+two.id)
+    assert.equal((await addModel({...endpoint,id:two.id,model:'m-renamed'})).status,200);assert.equal(store.harnessSetting('codex').model,'m-renamed','editing a model applies to the tools using it')
+    const listed=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.deepEqual(listed.api_models.find(m=>m.id===two.id).used_by,['codex']);assert.equal(JSON.stringify(listed).includes('model-secret'),false)
+    const del=id=>fetch(base+'/api/api-models/delete',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify({id})})
+    assert.equal((await del(two.id)).status,400,'a model in use cannot be deleted')
+    assert.equal((await post({scope:'harness',harness:'codex',mode:'off'})).status,200);assert.equal((await del(two.id)).status,200);assert.equal(store.apiModels().length,1)
     assert.equal((await fetch(base+'/api/preference',{headers})).status,404)
     const probe=await fetch(base+'/api/probe',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:'{}'}).then(r=>r.json())
     assert.equal(probe.ok,true,JSON.stringify(probe))

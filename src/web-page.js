@@ -79,12 +79,11 @@ export function page(nonce) {
         <div class="actions"><button type="button" class="btn danger" id="cleanGo" disabled>删除这些对话</button></div>
       </div>
       <div class="panel" data-sec="summary" hidden>
-        <h2>摘要（全局默认）</h2>
-        <p class="desc">所有工具默认按这里生成摘要；某个工具想用别的方式，到「接入」页它的卡片上单独改。摘要仅用于导航，原文始终完整保存。</p>
-        <h3>生成方式</h3>
-        <p class="desc">「对话模型生成」由正在聊天的 AI 在刚聊完一段时凭记忆顺手写，几乎不多花钱，任何接入的工具都能用；另外几种是在后台单独调用模型来写，不占用主对话。</p>
-        <div class="seg-ctl" id="writer"></div>
-        <div class="fields" id="writerFields"></div>
+        <h2>摘要</h2>
+        <p class="desc">每个工具用哪种方式写摘要，在「接入」页它的卡片上选：「对话模型生成」由正在聊天的 AI 顺手写，几乎不多花钱；「本工具后台写」和「自定义 API」在后台单独调用模型，不占用主对话。摘要仅用于导航，原文始终完整保存。</p>
+        <h3>自定义 API 模型</h3>
+        <p class="desc">在这里添加模型，之后在「接入」页任意工具的卡片上选「自定义 API」就能挑它来写摘要。改了这里，用它的工具一起生效。密钥只存在这台电脑上。</p>
+        <div id="apiModels"></div>
         <h3>粒度</h3>
         <p class="desc">只影响之后新生成的摘要，已有摘要保持不变。</p>
         <div class="fields">

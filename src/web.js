@@ -80,17 +80,45 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'POST /api/setup-preview': async req => { const x = await body(req); return publicPreview(await setupPreview(store, x.harness, { env })) },
     'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env, approveHooks: x.approve_hooks === true }) },
     'GET /api/models': url => catalog(url.searchParams.get('backend'), { env }),
-    'GET /api/settings': async () => ({
-      global: { ...(store.globalSetting() || { mode: summaryMode(env), model: null, api_provider: null, api_url: null, configured: false }), api_key_configured: store.hasApiCredential('global') },
-      harnesses: await discovery(store, { env }),
-      settings: store.harnessSettings().map(x => ({ ...x, api_key_configured: store.hasApiCredential('harness:' + x.harness) })),
-      tuning: store.tuning()
-    }),
+    // Kept fast: no tool detection here, so saving a choice on a card answers at once.
+    'GET /api/settings': async () => {
+      const settings = store.harnessSettings()
+      return {
+        global: { ...(store.globalSetting() || { mode: summaryMode(env), model: null, api_provider: null, api_url: null, configured: false }), api_key_configured: store.hasApiCredential('global') },
+        index_home: store.dir,
+        settings: settings.map(x => ({ ...x, api_key_configured: store.hasApiCredential(store.harnessKeyScope(x.harness, x)) })),
+        api_models: store.apiModels().map(m => ({ ...m, key_configured: store.hasApiCredential('model:' + m.id), used_by: settings.filter(x => x.api_ref === m.id).map(x => x.harness) })),
+        tuning: store.tuning()
+      }
+    },
+    'POST /api/api-models': async req => {
+      const x = await body(req), key = x.api_key
+      if (key !== undefined && typeof key !== 'string') throw new Error('API key must be text')
+      const before = x.id ? store.apiModel(x.id) : null
+      const m = store.saveApiModel({ id: x.id || null, provider: x.api_provider || null, url: x.api_url || null, model: x.model || null })
+      const scope = 'model:' + m.id
+      if (key) saveApiKey(store.dir, scope, key)
+      else if (!store.hasApiCredential(scope) || (before && before.url !== m.url)) {
+        // Same endpoint as a model already added: reuse its key instead of asking again.
+        const donor = store.apiModels().find(y => y.id !== m.id && y.url === m.url && store.hasApiCredential('model:' + y.id))
+        if (donor) saveApiKey(store.dir, scope, readApiKey(store.dir, 'model:' + donor.id))
+        else if (!loopbackEndpoint(m.url)) {
+          if (before) store.saveApiModel({ id: m.id, provider: before.provider, url: before.url, model: before.model }); else store.deleteApiModel(m.id)
+          throw new Error(before ? 'A new endpoint needs its API key' : 'Enter an API key for this model')
+        }
+      }
+      return { ...m, key_configured: store.hasApiCredential(scope) }
+    },
+    'POST /api/api-models/delete': async req => { const x = await body(req); return { deleted: store.deleteApiModel(x.id) } },
     'POST /api/settings': async req => {
       const x = await body(req)
       if (x.scope !== 'global' && x.scope !== 'harness') throw new Error('Invalid settings scope')
-      if (x.scope === 'harness' && !(await discovery(store, { env })).some(h => h.harness === x.harness)) throw new Error('Harness has not been configured or observed')
+      if (x.scope === 'harness' && !definitions.some(d => d.id === x.harness) && !store.harnessSetting(x.harness)) throw new Error('Unknown tool')
       if (x.scope === 'harness' && x.mode === 'inherit') return store.clearHarnessSetting(x.harness)
+      if (x.scope === 'harness' && x.mode === 'api' && x.api_ref) {
+        const result = store.setHarnessSetting(x.harness, 'api', null, null, null, x.api_ref)
+        return { ...result, api_key_configured: store.hasApiCredential(store.harnessKeyScope(x.harness, result)) }
+      }
       const scope = x.scope === 'global' ? 'global' : 'harness:' + x.harness
       const model = x.model || null, provider = x.api_provider || null, address = x.api_url || null, key = x.api_key
       const checked = store.validateSetting(x.mode, model, provider, address)

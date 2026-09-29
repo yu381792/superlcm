@@ -223,15 +223,8 @@ details > summary { cursor: pointer; font-size: 13px; color: var(--ink2) }
 .tc-kv > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px }
 .tc-kv dt { color: var(--ink3) }
 .tc-kv dd { margin: 0; color: var(--ink2); min-width: 0 }
-.tc-api { display: grid; gap: 6px; margin-top: 6px }
-.tc-api input { width: 100%; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg); color: inherit }
-.tc-api-act { display: flex; gap: 6px; justify-content: flex-end }
-.tc-api-act .btn { padding: 4px 10px; font-size: 12px }
-.tc-api-sum { display: flex; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 12px; color: var(--ink3); min-width: 0 }
-.tc-api-sum span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.tc-api select, .tc-kv select { width: 100%; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg) }
+.tc-kv select { width: 100%; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg) }
 .tc-kv select:hover { border-color: var(--ink3) }
-.tc-kv select + select { margin-top: 6px }
 .tc-f { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--line) }
 .stat-row { display: flex; gap: 10px; flex-wrap: wrap }
 .stat-row div { flex: 1 1 120px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px }
@@ -313,3 +306,13 @@ th { font-weight: 500; color: var(--ink3); font-size: 12px }
 .check b{display:block}
 .check span{color:var(--ink2)}
 .check b{color:var(--ink)}
+
+/* Settings › custom API models */
+#apiModels { display: grid; gap: 10px; justify-items: start; margin-bottom: 8px }
+.am-row { display: flex; align-items: center; gap: 14px; width: 100%; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg) }
+.am-main { flex: 1; min-width: 0; display: grid; gap: 2px }
+.am-main span { font-size: 12px; color: var(--ink3); overflow-wrap: anywhere }
+.am-row .link:disabled { color: var(--ink3); text-decoration: none; cursor: not-allowed }
+.am-form { width: 100%; padding: 14px; border: 1px solid var(--accent); border-radius: var(--r) }
+.am-form .actions { grid-column: 1 / -1; margin: 0 }
+.am-empty { margin: 0 }

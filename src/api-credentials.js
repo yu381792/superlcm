@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { join } from 'node:path'
 
 const keyFile=dir=>join(dir,'api-credentials.json')
-const scopeValid=scope=>scope==='global'||/^harness:[a-z][a-z0-9-]{0,39}$/.test(scope)
+const scopeValid=scope=>scope==='global'||/^harness:[a-z][a-z0-9-]{0,39}$/.test(scope)||/^model:[a-z0-9]{1,40}$/.test(scope)
 function credentials(dir) {
   const file=keyFile(dir)
   if(!existsSync(file))return {}
@@ -22,6 +22,14 @@ export function saveApiKey(dir,scope,key) {
   if(!scopeValid(scope)||typeof key!=='string'||key.length<8||key.length>4096||/[\r\n\0]/.test(key)||!key.trim())throw new Error('API key must be 8–4096 nonempty characters without line breaks')
   const next={...credentials(dir),[scope]:key}
   const file=keyFile(dir),temp=join(dir,`.api-credentials-${randomBytes(12).toString('hex')}.tmp`)
+  try {writeFileSync(temp,JSON.stringify(next),{flag:'wx',mode:0o600});renameSync(temp,file)}
+  catch(error){try{unlinkSync(temp)}catch{};throw error}
+  return true
+}
+export function removeApiKey(dir,scope) {
+  if(!scopeValid(scope))throw new Error('Invalid API credential scope')
+  const current=credentials(dir);if(!(scope in current))return false
+  const {[scope]:_,...next}=current,file=keyFile(dir),temp=join(dir,`.api-credentials-${randomBytes(12).toString('hex')}.tmp`)
   try {writeFileSync(temp,JSON.stringify(next),{flag:'wx',mode:0o600});renameSync(temp,file)}
   catch(error){try{unlinkSync(temp)}catch{};throw error}
   return true

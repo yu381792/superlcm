@@ -1,8 +1,8 @@
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { normalizeApiEndpoint, loopbackEndpoint } from './api-endpoint.js'
-import { readApiKey } from './api-credentials.js'
-import { createHash } from 'node:crypto'
+import { readApiKey, saveApiKey, removeApiKey } from './api-credentials.js'
+import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -89,6 +89,21 @@ export class ClaudeStore {
       for(const row of this.db.prepare('SELECT session,path FROM sources').all()){let ms=null;try{ms=Math.round(statSync(row.path).mtimeMs)}catch{}this.db.prepare('UPDATE sources SET updated_ms=? WHERE session=?').run(ms,row.session)}
     }
     for(const table of ['global_summary_settings','harness_summary_settings']){const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name));for(const column of ['api_provider','api_url'])if(!names.has(column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)}
+    if(!new Set(this.db.prepare('PRAGMA table_info(harness_summary_settings)').all().map(c=>c.name)).has('api_ref'))this.db.exec('ALTER TABLE harness_summary_settings ADD COLUMN api_ref TEXT')
+    // Custom API models are added once in Settings and picked per tool; each keeps its own key ('model:<id>').
+    const hadModels=!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_models'").get()
+    this.db.exec('CREATE TABLE IF NOT EXISTS api_models(id TEXT PRIMARY KEY, provider TEXT, url TEXT, model TEXT NOT NULL, created_ms INTEGER NOT NULL)')
+    if(!hadModels){
+      // Earlier versions kept the endpoint on the global or a tool's setting; turn each into an added model.
+      const adopt=(choice,scope)=>{
+        let m=this.apiModels().find(y=>y.provider===choice.api_provider&&y.url===choice.api_url&&y.model===choice.model)
+        if(!m){m={id:randomBytes(4).toString('hex'),provider:choice.api_provider,url:choice.api_url,model:choice.model};this.db.prepare('INSERT INTO api_models(id,provider,url,model,created_ms) VALUES(?,?,?,?,?)').run(m.id,m.provider,m.url,m.model,Date.now())}
+        try{const key=readApiKey(this.dir,scope);if(key&&!readApiKey(this.dir,'model:'+m.id))saveApiKey(this.dir,'model:'+m.id,key)}catch{}
+        return m.id
+      }
+      const g=this.globalSetting();if(g?.mode==='api'&&g.model)adopt(g,'global')
+      for(const x of this.db.prepare("SELECT harness,mode,model,api_provider,api_url FROM harness_summary_settings WHERE mode='api' AND api_ref IS NULL").all())if(x.model)this.db.prepare('UPDATE harness_summary_settings SET api_ref=? WHERE harness=?').run(adopt(x,'harness:'+x.harness),x.harness)
+    }
     // v1: background writing is "the conversation's own tool" ('cli'), no longer a chosen Claude or Codex CLI.
     // A model picked for one CLI moves to that tool's own setting; anywhere else it no longer applies.
     if(this.db.prepare('PRAGMA user_version').get().user_version<1){
@@ -133,22 +148,46 @@ export class ClaudeStore {
   markCompaction(session,ordinal=this.stats(session).records) { if(this.source(session))this.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session,ordinal) }
   lastCompaction(session) { return this.db.prepare('SELECT MAX(ordinal) AS o FROM compactions WHERE session=?').get(session)?.o ?? 0 }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }
+  // A tool on an added API model reads that model's current endpoint, so editing it in Settings applies everywhere.
+  static SETTING="SELECT h.harness,h.mode,CASE WHEN m.id IS NULL THEN h.model ELSE m.model END AS model,COALESCE(m.provider,h.api_provider) AS api_provider,COALESCE(m.url,h.api_url) AS api_url,h.api_ref FROM harness_summary_settings h LEFT JOIN api_models m ON m.id=h.api_ref"
   harnessSetting(harness) {
     if(typeof harness!=='string'||!/^[a-z][a-z0-9-]{0,39}$/.test(harness))throw new Error('Invalid harness')
-    return this.db.prepare('SELECT mode,model,api_provider,api_url FROM harness_summary_settings WHERE harness=?').get(harness) || null
+    const x=this.db.prepare(ClaudeStore.SETTING+' WHERE h.harness=?').get(harness);if(!x)return null
+    const {harness:_,...rest}=x;return rest
+  }
+  apiModels() {return this.db.prepare('SELECT id,provider,url,model FROM api_models ORDER BY created_ms,id').all()}
+  apiModel(id) {return typeof id==='string'?this.db.prepare('SELECT id,provider,url,model FROM api_models WHERE id=?').get(id)||null:null}
+  saveApiModel({id=null,provider=null,url=null,model}) {
+    const api=this.validateSetting('api',model||null,provider,url)
+    if(id!==null&&!this.apiModel(id))throw new Error('Unknown API model')
+    if(this.apiModels().some(m=>m.id!==id&&m.provider===api.api_provider&&m.url===api.api_url&&m.model===model))throw new Error('This model is already added')
+    if(id)this.db.prepare('UPDATE api_models SET provider=?,url=?,model=? WHERE id=?').run(api.api_provider,api.api_url,model,id)
+    else {id=randomBytes(4).toString('hex');this.db.prepare('INSERT INTO api_models(id,provider,url,model,created_ms) VALUES(?,?,?,?,?)').run(id,api.api_provider,api.api_url,model,Date.now())}
+    return this.apiModel(id)
+  }
+  deleteApiModel(id) {
+    if(!this.apiModel(id))throw new Error('Unknown API model')
+    const users=this.db.prepare('SELECT harness FROM harness_summary_settings WHERE api_ref=?').all(id).map(x=>x.harness)
+    if(users.length)throw new Error('Still used by '+users.join(', ')+'; pick another method for it first')
+    this.db.prepare('DELETE FROM api_models WHERE id=?').run(id);removeApiKey(this.dir,'model:'+id)
+    return true
   }
   setGlobalSetting(mode,model=null,apiProvider=null,apiURL=null) {
     const api=this.validateSetting(mode,model,apiProvider,apiURL)
     this.db.prepare('INSERT INTO global_summary_settings(id,mode,model,api_provider,api_url) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET mode=excluded.mode,model=excluded.model,api_provider=excluded.api_provider,api_url=excluded.api_url').run(mode,model,api.api_provider,api.api_url)
     return this.globalSetting()
   }
-  setHarnessSetting(harness,mode,model=null,apiProvider=null,apiURL=null) {
-    this.harnessSetting(harness);const api=this.validateSetting(mode,model,apiProvider,apiURL)
-    this.db.prepare('INSERT INTO harness_summary_settings(harness,mode,model,api_provider,api_url) VALUES(?,?,?,?,?) ON CONFLICT(harness) DO UPDATE SET mode=excluded.mode,model=excluded.model,api_provider=excluded.api_provider,api_url=excluded.api_url').run(harness,mode,model,api.api_provider,api.api_url)
+  setHarnessSetting(harness,mode,model=null,apiProvider=null,apiURL=null,apiRef=null) {
+    this.harnessSetting(harness)
+    if(apiRef!==null){const m=this.apiModel(apiRef);if(mode!=='api'||!m)throw new Error('Unknown API model');[model,apiProvider,apiURL]=[m.model,m.provider,m.url]}
+    const api=this.validateSetting(mode,model,apiProvider,apiURL)
+    this.db.prepare('INSERT INTO harness_summary_settings(harness,mode,model,api_provider,api_url,api_ref) VALUES(?,?,?,?,?,?) ON CONFLICT(harness) DO UPDATE SET mode=excluded.mode,model=excluded.model,api_provider=excluded.api_provider,api_url=excluded.api_url,api_ref=excluded.api_ref').run(harness,mode,model,api.api_provider,api.api_url,apiRef)
     return this.harnessSetting(harness)
   }
+  // Where a tool's API key lives: its added model's, else (older settings) its own.
+  harnessKeyScope(harness,setting=this.harnessSetting(harness)) {return setting?.api_ref?'model:'+setting.api_ref:'harness:'+harness}
   clearHarnessSetting(harness) {this.harnessSetting(harness);this.db.prepare('DELETE FROM harness_summary_settings WHERE harness=?').run(harness);return null}
-  harnessSettings() {return this.db.prepare('SELECT harness,mode,model,api_provider,api_url FROM harness_summary_settings ORDER BY harness').all()}
+  harnessSettings() {return this.db.prepare(ClaudeStore.SETTING+' ORDER BY h.harness').all()}
   effectiveSetting(session,env=process.env) {
     const harness=this.metadata(session).harness
     const specific=harness!=='legacy'?this.harnessSetting(harness):null
@@ -162,14 +201,15 @@ export class ClaudeStore {
   apiCredential(session,env=process.env) {
     const chosen=this.effectiveSetting(session,env)
     if(chosen.mode!=='api')return null
-    const scope=chosen.scope==='harness'?'harness:'+chosen.harness:'global'
+    const scope=chosen.scope==='harness'?this.harnessKeyScope(chosen.harness,chosen):'global'
     // '' = no key needed (a local gateway); null = not configured.
     return readApiKey(this.dir,scope) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(chosen.api_url) ? '' : null)
   }
   // A saved custom API (this conversation's tool first, then global) usable for a one-off catch-up in any mode.
   apiConfig(session,env=process.env) {
     const harness=this.metadata(session).harness
-    for (const [scope,choice] of [['harness:'+harness,harness!=='legacy'?this.harnessSetting(harness):null],['global',this.globalSetting()]]) {
+    const own=harness!=='legacy'?this.harnessSetting(harness):null
+    for (const [scope,choice] of [[this.harnessKeyScope(harness,own),own],['global',this.globalSetting()]]) {
       if (choice?.mode!=='api') continue
       const apiKey=readApiKey(this.dir,scope) || (scope==='global' && !choice.api_url && !choice.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(choice.api_url) ? '' : null)
       if (apiKey!==null) return {model:choice.model,api_provider:choice.api_provider,api_url:choice.api_url,apiKey}

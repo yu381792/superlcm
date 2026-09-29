@@ -92,7 +92,7 @@ try:
     page.click('#openReview');page.wait_for_selector('.modal .notice:has-text("已在终端打开")');page.wait_for_selector('#recheck')
    page.locator('.modal [data-close]').first.click()
   assert page.locator('#statusText').inner_text().startswith('已接入')
-  assert page.locator('#tools .tcard select[data-tool="codex"] option').first.inner_text().startswith('默认（')
+  assert page.locator('#tools .tcard select[data-tool="codex"] option').all_inner_texts()==['对话模型生成','本工具后台写','自定义 API','关闭']
 
   # Delete: the row button asks first; cancel keeps it, confirm removes only that conversation.
   page.locator('.nav [data-view="conversations"]').click();page.wait_for_selector('#rows .row')
@@ -104,11 +104,16 @@ try:
   page.locator('.nav [data-view="settings"]').click()
   assert page.locator('#setNav button').all_inner_texts()==['外观','存储','摘要','MCP 工具']
   page.locator('#setNav [data-sec="summary"]').click()
-  page.locator('#writer .opt[data-w="cli"]').click();page.wait_for_selector('#writerFields:has-text("每个工具用它自己当前的模型")')
-  with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as saved:page.click('#saveWriter')
-  assert saved.value.status==200;page.wait_for_selector('#writerSaved:has-text("已保存")')
-  # 本工具后台写: each tool card offers that tool's own real model list.
+  # Custom API models are added once here (a local address needs no key), then picked on a tool card.
+  page.wait_for_selector('#apiModels:has-text("还没有添加模型")');page.click('#amAdd')
+  page.select_option('#apiModels [data-f="provider"]','openai');page.fill('#apiModels [data-f="url"]','http://127.0.0.1:9/v1/chat/completions');page.fill('#apiModels [data-f="model"]','ui-model')
+  with page.expect_response(lambda r:'/api/api-models' in r.url) as added:page.click('#apiModels [data-am-save]')
+  assert added.value.status==200,added.value.text();page.wait_for_selector('#apiModels .am-row:has-text("ui-model")')
   page.locator('.nav [data-view="connect"]').click()
+  with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as picked:page.select_option('select[data-tool="hermes"]','api')
+  assert picked.value.status==200;page.wait_for_selector('select[data-apimodel="hermes"]');assert 'ui-model' in page.locator('select[data-apimodel="hermes"]').inner_text()
+  # 本工具后台写: each tool card offers that tool's own real model list.
+  with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST'):page.select_option('select[data-tool="codex"]','cli')
   page.wait_for_function("() => document.querySelectorAll('select[data-model=\"codex\"] option').length>2",timeout=30000)
   page.locator('.nav [data-view="settings"]').click();page.locator('#setNav [data-sec="summary"]').click()
   page.select_option('#fanout','6');page.wait_for_selector('#writerSaved:has-text("未保存")')
@@ -128,7 +133,7 @@ try:
   # Language switch: English renders the whole shell and dynamic views without leftover Chinese labels.
   page.set_viewport_size({'width':1440,'height':900});page.evaluate("location.hash='settings'")
   page.locator('#setNav [data-sec="look"]').click();page.select_option('#langSel','en');page.wait_for_selector('.nav [data-view="conversations"]:has-text("Conversations")')
-  page.locator('#setNav [data-sec="summary"]').click();page.wait_for_selector('#writer .opt[data-w="off"]:has-text("Off")')
+  page.locator('#setNav [data-sec="summary"]').click();page.wait_for_selector('#apiModels .am-row:has-text("OpenAI-compatible")')
   page.locator('#brand').click();page.wait_for_selector('#view-conversations:not([hidden])')
   page.evaluate("location.hash='conversations'");page.wait_for_selector('#listCount:has-text("conversations")')
   page.screenshot(path=str(shots/'superlcm-english.png'),full_page=True)
