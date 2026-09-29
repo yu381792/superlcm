@@ -16,7 +16,7 @@
 
 ## 把整段对话连同摘要，整个搬进另一个工具
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-zh-dark.gif"><img src="docs/images/handoff-zh-light.gif" alt="动画：Claude Code 用量到了上限；到 Codex 里一句话接续对话 #6e94e，lcm_continue 带来目录和最近几条原文，lcm_read 再从共用的档案馆读出更早的一条。"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-zh-dark.gif"><img src="docs/images/handoff-zh-light.gif" alt="动画：Codex 用量到了上限；到 Claude Code 里一句话接续对话 #6e94e，lcm_continue 带来目录和最近几条原文，lcm_read 再从共用的档案馆读出更早的一条。"></picture>
 
 - **停在哪，就从哪接着干。** 额度用完、被限速，或者想让另一个模型看看，到另一个工具里说一句 `通过 SuperLcm 接续对话 #6e94e`，任务就接着往下走。
 - **不用复述，不用整段粘贴。** `lcm_continue` 交过去的是分层目录加最近几条原文，新的 AI 一开局上下文就小而准，不是把整份聊天记录硬塞进去。

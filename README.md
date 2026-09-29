@@ -16,7 +16,7 @@ Both sides start with the same 18 messages and a context window that holds six. 
 
 ## Move a whole conversation, summaries and all, into another tool
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-en-dark.gif"><img src="docs/images/handoff-en-light.gif" alt="Animation: Claude Code hits its usage limit; in Codex one sentence continues conversation #6e94e, lcm_continue brings over the outline and the latest messages, and lcm_read fetches an older record from the shared archive."></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-en-dark.gif"><img src="docs/images/handoff-en-light.gif" alt="Animation: Codex hits its usage limit; in Claude Code one sentence continues conversation #6e94e, lcm_continue brings over the outline and the latest messages, and lcm_read fetches an older record from the shared archive."></picture>
 
 - **Pick up exactly where you stopped.** Out of quota, rate-limited, or want a second model's opinion: say `Continue #6e94e via SuperLcm` in the other tool and the task continues.
 - **No retelling, no giant paste.** `lcm_continue` hands over the layered outline and the latest messages, so the new agent starts with a small, focused context instead of the whole transcript.
