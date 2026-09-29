@@ -30,10 +30,21 @@ export function claudeModels({env=process.env,spawnProcess=spawn,timeoutMs=15000
     child.stdin.write(JSON.stringify({type:'control_request',request_id:'superlcm-models',request:{subtype:'initialize'}})+'\n')
   })
 }
-// Hermes reports only the model it is set to use; any other model ID can be typed in.
+// Hermes' own model list for the provider it is set to use (its cache first, the same list `hermes model`
+// offers), with the configured default; -m picks a model on that provider, so other providers are left out.
 export async function hermesModels(env=process.env) {
   const {runPython}=await import('./hermes-config.js')
-  return runPython(env,'import json\nfrom hermes_cli.config import load_config_readonly\nm=load_config_readonly().get("model") or {}\nm=m if isinstance(m,dict) else {"default":m}\nprint("SUPERLCM_JSON "+json.dumps({"model":m.get("default"),"provider":m.get("provider")}))',{})
+  return runPython(env,[
+    'import json',
+    'from hermes_cli.config import load_config_readonly',
+    'm=load_config_readonly().get("model") or {}',
+    'm=m if isinstance(m,dict) else {"default":m}',
+    'ids=[]',
+    'try:',
+    '  from hermes_cli.models import cached_provider_model_ids, provider_model_ids',
+    '  ids=cached_provider_model_ids(m.get("provider")) or provider_model_ids(m.get("provider")) or []',
+    'except Exception: pass',
+    'print("SUPERLCM_JSON "+json.dumps({"model":m.get("default"),"provider":m.get("provider"),"models":[str(x) for x in ids][:1000]}))'].join('\n'),{})
 }
 const KINDS={'claude-code':'cli',codex:'codex-cli'}
 export async function modelCatalog(kind,{env=process.env,runCommand=run,readClaude=claudeModels,readHermes=hermesModels}={}) {
@@ -47,7 +58,13 @@ export async function modelCatalog(kind,{env=process.env,runCommand=run,readClau
     } catch { return {kind,models:[],source:'Pi CLI · --list-models',updated_at:null,status:'unavailable',stale:false,error:'未能读取 Pi 的模型列表'} }
   }
   if(kind==='hermes') {
-    try {const m=await readHermes(env);const models=validModel(m.model||'')?[{id:m.model,label:m.model+(m.provider?' · '+m.provider:''),description:''}]:[];return {kind,models,source:'Hermes config.yaml · model',updated_at:fetched,status:models.length?'live':'unavailable',stale:false}}
+    try {
+      const m=await readHermes(env)
+      // Batch-only variants are not for summaries; the configured default leads the list.
+      const ids=[...new Set([m.model,...(Array.isArray(m.models)?m.models:[])])].filter(id=>typeof id==='string'&&validModel(id)&&!id.endsWith(':batch')).slice(0,500)
+      const models=ids.map(id=>({id,label:id,description:''}))
+      return {kind,models,provider:m.provider||null,source:'Hermes · '+(m.provider||'model'),updated_at:fetched,status:models.length?'live':'unavailable',stale:false}
+    }
     catch {return {kind,models:[],source:'Hermes config.yaml · model',updated_at:null,status:'unavailable',stale:false,error:'未能读取 Hermes 的模型设置'}}
   }
   if(kind==='codex-cli') {

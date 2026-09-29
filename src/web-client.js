@@ -80,7 +80,8 @@ async function loadConversations(reset = true) {
   if (!state.sel && state.rows[0] && window.innerWidth > 860) select(state.rows[0].session)
 }
 function renderChips() {
-  const chips = [['', t('全部')]].concat(state.groups.map(g => [g.harness, toolName(g.harness)]))
+  // Early records (no known tool) stay under 全部 without a filter of their own.
+  const chips = [['', t('全部')]].concat(state.groups.filter(g => g.harness !== 'legacy').map(g => [g.harness, toolName(g.harness)]))
   $('#chips').innerHTML = chips.map(([h, name]) => '<button type="button" class="chip" aria-pressed="' + (state.h === h) + '" data-h="' + esc(h) + '">' + (h ? mark(h) : '') + esc(name) + '</button>').join('')
   for (const b of $('#chips').querySelectorAll('button')) b.onclick = () => act(() => { state.h = b.dataset.h; return state.query ? runSearch() : loadConversations() }, b)
 }
