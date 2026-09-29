@@ -75,6 +75,10 @@ test('authenticated Web workflow detects, indexes, pages nodes and gates setup',
   assert.equal(store.apiConfig(result.session),null,'a custom API only counts while a scope is set to it')
   assert.equal((await post('/api/settings',{scope:'global',mode:'api',model:'gpt-test',api_provider:'openai',api_url:'https://api.example.test/v1/chat/completions'})).status,200)
   assert.ok((await fetch(base+'/api/conversation?session='+result.session,{headers}).then(r=>r.json())).backends.includes('api'))
+  {const same={scope:'harness',harness:'codex',mode:'api',model:'gpt-tool',api_provider:'openai',api_url:'https://api.example.test/v1/chat/completions'}
+   const r=await post('/api/settings',same).then(r=>r.json());assert.equal(r.api_key_configured,true,'same endpoint reuses the default key');assert.equal(store.harnessSetting('codex').model,'gpt-tool')
+   assert.equal((await post('/api/settings',{...same,api_url:'https://other.example.test/v1/chat/completions'})).status,200,'a saved tool key stays')
+   assert.equal((await post('/api/settings',{scope:'harness',harness:'codex',mode:'inherit'})).status,200)}
   store.release(result.session)
   assert.equal((await post('/api/summarize',{session:result.session,backend:'api'}).then(r=>r.json())).started,true);assert.deepEqual(spawned.at(-1)[1].slice(-2),['--backend','api'])
   assert.equal((await post('/api/setup-apply',{harness:'codex',revision:'fake'})).status,400)

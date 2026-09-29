@@ -220,10 +220,16 @@ details > summary { cursor: pointer; font-size: 13px; color: var(--ink2) }
 .tc-name .tn { font-weight: 600; font-size: 15px }
 .tc-name .tv { font: 12px var(--mono); color: var(--ink3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .tc-kv { margin: 0; padding: 4px 16px 12px; display: grid; gap: 8px; flex: 1 }
-.tc-kv div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px }
+.tc-kv > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px }
 .tc-kv dt { color: var(--ink3) }
 .tc-kv dd { margin: 0; color: var(--ink2); min-width: 0 }
-.tc-kv select { width: 100%; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg) }
+.tc-api { display: grid; gap: 6px; margin-top: 6px }
+.tc-api input { width: 100%; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg); color: inherit }
+.tc-api-act { display: flex; gap: 6px; justify-content: flex-end }
+.tc-api-act .btn { padding: 4px 10px; font-size: 12px }
+.tc-api-sum { display: flex; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 12px; color: var(--ink3); min-width: 0 }
+.tc-api-sum span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tc-api select, .tc-kv select { width: 100%; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg) }
 .tc-kv select:hover { border-color: var(--ink3) }
 .tc-kv select + select { margin-top: 6px }
 .tc-f { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--line) }

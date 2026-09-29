@@ -45,11 +45,29 @@ function renderTools() {
   }).join('') || '<div class="empty">' + t('本机未检测到支持的工具。') + '</div>'
   for (const b of $('#tools').querySelectorAll('[data-setup]')) b.onclick = () => openSetup(b.dataset.setup)
   for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
-  for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => act(async () => {
-    const x = admin.settings.settings.find(y => y.harness === select.dataset.tool)
-    await api('/api/settings', { scope: 'harness', harness: select.dataset.tool, mode: select.value, model: x?.mode === select.value ? x.model : null })
-    await loadSettings(); toast(t('已保存'))
-  }, select)
+  for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => {
+    // Custom API needs an endpoint, model and key first; the card opens a small form instead of saving.
+    if (select.value === 'api') { admin.apiEdit = select.dataset.tool; return renderTools() }
+    admin.apiEdit = null
+    act(async () => {
+      const x = admin.settings.settings.find(y => y.harness === select.dataset.tool)
+      await api('/api/settings', { scope: 'harness', harness: select.dataset.tool, mode: select.value, model: x?.mode === select.value ? x.model : null })
+      await loadSettings(); toast(t('已保存'))
+    }, select)
+  }
+  for (const b of $('#tools').querySelectorAll('[data-api-edit]')) b.onclick = () => { admin.apiEdit = b.dataset.apiEdit; renderTools() }
+  for (const b of $('#tools').querySelectorAll('[data-api-cancel]')) b.onclick = () => { admin.apiEdit = null; renderTools() }
+  for (const box of $('#tools').querySelectorAll('[data-api-form]')) {
+    const harness = box.dataset.apiForm, f = n => box.querySelector('[data-f="' + n + '"]')
+    f('provider').onchange = () => { const url = f('url'); if (/api\.(anthropic|openai)\.com/.test(url.value) || !url.value) url.value = f('provider').value === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://api.anthropic.com/v1/messages' }
+    box.querySelector('[data-api-save]').onclick = event => act(async () => {
+      const payload = { scope: 'harness', harness, mode: 'api', api_provider: f('provider').value, api_url: f('url').value.trim(), model: f('model').value.trim() || null }
+      if (f('key').value) payload.api_key = f('key').value
+      await api('/api/settings', payload)
+      admin.apiEdit = null
+      await loadSettings(); toast(t('已保存'))
+    }, event.currentTarget)
+  }
   for (const select of $('#tools').querySelectorAll('select[data-model]')) {
     const harness = select.dataset.model, x = admin.settings.settings.find(y => y.harness === harness)
     fillModels(select, harness, x?.model || null)
@@ -182,7 +200,7 @@ $('#saveWriter').onclick = () => act(async () => {
   await loadSettings()
   $('#writerSaved').textContent = t('已保存')
 }, $('#saveWriter'))
-// Per-tool summary writer, shown on each connect card. Custom API stays a global choice unless already saved per tool.
+// Per-tool summary writer, shown on each connect card, including a per-tool custom API.
 function writerPicker(h) {
   const s = admin.settings
   if (!s) return ''
@@ -190,8 +208,22 @@ function writerPicker(h) {
   if (!h.supported && !h.detected && !x) return ''
   const mode = x ? x.mode : s.global.mode
   return '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '"><option value="inherit">' + t('默认（{w}）', { w: writerLabel(s.global.mode) }) + '</option>' +
-    WRITERS.filter(w => w[0] !== 'api' || x?.mode === 'api').map(([id, label]) => '<option value="' + id + '"' + (x?.mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>' +
-    (mode === 'cli' && h.bin ? '<select aria-label="' + t('模型') + '" data-model="' + esc(h.harness) + '"><option value="' + esc(x?.model || '') + '">' + esc(x?.model || t('跟随 {tool} 当前模型', { tool: toolName(h.harness) })) + '</option></select>' : '')
+    WRITERS.map(([id, label]) => '<option value="' + id + '"' + ((admin.apiEdit === h.harness ? 'api' : x?.mode) === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>' +
+    (mode === 'cli' && h.bin && admin.apiEdit !== h.harness ? '<select aria-label="' + t('模型') + '" data-model="' + esc(h.harness) + '"><option value="' + esc(x?.model || '') + '">' + esc(x?.model || t('跟随 {tool} 当前模型', { tool: toolName(h.harness) })) + '</option></select>' : '') +
+    (admin.apiEdit === h.harness ? apiForm(h.harness, x) : x?.mode === 'api' ? '<div class="tc-api-sum"><span>' + esc(x.model || '') + ' · ' + esc(hostOf(x.api_url)) + '</span><button type="button" class="link" data-api-edit="' + esc(h.harness) + '">' + t('修改') + '</button></div>' : '')
+}
+const hostOf = url => { try { return new URL(url).host } catch { return url || '' } }
+// Per-tool custom API: starts from this tool's saved values, else the default setting's, else another tool's.
+function apiForm(harness, x) {
+  const g = admin.settings.global, own = x?.mode === 'api'
+  const src = own ? x : g.mode === 'api' ? g : admin.settings.settings.find(y => y.mode === 'api') || {}
+  const keyHint = own && x.api_key_configured ? t('已保存，留空保持不变') : !own && src.api_key_configured ? t('留空则沿用已保存的密钥（地址相同时）') : t('首次保存必须填写；本机地址不需要可留空')
+  return '<div class="tc-api" data-api-form="' + esc(harness) + '">' +
+    '<select data-f="provider" aria-label="' + t('接口协议') + '"><option value="anthropic">Anthropic Messages</option><option value="openai"' + (src.api_provider === 'openai' ? ' selected' : '') + '>' + t('OpenAI 兼容') + '</option></select>' +
+    '<input data-f="url" type="url" aria-label="' + t('接口地址') + '" placeholder="' + t('接口地址') + '" value="' + esc(src.api_url || 'https://api.anthropic.com/v1/messages') + '">' +
+    '<input data-f="model" aria-label="' + t('模型 ID') + '" placeholder="' + t('模型 ID') + '" value="' + esc(src.model || '') + '">' +
+    '<input data-f="key" type="password" autocomplete="new-password" aria-label="' + t('API 密钥') + '" placeholder="' + keyHint + '">' +
+    '<div class="tc-api-act"><button type="button" class="btn" data-api-cancel>' + t('取消') + '</button><button type="button" class="btn primary" data-api-save>' + t('保存') + '</button></div></div>'
 }
 function renderTuning(tuning) {
   for (const [id, value, label] of [['#segSize', tuning.target_chars, v => t('约 {n} 字', { n: fmt(v) })], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {

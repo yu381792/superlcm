@@ -52,7 +52,7 @@ const LANGS = {
     '导入 {tool} 的对话': 'Import {tool} conversations', '只读取你选中的对话，不调用模型。导入后可以接续到任何已接入的工具。': 'Only the conversations you pick are read, and no model is called. Imported conversations can be continued in any connected tool.',
     '已导入 · 查看': 'Imported · view', '加载更多': 'Load more', '已导入「{name}」': 'Imported “{name}”', '没有找到本机对话记录。': 'No local conversations found.',
     '模型': 'Model', '接口协议': 'API protocol', 'OpenAI 兼容': 'OpenAI-compatible', '接口地址': 'Endpoint URL', '模型 ID': 'Model ID', '例如 claude-sonnet-5': 'e.g. claude-sonnet-5', 'API 密钥': 'API key',
-    '已保存，留空保持不变': 'Saved; leave blank to keep', '首次保存必须填写；本机地址不需要可留空': 'Required on first save; may be left empty for a local address that needs none',
+    '已保存，留空保持不变': 'Saved; leave blank to keep', '留空则沿用已保存的密钥（地址相同时）': 'Leave blank to reuse the saved key (same endpoint)', '修改': 'Edit', '首次保存必须填写；本机地址不需要可留空': 'Required on first save; may be left empty for a local address that needs none',
     '摘要滞后：还差约 {n} 次摘要（含向上合并）。': 'Summaries are behind: about {n} passes left, including merges. ',
     '需更新': 'Update',
     '点「接入」更新一次，以后 {tool} 升级不会影响 SuperLcm': 'Click Connect once more so {tool} updates no longer affect SuperLcm',

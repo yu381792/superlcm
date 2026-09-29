@@ -14,7 +14,7 @@ import { ClaudeStore } from './store.js'
 import { continuePacket } from './context.js'
 import { modelCatalog, harnessConnections } from './model-catalog.js'
 import { summaryMode } from './mode.js'
-import { saveApiKey } from './api-credentials.js'
+import { saveApiKey, readApiKey } from './api-credentials.js'
 import { loopbackEndpoint } from './api-endpoint.js'
 import { findCli } from './runtime.js'
 import { summaryEstimate } from './summarize.js'
@@ -93,9 +93,14 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       if (x.scope === 'harness' && x.mode === 'inherit') return store.clearHarnessSetting(x.harness)
       const scope = x.scope === 'global' ? 'global' : 'harness:' + x.harness
       const model = x.model || null, provider = x.api_provider || null, address = x.api_url || null, key = x.api_key
-      store.validateSetting(x.mode, model, provider, address)
+      const checked = store.validateSetting(x.mode, model, provider, address)
       if (x.mode === 'api') {
         if (key !== undefined && typeof key !== 'string') throw new Error('API key must be text')
+        // Same endpoint as the default setting or another tool: reuse the key already saved there.
+        if (!key && !store.hasApiCredential(scope)) {
+          const donor = [['global', store.globalSetting()], ...store.harnessSettings().map(y => ['harness:' + y.harness, y])].find(([s, y]) => s !== scope && y?.mode === 'api' && y.api_url === checked.api_url && store.hasApiCredential(s))
+          if (donor) saveApiKey(store.dir, scope, readApiKey(store.dir, donor[0]))
+        }
         if (!key && !store.hasApiCredential(scope) && !loopbackEndpoint(address)) throw new Error('Enter and save an API key for this setting')
         if (key) saveApiKey(store.dir, scope, key)
       } else if (key) throw new Error('API key is accepted only for custom API mode')
