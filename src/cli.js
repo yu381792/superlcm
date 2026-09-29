@@ -115,11 +115,11 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       const oneOffApi=backend==='api'?store.apiConfig(rest[0]):null
       if (backend==='api' && !oneOffApi) throw new Error('No saved custom API; configure one in Settings first')
       try {
-        const {mode,model,api_provider,api_url}=oneOffApi?{mode:'api',...oneOffApi}:backend?{mode:backend,model:null}:effective(store,rest[0])
+        const {mode,model,api_provider,api_url,effort,api_effort}=oneOffApi?{mode:'api',...oneOffApi}:backend?{mode:backend,model:null}:effective(store,rest[0])
         if (!backend && process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
         result=mode==='api'
-          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL})
+          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL,effort:effort||api_effort||null})
           : await (async()=>{
             // 本工具后台写: this conversation's own tool (or, for an imported one, any installed tool), as configured.
             const tool=writerTool(store.metadata(rest[0]).harness)

@@ -316,3 +316,5 @@ th { font-weight: 500; color: var(--ink3); font-size: 12px }
 .am-form { width: 100%; padding: 14px; border: 1px solid var(--accent); border-radius: var(--r) }
 .am-form .actions { grid-column: 1 / -1; margin: 0 }
 .am-empty { margin: 0 }
+.am-help { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--ink3) }
+.am-note { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere }

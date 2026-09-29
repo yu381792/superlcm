@@ -107,11 +107,16 @@ try:
   # Custom API models are added once here (a local address needs no key), then picked on a tool card.
   page.wait_for_selector('#apiModels:has-text("还没有添加模型")');page.click('#amAdd')
   page.select_option('#apiModels [data-f="provider"]','openai');page.fill('#apiModels [data-f="url"]','http://127.0.0.1:9/v1/chat/completions');page.fill('#apiModels [data-f="model"]','ui-model')
+  page.fill('#apiModels [data-f="label"]','UI 模型');page.select_option('#apiModels [data-f="effort"]','high')
+  # Nothing listens there, so the test call fails with the reason, and 仍然保存 saves without testing.
+  expected_failure[0]=True
+  with page.expect_response(lambda r:'/api/api-models' in r.url) as tried:page.click('#apiModels [data-am-save]')
+  assert tried.value.status==400;page.wait_for_selector('#apiModels .am-note:has-text("测试调用失败")');expected_failure[0]=False;page.wait_for_selector('#apiModels [data-am-save]:has-text("仍然保存")')
   with page.expect_response(lambda r:'/api/api-models' in r.url) as added:page.click('#apiModels [data-am-save]')
-  assert added.value.status==200,added.value.text();page.wait_for_selector('#apiModels .am-row:has-text("ui-model")')
+  assert added.value.status==200,added.value.text();page.wait_for_selector('#apiModels .am-row:has-text("UI 模型 · 思考高")')
   page.locator('.nav [data-view="connect"]').click()
   with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST') as picked:page.select_option('select[data-tool="hermes"]','api')
-  assert picked.value.status==200;page.wait_for_selector('select[data-apimodel="hermes"]');assert 'ui-model' in page.locator('select[data-apimodel="hermes"]').inner_text()
+  assert picked.value.status==200;page.wait_for_selector('select[data-apimodel="hermes"]');assert 'UI 模型' in page.locator('select[data-apimodel="hermes"]').inner_text()
   # 本工具后台写: each tool card offers that tool's own real model list.
   with page.expect_response(lambda r:'/api/settings' in r.url and r.request.method=='POST'):page.select_option('select[data-tool="codex"]','cli')
   page.wait_for_function("() => document.querySelectorAll('select[data-model=\"codex\"] option').length>2",timeout=30000)

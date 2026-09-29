@@ -1,6 +1,6 @@
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
-import { normalizeApiEndpoint, loopbackEndpoint } from './api-endpoint.js'
+import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS, validApiModel } from './api-endpoint.js'
 import { readApiKey, saveApiKey, removeApiKey } from './api-credentials.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
@@ -93,6 +93,7 @@ export class ClaudeStore {
     // Custom API models are added once in Settings and picked per tool; each keeps its own key ('model:<id>').
     const hadModels=!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_models'").get()
     this.db.exec('CREATE TABLE IF NOT EXISTS api_models(id TEXT PRIMARY KEY, provider TEXT, url TEXT, model TEXT NOT NULL, created_ms INTEGER NOT NULL)')
+    {const names=new Set(this.db.prepare('PRAGMA table_info(api_models)').all().map(c=>c.name));for(const column of ['label','effort'])if(!names.has(column))this.db.exec(`ALTER TABLE api_models ADD COLUMN ${column} TEXT`)}
     if(!hadModels){
       // Earlier versions kept the endpoint on the global or a tool's setting; turn each into an added model.
       const adopt=(choice,scope)=>{
@@ -130,7 +131,7 @@ export class ClaudeStore {
   preference(session) {return this.db.prepare('SELECT mode,model FROM summary_preferences WHERE session=?').get(session)||{mode:'auto',model:null}}
   // Legacy conversation preferences remain in SQLite for migration; routing ignores them.
   validateSetting(mode,model,apiProvider=null,apiURL=null) {
-    if (!['off','cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !validModel(model)))) throw new Error('Invalid summary setting or model ID')
+    if (!['off','cli','api','agent'].includes(mode) || (model!==null && (typeof model!=='string' || !(mode==='api'?validApiModel(model):validModel(model))))) throw new Error('Invalid summary setting or model ID')
     if(mode==='api') {if(!model)throw new Error('Custom API requires an explicit model ID');return {api_provider:apiProvider,api_url:normalizeApiEndpoint(apiProvider,apiURL)}}
     if (['off','agent'].includes(mode) && model!==null) throw new Error('This summary mode does not use a model')
     return {api_provider:null,api_url:null}
@@ -149,20 +150,28 @@ export class ClaudeStore {
   lastCompaction(session) { return this.db.prepare('SELECT MAX(ordinal) AS o FROM compactions WHERE session=?').get(session)?.o ?? 0 }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }
   // A tool on an added API model reads that model's current endpoint, so editing it in Settings applies everywhere.
-  static SETTING="SELECT h.harness,h.mode,CASE WHEN m.id IS NULL THEN h.model ELSE m.model END AS model,COALESCE(m.provider,h.api_provider) AS api_provider,COALESCE(m.url,h.api_url) AS api_url,h.api_ref FROM harness_summary_settings h LEFT JOIN api_models m ON m.id=h.api_ref"
+  static SETTING="SELECT h.harness,h.mode,CASE WHEN m.id IS NULL THEN h.model ELSE m.model END AS model,COALESCE(m.provider,h.api_provider) AS api_provider,COALESCE(m.url,h.api_url) AS api_url,h.api_ref,m.effort AS api_effort FROM harness_summary_settings h LEFT JOIN api_models m ON m.id=h.api_ref"
   harnessSetting(harness) {
     if(typeof harness!=='string'||!/^[a-z][a-z0-9-]{0,39}$/.test(harness))throw new Error('Invalid harness')
     const x=this.db.prepare(ClaudeStore.SETTING+' WHERE h.harness=?').get(harness);if(!x)return null
     const {harness:_,...rest}=x;return rest
   }
-  apiModels() {return this.db.prepare('SELECT id,provider,url,model FROM api_models ORDER BY created_ms,id').all()}
-  apiModel(id) {return typeof id==='string'?this.db.prepare('SELECT id,provider,url,model FROM api_models WHERE id=?').get(id)||null:null}
-  saveApiModel({id=null,provider=null,url=null,model}) {
+  apiModels() {return this.db.prepare('SELECT id,label,provider,url,model,effort FROM api_models ORDER BY created_ms,id').all()}
+  apiModel(id) {return typeof id==='string'?this.db.prepare('SELECT id,label,provider,url,model,effort FROM api_models WHERE id=?').get(id)||null:null}
+  // Checks a model entry without saving it; returns the normalized fields.
+  checkApiModel({provider=null,url=null,model,label=null,effort=null}) {
     const api=this.validateSetting('api',model||null,provider,url)
+    if(effort!==null&&!EFFORTS.includes(effort))throw new Error('Unknown reasoning effort')
+    if(label!==null&&(typeof label!=='string'||label.length>60||/[\u0000-\u001f]/.test(label)))throw new Error('Name must be up to 60 characters')
+    return {provider:api.api_provider,url:api.api_url,model,label:label?.trim()||null,effort}
+  }
+  saveApiModel({id=null,...fields}) {
+    const m=this.checkApiModel(fields)
     if(id!==null&&!this.apiModel(id))throw new Error('Unknown API model')
-    if(this.apiModels().some(m=>m.id!==id&&m.provider===api.api_provider&&m.url===api.api_url&&m.model===model))throw new Error('This model is already added')
-    if(id)this.db.prepare('UPDATE api_models SET provider=?,url=?,model=? WHERE id=?').run(api.api_provider,api.api_url,model,id)
-    else {id=randomBytes(4).toString('hex');this.db.prepare('INSERT INTO api_models(id,provider,url,model,created_ms) VALUES(?,?,?,?,?)').run(id,api.api_provider,api.api_url,model,Date.now())}
+    // The same model may be added again with another 思考程度.
+    if(this.apiModels().some(y=>y.id!==id&&y.provider===m.provider&&y.url===m.url&&y.model===m.model&&y.effort===m.effort))throw new Error('This model is already added with the same reasoning effort')
+    if(id)this.db.prepare('UPDATE api_models SET label=?,provider=?,url=?,model=?,effort=? WHERE id=?').run(m.label,m.provider,m.url,m.model,m.effort,id)
+    else {id=randomBytes(4).toString('hex');this.db.prepare('INSERT INTO api_models(id,label,provider,url,model,effort,created_ms) VALUES(?,?,?,?,?,?,?)').run(id,m.label,m.provider,m.url,m.model,m.effort,Date.now())}
     return this.apiModel(id)
   }
   deleteApiModel(id) {
@@ -212,7 +221,7 @@ export class ClaudeStore {
     for (const [scope,choice] of [[this.harnessKeyScope(harness,own),own],['global',this.globalSetting()]]) {
       if (choice?.mode!=='api') continue
       const apiKey=readApiKey(this.dir,scope) || (scope==='global' && !choice.api_url && !choice.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(choice.api_url) ? '' : null)
-      if (apiKey!==null) return {model:choice.model,api_provider:choice.api_provider,api_url:choice.api_url,apiKey}
+      if (apiKey!==null) return {model:choice.model,api_provider:choice.api_provider,api_url:choice.api_url,effort:choice.api_effort||null,apiKey}
     }
     return null
   }

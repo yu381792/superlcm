@@ -160,11 +160,15 @@ async function loadSettings() {
 }
 const hostOf = url => { try { return new URL(url).host } catch { return url || '' } }
 const isLocal = url => /^https?:\/\/(127\.|localhost|\[::1\])/.test(url || '')
+const EFFORT_LABELS = [['', t('默认（不指定）')], ['minimal', t('最少')], ['low', t('低')], ['medium', t('中')], ['high', t('高')], ['xhigh', t('极高')]]
+const effortLabel = e => EFFORT_LABELS.find(x => x[0] === (e || ''))?.[1] || e
+// What a card and the list call a model: its name, else its model ID; 思考程度 shown when set.
+const modelName = m => (m.label || m.model) + (m.effort ? ' · ' + t('思考{e}', { e: effortLabel(m.effort) }) : '')
 function addApiModel() { admin.modelEdit = 'new'; show('settings'); settingsSection('summary'); renderApiModels(); $('#apiModels [data-f="url"]')?.focus() }
 // Settings › 摘要: the custom API models any tool card can pick.
 function renderApiModels() {
   const list = admin.settings.api_models, edit = admin.modelEdit
-  const row = m => '<div class="am-row"><div class="am-main"><b>' + esc(m.model) + '</b><span>' + esc(hostOf(m.url)) + ' · ' + (m.provider === 'openai' ? t('OpenAI 兼容') : 'Anthropic Messages') + ' · ' +
+  const row = m => '<div class="am-row"><div class="am-main"><b>' + esc(modelName(m)) + '</b><span>' + (m.label ? esc(m.model) + ' · ' : '') + esc(hostOf(m.url)) + ' · ' + (m.provider === 'openai' ? t('OpenAI 兼容') : 'Anthropic Messages') + ' · ' +
     (m.key_configured ? t('密钥已保存') : isLocal(m.url) ? t('本机地址，无需密钥') : t('缺少密钥')) + (m.used_by.length ? ' · ' + t('正在使用：{tools}', { tools: m.used_by.map(toolName).join(LANG === 'zh' ? '、' : ', ') }) : '') + '</span></div>' +
     '<button type="button" class="link" data-am-edit="' + esc(m.id) + '">' + t('修改') + '</button>' +
     '<button type="button" class="link" data-am-del="' + esc(m.id) + '"' + (m.used_by.length ? ' disabled title="' + t('先在「接入」页把使用它的工具换成别的方式') + '"' : '') + '>' + t('删除') + '</button></div>'
@@ -184,23 +188,39 @@ function renderApiModels() {
   const f = n => form.querySelector('[data-f="' + n + '"]')
   f('provider').onchange = () => { const url = f('url'); if (/api\.(anthropic|openai)\.com/.test(url.value) || !url.value) url.value = f('provider').value === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://api.anthropic.com/v1/messages' }
   form.querySelector('[data-am-cancel]').onclick = () => { admin.modelEdit = null; renderApiModels() }
-  form.querySelector('[data-am-save]').onclick = event => act(async () => {
-    const payload = { api_provider: f('provider').value, api_url: f('url').value.trim(), model: f('model').value.trim() }
+  const save = form.querySelector('[data-am-save]'), note = form.querySelector('.am-note')
+  // Any edit after a failed test goes back to testing first.
+  form.oninput = () => { if (save.dataset.skip) { delete save.dataset.skip; save.textContent = t('测试并保存'); note.hidden = true } }
+  save.onclick = async () => {
+    const payload = { label: f('label').value.trim(), api_provider: f('provider').value, api_url: f('url').value.trim(), model: f('model').value.trim(), effort: f('effort').value || null }
     if (form.dataset.id) payload.id = form.dataset.id
     if (f('key').value) payload.api_key = f('key').value
-    await api('/api/api-models', payload)
-    admin.modelEdit = null; await loadSettings(); toast(t('已保存'))
-  }, event.currentTarget)
+    if (save.dataset.skip) payload.skip_test = true
+    save.disabled = true; note.hidden = false; note.className = 'am-note notice calm'; note.textContent = payload.skip_test ? t('正在保存…') : t('正在用这个模型试写一句，最多等 45 秒…')
+    try {
+      await api('/api/api-models', payload)
+      admin.modelEdit = null; await loadSettings(); toast(payload.skip_test ? t('已保存（未测试）') : t('测试通过，已保存'))
+    } catch (error) {
+      const failed = /^Test call failed: /.test(error.message)
+      note.className = 'am-note notice warn'
+      note.textContent = failed ? t('测试调用失败：{why}', { why: error.message.replace(/^Test call failed: /, '') }) + ' ' + t('检查接口地址、模型 ID、密钥和思考程度；确定没问题也可以仍然保存。') : error.message
+      if (failed) { save.dataset.skip = '1'; save.textContent = t('仍然保存') }
+    } finally { save.disabled = false }
+  }
 }
 function modelForm(m) {
   const models = admin.settings.api_models, sameHost = !m.id && models.some(y => y.key_configured)
   const hint = m.key_configured ? t('已保存，留空保持不变') : sameHost ? t('地址和已添加的模型相同时可留空，沿用它的密钥') : t('首次保存必须填写；本机地址不需要可留空')
   return '<div class="am-form fields" data-id="' + esc(m.id || '') + '">' +
+    '<label class="field">' + t('名称') + '<input data-f="label" maxlength="60" value="' + esc(m.label || '') + '" placeholder="' + t('可选，例如 Luna 高思考') + '"></label>' +
     '<label class="field">' + t('接口协议') + '<select data-f="provider"><option value="anthropic">Anthropic Messages</option><option value="openai"' + (m.provider === 'openai' ? ' selected' : '') + '>' + t('OpenAI 兼容') + '</option></select></label>' +
     '<label class="field">' + t('接口地址') + '<input data-f="url" type="url" value="' + esc(m.url || 'https://api.anthropic.com/v1/messages') + '"></label>' +
     '<label class="field">' + t('模型 ID') + '<input data-f="model" value="' + esc(m.model || '') + '" placeholder="' + t('例如 claude-sonnet-5') + '"></label>' +
+    '<label class="field">' + t('思考程度') + '<select data-f="effort">' + EFFORT_LABELS.map(([v, l]) => '<option value="' + v + '"' + ((m.effort || '') === v ? ' selected' : '') + '>' + l + '</option>').join('') + '</select></label>' +
     '<label class="field">' + t('API 密钥') + '<input data-f="key" type="password" autocomplete="new-password" placeholder="' + hint + '"></label>' +
-    '<div class="actions"><button type="button" class="btn primary" data-am-save>' + t('保存') + '</button><button type="button" class="btn" data-am-cancel>' + t('取消') + '</button></div></div>'
+    '<p class="am-help">' + t('接口地址可以填完整地址，也可以只填服务商给的基础地址（如 …/v1），会按官方 SDK 的规则补全。思考程度按 OpenAI 的 reasoning_effort 或 Anthropic 的 thinking 发送，模型不支持时选「默认」。') + '</p>' +
+    '<div class="am-note" hidden></div>' +
+    '<div class="actions"><button type="button" class="btn primary" data-am-save>' + t('测试并保存') + '</button><button type="button" class="btn" data-am-cancel>' + t('取消') + '</button></div></div>'
 }
 // A tool card's model list for 本工具后台写: that tool's own catalog, plus any model typed in earlier.
 async function fillModels(select, harness, current) {
@@ -229,7 +249,7 @@ function writerRows(h) {
   if (mode === 'api') {
     const current = s.api_models.find(m => m.id === x?.api_ref) || s.api_models.find(m => m.url === (x || s.global).api_url && m.model === (x || s.global).model)
     rows.push([t('模型'), s.api_models.length ? '<select aria-label="' + t('模型') + '" data-apimodel="' + esc(h.harness) + '">' + (current ? '' : '<option value="" selected disabled>' + t('选择一个模型') + '</option>') +
-      s.api_models.map(m => '<option value="' + esc(m.id) + '"' + (m.id === current?.id ? ' selected' : '') + '>' + esc(m.model) + ' · ' + esc(hostOf(m.url)) + '</option>').join('') + '<option value="__add">' + t('+ 添加模型…') + '</option></select>'
+      s.api_models.map(m => '<option value="' + esc(m.id) + '"' + (m.id === current?.id ? ' selected' : '') + '>' + esc(modelName(m)) + ' · ' + esc(hostOf(m.url)) + '</option>').join('') + '<option value="__add">' + t('+ 添加模型…') + '</option></select>'
       : '<button type="button" class="link" data-add-model>' + t('先去设置里添加模型') + '</button>'])
   }
   return rows

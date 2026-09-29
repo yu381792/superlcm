@@ -288,6 +288,17 @@ test('Anthropic and OpenAI custom API requests use configured URL/model/key only
   assert.equal(sent[0].url,'https://api.example.test/v1/messages');assert.equal(sent[1].url,'https://api.example.test/v1/chat/completions')
   assert.equal(sent[0].init.headers['x-api-key'],'key-a');assert.equal(sent[1].init.headers.authorization,'Bearer key-b')
   assert.equal(JSON.parse(sent[1].init.body).model,'gpt-test')
+  // 思考程度 and base URLs: OpenAI reasoning_effort, Anthropic thinking budget, SDK-style path completion.
+  const bodies=[];const ok=async(url,init)=>{bodies.push({url,body:JSON.parse(init.body)});return {ok:true,json:async()=>({choices:[{message:{content:'x'}}],content:[{type:'thinking',thinking:'t'},{type:'text',text:'y'}]})}}
+  await summarizeWithModel('s',{model:'g',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://gen.example.test/v1beta/openai',effort:'high',fetchImpl:ok})
+  assert.equal(bodies[0].url,'https://gen.example.test/v1beta/openai/chat/completions');assert.equal(bodies[0].body.reasoning_effort,'high');assert.ok(bodies[0].body.max_tokens>750)
+  assert.equal(await summarizeWithModel('s',{model:'c',apiKey:'k-123456789',apiProvider:'anthropic',apiURL:'https://mm.example.test/anthropic',effort:'low',fetchImpl:ok}),'y')
+  assert.equal(bodies[1].url,'https://mm.example.test/anthropic/v1/messages');assert.deepEqual(bodies[1].body.thinking,{type:'enabled',budget_tokens:2048});assert.ok(bodies[1].body.max_tokens>2048)
+  await summarizeWithModel('s',{model:'g',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:ok});assert.equal(bodies[2].body.reasoning_effort,undefined,'unset sends nothing')
+  // A reasoning model that refuses max_tokens is retried once with max_completion_tokens.
+  const tries=[];const picky=async(url,init)=>{const b=JSON.parse(init.body);tries.push(b);return b.max_tokens?{ok:false,status:400,text:async()=>'Unsupported parameter: max_tokens; use max_completion_tokens'}:{ok:true,json:async()=>({choices:[{message:{content:'z'}}]})}}
+  assert.equal(await summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:picky}),'z');assert.equal(tries.length,2);assert.equal(tries[1].max_completion_tokens,750)
+  await assert.rejects(summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:async()=>({ok:false,status:401,text:async()=>'{"error":"invalid key"}'})}),/HTTP 401: .*invalid key/)
 })
 test('background worker actually uses saved API settings against a local fake endpoint',fixture(async ({dir,store})=>{
   const received=[];const server=createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{received.push({url:req.url,auth:req.headers.authorization,body:JSON.parse(body)});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:'The decisions were preserved in a local fake response.'}}]}))})})
@@ -409,7 +420,7 @@ test('Web console page inlines a syntactically valid script with the new views',
   assert.match(js,/对话模型生成/);assert.match(js,/function boot\(/);assert.doesNotMatch(html,/lcm_sessions|lcm_deliver|当前会话 AI/)
 })
 test('local Web console needs no login, refuses foreign writes and probes actual MCP protocol',fixture(async ({store})=>{
-  const web=await startWeb({store:new ClaudeStore(store.dir),discovery:async()=>[{harness:'codex',detected:true,configured:true}]})
+  const probes=[];const web=await startWeb({store:new ClaudeStore(store.dir),discovery:async()=>[{harness:'codex',detected:true,configured:true}],probeModel:async o=>{probes.push(o);if(o.model==='m-bad')throw new Error('Summarization HTTP 404: model not found')}})
   try {
     const initial=await fetch(web.url),html=await initial.text();assert.match(html,/<title>SuperLcm<\/title>/)
     assert.equal(initial.headers.get('set-cookie'),null,'no login cookie')
@@ -439,15 +450,19 @@ test('local Web console needs no login, refuses foreign writes and probes actual
     const endpoint={api_provider:'openai',api_url:'https://models.example.test/v1/chat/completions'}
     assert.equal((await addModel({...endpoint,model:'m-one'})).status,400,'a remote model needs a key');assert.equal(store.apiModels().length,0)
     const one=await addModel({...endpoint,model:'m-one',api_key:'model-secret-123456'});const oneText=await one.text();assert.equal(one.status,200);assert.doesNotMatch(oneText,/model-secret/)
-    const two=await addModel({...endpoint,model:'m-two'}).then(r=>r.json());assert.equal(two.key_configured,true,'same endpoint reuses the key')
-    assert.equal((await addModel({...endpoint,model:'m-two'})).status,400,'no duplicates')
+    const two=await addModel({...endpoint,model:'m-two',label:'Two',effort:'high'}).then(r=>r.json());assert.equal(two.key_configured,true,'same endpoint reuses the key');assert.deepEqual([two.label,two.effort],['Two','high'])
+    assert.equal(probes.at(-1).apiKey,'model-secret-123456','the test call uses the reused key');assert.equal(probes.at(-1).effort,'high')
+    assert.equal((await addModel({...endpoint,model:'m-two',effort:'high'})).status,400,'no duplicates');assert.equal((await addModel({...endpoint,model:'m-two',effort:'low'})).status,200,'another effort is another entry')
+    const bad=await addModel({...endpoint,model:'m-bad'});assert.equal(bad.status,400);assert.match((await bad.json()).error,/Test call failed: .*model not found/);assert.equal(store.apiModels().some(m=>m.model==='m-bad'),false,'a failed test saves nothing')
+    assert.equal((await addModel({...endpoint,model:'m-bad',skip_test:true})).status,200,'save anyway')
+    assert.equal((await addModel({...endpoint,model:'vertex/claude@2025 x'})).status,400,'spaces are refused');assert.equal((await addModel({...endpoint,model:'claude-opus@20251101'})).status,200,'API model IDs may use @')
     assert.equal((await post({scope:'harness',harness:'codex',mode:'api',api_ref:two.id})).status,200)
     assert.equal(store.harnessSetting('codex').model,'m-two');assert.equal(store.harnessKeyScope('codex'),'model:'+two.id)
     assert.equal((await addModel({...endpoint,id:two.id,model:'m-renamed'})).status,200);assert.equal(store.harnessSetting('codex').model,'m-renamed','editing a model applies to the tools using it')
     const listed=await fetch(base+'/api/settings',{headers}).then(r=>r.json());assert.deepEqual(listed.api_models.find(m=>m.id===two.id).used_by,['codex']);assert.equal(JSON.stringify(listed).includes('model-secret'),false)
     const del=id=>fetch(base+'/api/api-models/delete',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:JSON.stringify({id})})
     assert.equal((await del(two.id)).status,400,'a model in use cannot be deleted')
-    assert.equal((await post({scope:'harness',harness:'codex',mode:'off'})).status,200);assert.equal((await del(two.id)).status,200);assert.equal(store.apiModels().length,1)
+    assert.equal((await post({scope:'harness',harness:'codex',mode:'off'})).status,200);assert.equal((await del(two.id)).status,200);assert.equal(store.apiModels().some(m=>m.id===two.id),false)
     assert.equal((await fetch(base+'/api/preference',{headers})).status,404)
     const probe=await fetch(base+'/api/probe',{method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:base},body:'{}'}).then(r=>r.json())
     assert.equal(probe.ok,true,JSON.stringify(probe))

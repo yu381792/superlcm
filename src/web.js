@@ -17,7 +17,7 @@ import { summaryMode } from './mode.js'
 import { saveApiKey, readApiKey } from './api-credentials.js'
 import { loopbackEndpoint } from './api-endpoint.js'
 import { findCli } from './runtime.js'
-import { summaryEstimate } from './summarize.js'
+import { summaryEstimate, summarizeWithModel } from './summarize.js'
 import { writerTool } from './cli-writers.js'
 import { openInTerminal } from './open-terminal.js'
 export { probeMcp } from './mcp-probe.js'
@@ -39,7 +39,7 @@ const int = (value, fallback) => { const n = value === null || value === undefin
 const shortName = name => { const flat = String(name).replace(/\s+/g, ' ').trim(); return flat.length > 24 ? flat.slice(0, 23) + '…' : flat }
 const continueLine = source => `通过 SuperLcm 接续对话 #${source.code}「${shortName(source.name)}」，继续之前的任务。`
 
-export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', env = process.env, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, spawnWorker = spawn, terminal = {} } = {}) {
+export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', env = process.env, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, probeModel = o => summarizeWithModel('User: Hello.\nAssistant: Hello! How can I help?', { ...o, timeoutMs: 45000 }), spawnWorker = spawn, terminal = {} } = {}) {
   if (host !== '127.0.0.1') throw new Error('Web console is loopback-only')
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local Web port')
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
@@ -91,23 +91,25 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
         tuning: store.tuning()
       }
     },
+    // Saving a model first makes one real call with it, so a wrong endpoint, model ID, key or 思考程度
+    // shows the provider's own answer now; skip_test saves anyway (a gateway that refuses tiny test calls).
     'POST /api/api-models': async req => {
-      const x = await body(req), key = x.api_key
-      if (key !== undefined && typeof key !== 'string') throw new Error('API key must be text')
+      const x = await body(req)
+      if (x.api_key !== undefined && typeof x.api_key !== 'string') throw new Error('API key must be text')
       const before = x.id ? store.apiModel(x.id) : null
-      const m = store.saveApiModel({ id: x.id || null, provider: x.api_provider || null, url: x.api_url || null, model: x.model || null })
-      const scope = 'model:' + m.id
-      if (key) saveApiKey(store.dir, scope, key)
-      else if (!store.hasApiCredential(scope) || (before && before.url !== m.url)) {
-        // Same endpoint as a model already added: reuse its key instead of asking again.
-        const donor = store.apiModels().find(y => y.id !== m.id && y.url === m.url && store.hasApiCredential('model:' + y.id))
-        if (donor) saveApiKey(store.dir, scope, readApiKey(store.dir, 'model:' + donor.id))
-        else if (!loopbackEndpoint(m.url)) {
-          if (before) store.saveApiModel({ id: m.id, provider: before.provider, url: before.url, model: before.model }); else store.deleteApiModel(m.id)
-          throw new Error(before ? 'A new endpoint needs its API key' : 'Enter an API key for this model')
-        }
+      if (x.id && !before) throw new Error('Unknown API model')
+      const m = store.checkApiModel({ provider: x.api_provider || null, url: x.api_url || null, model: x.model || null, label: x.label || null, effort: x.effort || null })
+      // The key: typed now, else this model's own (same endpoint), else one saved for the same endpoint.
+      let key = x.api_key || (before && before.url === m.url ? readApiKey(store.dir, 'model:' + before.id) : null)
+      if (!key) { const donor = store.apiModels().find(y => y.id !== x.id && y.url === m.url && store.hasApiCredential('model:' + y.id)); if (donor) key = readApiKey(store.dir, 'model:' + donor.id) }
+      if (!key && !loopbackEndpoint(m.url)) throw new Error(before ? 'A new endpoint needs its API key' : 'Enter an API key for this model')
+      if (x.skip_test !== true) {
+        try { await probeModel({ model: m.model, apiKey: key || '', apiProvider: m.provider, apiURL: m.url, effort: m.effort }) }
+        catch (error) { throw new Error('Test call failed: ' + String(error?.message || error).slice(0, 400)) }
       }
-      return { ...m, key_configured: store.hasApiCredential(scope) }
+      const saved = store.saveApiModel({ id: x.id || null, ...m })
+      if (key) saveApiKey(store.dir, 'model:' + saved.id, key)
+      return { ...saved, key_configured: store.hasApiCredential('model:' + saved.id), tested: x.skip_test !== true }
     },
     'POST /api/api-models/delete': async req => { const x = await body(req); return { deleted: store.deleteApiModel(x.id) } },
     'POST /api/settings': async req => {
