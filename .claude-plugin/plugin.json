@@ -1,7 +1,7 @@
 {
   "name": "superlcm",
   "displayName": "SuperLcm — Permanent context. Turn your context into an archive.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Permanent context: turn your context into an archive. SuperLcm saves every Claude Code conversation word for word on your computer, files layered summaries like the chapters of a book, and lets Claude find and quote the exact original later, even after compaction. Codex, Hermes and Pi share the same archive, so a conversation can be continued in another tool.",
   "author": {
     "name": "ygc381792"

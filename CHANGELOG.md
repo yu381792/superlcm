@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Custom API models are added once in Settings (name, protocol, endpoint, model ID, reasoning effort, key) and picked on any tool's card; there is no global summary method any more. Editing a model applies to every tool using it, a model in use cannot be deleted, and the same endpoint reuses a saved key. Existing custom API settings become added models with their keys.
+- Saving a model makes one real test call and shows the provider's own error, with 仍然保存 to save anyway. Reasoning effort is sent as OpenAI `reasoning_effort` or an Anthropic thinking budget. Base URLs are completed the way the official SDKs do, `localhost` counts as local, API model IDs may use characters such as `@`, and a reasoning model that refuses `max_tokens` is retried with `max_completion_tokens`.
+- Hermes' card lists the models Hermes offers for its provider (default first) instead of only the configured default.
+- Tool cards show when a conversation was last saved (the old line only counted the AI calling SuperLcm's tools), put the model choice on its own row, and no longer show CLI versions; the early-records filter is gone. Saving a card choice answers at once (settings no longer re-detect every tool).
+
 ## 0.2.0-alpha.1
 
 - Open the console from your own Tailscale devices (`tailscale serve`, tailnet only): `SUPERLCM_WEB_REMOTE_HOSTS` and `SUPERLCM_WEB_TAILSCALE_USERS` (`*` or specific logins); Funnel traffic is always refused.
