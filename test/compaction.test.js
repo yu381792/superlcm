@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, ch
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore } from '../src/store.js'
-import { planCompaction, coveredThrough, frontier, cutIndex, triggerAt } from '../src/compaction.js'
+import { planCompaction, coveredThrough, frontier, cutIndex } from '../src/compaction.js'
 import { applyTakeover } from '../src/takeover.js'
 
 const ev = (ordinal, preview) => ({ ordinal, preview })
@@ -88,41 +88,52 @@ test('a SuperLcm packet and the kept messages Claude Code writes again are not i
   store.close()
 })
 
-test('turning the takeover on sets Claude Code’s compaction window and off restores it', () => {
+test('turning the takeover on makes Claude Code compact at the chosen size, and off restores its settings', () => {
   const { dir, claude } = claudeHome(), env = { ...process.env, CLAUDE_CONFIG_DIR: claude }, file = join(claude, 'settings.json')
+  const read = () => JSON.parse(readFileSync(file, 'utf8'))
+  // Claude Code 2.1.287: E = window - 20K; it compacts at min(floor(E * pct / 100), E - 13K).
+  const startsAt = settings => { const E = Number(settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) - 20000; return Math.min(Math.floor(E * Number(settings.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) / 100), E - 13000) }
   writeFileSync(file, JSON.stringify({ model: 'opus', autoCompactWindow: 500000 }))
   const store = new ClaudeStore(join(dir, 'home'))
   assert.equal(store.takeover().enabled, false)
-  assert.equal(applyTakeover(store, { enabled: true, window: 300000 }, env).claude_window, 400000)
-  applyTakeover(store, { enabled: true, window: 200000 }, env) // a new size keeps the original value to restore
-  assert.equal(JSON.parse(readFileSync(file, 'utf8')).autoCompactWindow, 300000)
-  applyTakeover(store, { enabled: false }, env)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { model: 'opus', autoCompactWindow: 500000 })
-  writeFileSync(file, JSON.stringify({ model: 'opus' }))
-  applyTakeover(store, { enabled: true }, env)
-  applyTakeover(store, { enabled: false }, env)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { model: 'opus' })
-  // The desktop app ignores autoCompactWindow, so the size also goes into env; other env entries stay.
-  writeFileSync(file, JSON.stringify({ env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } }))
+  // On a 1M model each size is where Claude Code starts, with its window 100K above it (at most 1M).
+  for (const [w, host] of [[300000, 400000], [500000, 600000], [800000, 900000], [200000, 300000], [950000, 1000000], [450000, 550000]]) {
+    assert.equal(applyTakeover(store, { enabled: true, window: w }, env).claude_window, host)
+    const now = read()
+    assert.equal(now.autoCompactWindow, host); assert.equal(now.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, String(host))
+    assert.ok(startsAt(now) >= w && startsAt(now) < w + 100, `${w}: starts at ${startsAt(now)}`)
+  }
+  applyTakeover(store, { enabled: false }, env) // changing the size kept the original values to restore
+  assert.deepEqual(read(), { model: 'opus', autoCompactWindow: 500000 })
+  // The user's own env values and other env entries come back as they were.
+  writeFileSync(file, JSON.stringify({ env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '90' } }))
   applyTakeover(store, { enabled: true, window: 300000 }, env)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' }, autoCompactWindow: 400000 })
   applyTakeover(store, { enabled: false }, env)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } })
-  // Turned on by an older version (only the window remembered): the env value is still restored.
+  assert.deepEqual(read(), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '90' } })
+  // Turned on by 0.4.7 or earlier (only the window remembered) and then turned off directly: the env, which
+  // that version never touched, is left alone.
+  writeFileSync(file, JSON.stringify({ autoCompactWindow: 300000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } }))
+  store.setTakeover({ enabled: true, window: 300000, keep: 40000, previous: 'null' })
+  applyTakeover(store, { enabled: false }, env)
+  assert.deepEqual(read(), { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } })
+  // ... or changed first: the env value is taken before this version changes it, and comes back.
   writeFileSync(file, JSON.stringify({ autoCompactWindow: 300000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } }))
   store.setTakeover({ enabled: true, window: 300000, keep: 40000, previous: 'null' })
   applyTakeover(store, { enabled: true, window: 300000 }, env)
   applyTakeover(store, { enabled: false }, env)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } })
+  assert.deepEqual(read(), { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } })
+  // Turned on by 0.4.8–0.4.13 (window and env remembered, the percentage never set): the user's percentage stays.
+  writeFileSync(file, JSON.stringify({ autoCompactWindow: 400000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '85' } }))
+  store.setTakeover({ enabled: true, window: 300000, keep: 40000, previous: JSON.stringify({ window: null, env: '400000' }) })
+  applyTakeover(store, { enabled: false }, env)
+  assert.deepEqual(read(), { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '85' } })
+  // A size an older version allowed is brought inside today's limits, so turning off still records it.
+  store.db.prepare('UPDATE takeover_settings SET enabled=1,window=60000,keep_tokens=0,previous=? WHERE id=1').run(JSON.stringify({ window: null, env: null, pct: null }))
+  assert.equal(applyTakeover(store, { enabled: false }, env).enabled, false)
+  assert.deepEqual(read(), {})
   assert.throws(() => applyTakeover(store, { enabled: true, window: 10 }, env))
-  // On a 1M model each console size keeps Claude Code's own window 100K above it, within its 1M ceiling.
-  for (const [w, host] of [[300000, 400000], [500000, 600000], [800000, 900000], [950000, 1000000]]) {
-    assert.equal(applyTakeover(store, { enabled: true, window: w }, env).claude_window, host)
-    assert.equal(JSON.parse(readFileSync(file, 'utf8')).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, String(host))
-  }
   assert.throws(() => applyTakeover(store, { enabled: true, window: 960000 }, env))
   assert.throws(() => applyTakeover(store, { enabled: true, window: 300000, keep: 1000 }, env))
-  applyTakeover(store, { enabled: false }, env)
   store.close()
 })
 
@@ -269,26 +280,12 @@ test('the module answers Claude Code’s precompute as well as the threshold, bu
   assert.equal((await hooks.get('session.compact')($, { trigger: 'auto', agentId: 'x', messages }, native)).messages[0].text, 'native summary')
 })
 
-test('past the console’s window the module starts the compaction itself, and not before or while summaries lag', async () => {
+test('the module never starts a compaction itself (Claude Code would skip its hooks and summarize natively)', async () => {
   const { register } = await import('../hooks/compact-mod.js')
   const hooks = new Map(); register((event, hook) => hooks.set(event, hook))
-  const messages = ['a', 'b', 'c', 'd'].map((text, i) => ({ role: i % 2 ? 'assistant' : 'user', text }))
-  const run = (reply) => async (_, $) => {
-    let compacted = 0, reads = 0
-    $.session.compact = async () => { compacted++; return hooks.get('session.compact')($, { trigger: 'plugin', messages }, async () => ({ messages: [{ role: 'user', text: 'native' }] })) }
-    $.session.messages = async () => { reads++; return messages }
-    await hooks.get('turn.complete')($, {}, async () => ({}))
-    await new Promise(r => setTimeout(r, 700))
-    return { compacted, reads, last: $.last }
-  }
-  const make = reply => ({ plugin: { root: '.' }, session: { id: async () => 's', usage: async () => ({ context: { tokens: 310000, window: 1000000 } }) },
-    process: { run: async (argv, { stdin }) => { const cmd = argv[2]; if (cmd !== 'compact-packet') return { stdout: '{}' }; const input = JSON.parse(stdin); return { stdout: JSON.stringify(reply(input)) } } } })
-  const ready = { use: true, start: 2, packet: '<superlcm-context conversation="#x" keep="2" through="1">s</superlcm-context>' }
-  assert.deepEqual(await run()(null, make(() => ({ use: false, reason: 'below the compaction window' }))), { compacted: 0, reads: 0, last: undefined })
-  assert.deepEqual(await run()(null, make(() => ({ use: false, reason: 'the summaries lag behind' }))), { compacted: 0, reads: 1, last: undefined })
-  assert.deepEqual(await run()(null, make(() => ready)), { compacted: 1, reads: 1, last: undefined })
-})
-
-test('the plugin starts at the console size, or below a smaller live window so Claude Code stays the fallback', () => {
-  for (const [w, live, at] of [[300000, 400000, 300000], [800000, 900000, 800000], [800000, 1000000, 800000], [300000, 200000, 150000], [500000, 400000, 350000], [300000, 0, 300000]]) assert.equal(triggerAt(w, live), at)
+  let compacted = 0
+  const $ = { plugin: { root: '.' }, session: { id: async () => 's', compact: async () => { compacted++ }, messages: async () => [], usage: async () => ({ context: { tokens: 900000, window: 1000000 } }) }, process: { run: async () => ({ stdout: '{}' }) } }
+  await hooks.get('turn.complete')($, {}, async () => ({}))
+  await new Promise(r => setTimeout(r, 700))
+  assert.equal(compacted, 0)
 })

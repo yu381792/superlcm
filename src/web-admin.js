@@ -318,7 +318,7 @@ function renderTakeover(x) {
   }
   const mode = admin.settings?.settings.find(s => s.harness === 'claude-code')?.mode
   items.push(mode === 'off' ? ['no', t('Claude Code 的摘要是关闭的，没有摘要就只能交回 Claude Code 压缩')] : ['ok', t('Claude Code 的摘要：{m}', { m: esc(writerLabel(mode || 'agent')) })])
-  items.push(['info', x.enabled ? t('到 {t} 由 SuperLcm 换上摘要；Claude Code 自己的压缩窗口设为 {w}，只在摘要没跟上时兜底，关闭后恢复原来的值', { t: kfmt(x.window), w: kfmt(x.claude_window || x.window) }) : t('关闭中，Claude Code 的压缩窗口保持 {w}', { w: x.claude_window ? kfmt(x.claude_window) : t('默认') })])
+  items.push(['info', x.enabled ? t('Claude Code 到 {t} 开始压缩，SuperLcm 当场换上摘要（摘要没跟上时由 Claude Code 自己总结）；它显示的窗口为 {w}，关闭后恢复原来的设置', { t: kfmt(x.window), w: kfmt(x.claude_window || x.window) }) : t('关闭中，Claude Code 的压缩窗口保持 {w}', { w: x.claude_window ? kfmt(x.claude_window) : t('默认') })])
   $('#takeoverChecks').innerHTML = items.map(([cls, text]) => '<li class="' + cls + '">' + text + '</li>').join('')
   $('#takeoverChecks').querySelector('[data-goto-connect]')?.addEventListener('click', () => show('connect'))
 }

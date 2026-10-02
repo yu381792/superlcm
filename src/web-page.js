@@ -107,7 +107,7 @@ export function page(nonce) {
         <div class="custom-size" id="takeoverKeepCustom" hidden><input type="number" inputmode="numeric" min="5" max="200" step="5" aria-label="自定义最近原文保留"><span>K</span><button type="button" class="btn small">保存</button><span class="hint">5K–200K</span></div>
         <h3>运行条件</h3>
         <ul class="checks" id="takeoverChecks"></ul>
-        <details class="how"><summary>它怎么工作</summary><p>SuperLcm 平时就在后台把对话写成分层摘要，但不动 Claude Code 的上下文。到了门槛，Claude Code 要压缩时，SuperLcm 把已经被摘要覆盖的旧对话换成这些摘要，没覆盖到的部分和最近一段（按「最近原文保留」，至少两轮）一字不改地保留。</p><p>摘要还没跟上、对不上号、换完仍然太大，或者是子代理的对话，都照旧交给 Claude Code 自己压缩，对话不会因此卡住。打开时会把 Claude Code 自己的压缩窗口设成门槛再加 100K（最多 1M），让它只在摘要没跟上时兜底；关闭时恢复原来的值。</p></details>
+        <details class="how"><summary>它怎么工作</summary><p>SuperLcm 平时就在后台把对话写成分层摘要，但不动 Claude Code 的上下文。到了门槛，Claude Code 要压缩时，SuperLcm 把已经被摘要覆盖的旧对话换成这些摘要，没覆盖到的部分和最近一段（按「最近原文保留」，至少两轮）一字不改地保留。</p><p>摘要还没跟上、对不上号、换完仍然太大，或者是子代理的对话，都照旧交给 Claude Code 自己压缩，对话不会因此卡住。打开时会改 Claude Code 的设置，让它正好在门槛开始压缩，由 SuperLcm 当场换上摘要；它显示的窗口是门槛再加 100K（最多 1M）。关闭时恢复原来的设置。</p></details>
       </div>
       <div class="panel" data-sec="mcp" hidden>
         <h2>AI 可用的 MCP 工具</h2>

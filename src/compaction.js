@@ -5,9 +5,6 @@
 export const PACKET_TAG = 'superlcm-context'
 export const takeoverDefaults = { enabled: false, window: 300000, keep: 40000 } // keep: newest tokens left word for word
 export const takeoverLimits = { window: [100000, 950000], keep: [5000, 200000] }
-// Where the plugin starts the compaction: the console's size, but on a model whose window leaves no room
-// above it (Claude Code compacts about 30K before its window) somewhat below that window instead.
-export const triggerAt = (window, live = 0) => live > 0 ? Math.min(window, Math.max(live - 50000, Math.round(live / 2))) : window
 const MAX_PACKET_CHARS = 120000
 const KEEP_TURNS = 2 // the newest user prompts are always kept word for word
 const key = text => String(text || '').replace(/\s+/g, '').slice(0, 600)

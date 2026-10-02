@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.14
+
+- Fixed: the module no longer starts a compaction itself (added in 0.4.10). On a plugin's own `$.session.compact()` Claude Code 2.1.287 skips that plugin's hooks, so a compaction started there was always Claude Code's own summary, never SuperLcm's (checked on a live session; found in review). Instead, turning the takeover on now also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` so that Claude Code itself starts compacting right at the console's size (window 100K above it, the start at the size), where the module answers with the summaries. When they lag, Claude Code summarizes at that size the usual way.
+- Turning the takeover off after an older version turned it on no longer drops a setting that version never touched (the env window for 0.4.7 and earlier, the percentage for 0.4.8–0.4.13).
+- A size an older version allowed (below 100K, or kept under 5K) no longer makes turning the takeover off fail halfway with Claude's settings restored but the takeover still shown as on.
+
 ## 0.4.13
 
 - Console › Settings › Compaction: the threshold and the recent originals kept each take a custom size besides the presets (threshold 100K–950K, kept 5K–200K).
