@@ -108,6 +108,12 @@ test('turning the takeover on sets Claude Code’s compaction window and off res
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' }, autoCompactWindow: 300000 })
   applyTakeover(store, { enabled: false }, env)
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } })
+  // Turned on by an older version (only the window remembered): the env value is still restored.
+  writeFileSync(file, JSON.stringify({ autoCompactWindow: 300000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } }))
+  store.setTakeover({ enabled: true, window: 300000, keep: 40000, previous: 'null' })
+  applyTakeover(store, { enabled: true, window: 300000 }, env)
+  applyTakeover(store, { enabled: false }, env)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } })
   assert.throws(() => applyTakeover(store, { enabled: true, window: 10 }, env))
   store.close()
 })

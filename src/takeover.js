@@ -1,8 +1,7 @@
 // Turning 接管压缩 on or off. On: Claude Code's autoCompactWindow (when its automatic compaction starts)
 // is set to the chosen size, and whatever it was before is remembered. Off: that earlier value comes back.
-// The Claude desktop app does not pass autoCompactWindow on to the Claude Code it runs (its sessions keep
-// compacting at the model default), but every Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW first,
-// so the same size is also set under env in settings.json. Only these two keys are touched, with an
+// Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW before autoCompactWindow, so an env value set
+// there would override the takeover's size: the same size is also set under env in settings.json. Only these two keys are touched, with an
 // atomic rewrite.
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
@@ -43,7 +42,10 @@ export function applyTakeover(store, { enabled, window, keep }, env = process.en
   window = window ?? current.window; keep = keep ?? current.keep
   if (enabled) {
     // Remember Claude Code's own values only when turning on, so changing the size keeps the originals.
-    const previous = current.enabled ? current.previous : JSON.stringify({ window: settings.autoCompactWindow ?? null, env: settings.env?.[ENV_KEY] ?? null })
+    // (Older versions remembered only the window: the env value is taken now, before it is changed.)
+    const own = { window: settings.autoCompactWindow ?? null, env: settings.env?.[ENV_KEY] ?? null }
+    const kept = current.enabled ? remembered(current.previous) : own
+    const previous = JSON.stringify(current.enabled && !String(current.previous || '').includes('"env"') ? { window: kept.window, env: own.env } : kept)
     store.setTakeover({ enabled: true, window, keep, previous })
     // If Claude's settings cannot be written, the takeover stays as it was rather than on in name only.
     try {

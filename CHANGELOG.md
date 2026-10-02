@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.11
+
+- Turning the takeover off now restores your own `CLAUDE_CODE_AUTO_COMPACT_WINDOW` even when the takeover was first turned on by 0.4.7 or earlier (which remembered only `autoCompactWindow`); before, that value was dropped instead of restored.
+
 ## 0.4.10
 
 - The plugin module starts the compaction itself: after a turn, once the context reaches the window set in the console (300K by default) and the summaries are ready, it compacts with SuperLcm's packet between turns. The console's size now holds wherever the module runs, whatever the host reads from settings.json; while the summaries lag it starts nothing and Claude Code's own threshold still applies.
