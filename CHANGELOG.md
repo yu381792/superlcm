@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.5
+
+- Compaction takeover keeps the newest stretch word for word (Settings › Compaction › Keep recent originals: 20K, 40K by default, or 80K tokens, at most half the context), from the start of a turn, even where summaries already cover it; only older parts become summaries.
+
 ## 0.4.4
 
 - The plugin module (compaction takeover and in-conversation summaries) is marked as supported from Claude Code 2.1.286, the version the Claude desktop app now bundles; checked with a real run of its bundled binary.

@@ -302,6 +302,7 @@ function renderTakeover(x) {
   if (!x) return
   $('#takeoverOn').checked = x.enabled
   for (const b of $('#takeoverWindow').querySelectorAll('[data-w]')) b.setAttribute('aria-checked', String(Number(b.dataset.w) === x.window))
+  for (const b of $('#takeoverKeep').querySelectorAll('[data-k]')) b.setAttribute('aria-checked', String(Number(b.dataset.k) === x.keep))
   const c = state.harnesses?.find(h => h.harness === 'claude-code')?.claude, items = []
   if (!c) items.push(['wait', t('正在检查 Claude Code…')])
   else {
@@ -315,12 +316,13 @@ function renderTakeover(x) {
   $('#takeoverChecks').querySelector('[data-goto-connect]')?.addEventListener('click', () => show('connect'))
 }
 const saveTakeover = (change, control) => act(async () => {
-  const cur = admin.settings.takeover, r = await api('/api/takeover', { enabled: cur.enabled, window: cur.window, ...change })
+  const cur = admin.settings.takeover, r = await api('/api/takeover', { enabled: cur.enabled, window: cur.window, keep: cur.keep, ...change })
   admin.settings.takeover = r; renderTakeover(r); if (state.harnesses) renderTools()
   toast(r.enabled ? t('已打开 · 门槛 {w}，新开的 Claude Code 对话生效', { w: kfmt(r.window) }) : t('已关闭，Claude Code 的压缩窗口已恢复'))
 }, control)
 $('#takeoverOn').onchange = e => saveTakeover({ enabled: e.target.checked }, e.target)
 for (const b of $('#takeoverWindow').querySelectorAll('[data-w]')) b.onclick = () => saveTakeover({ window: Number(b.dataset.w) }, b)
+for (const b of $('#takeoverKeep').querySelectorAll('[data-k]')) b.onclick = () => saveTakeover({ keep: Number(b.dataset.k) }, b)
 const pickedTuning = () => ({ target_chars: Number($('#segSize').value), fanout: Number($('#fanout').value) })
 for (const id of ['#segSize', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 

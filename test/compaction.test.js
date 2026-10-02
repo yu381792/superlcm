@@ -163,3 +163,14 @@ test('Claude Code writes its own summaries through summary-claim / summary-save,
   assert.deepEqual(run('summary-handoff'), {}) // the end of the session: the separate worker takes over
   const t = new ClaudeStore(home); assert.equal(t.hostWriter('s3'), false); t.close()
 })
+
+test('the newest stretch up to the keep size stays word for word, from the start of a turn', () => {
+  const events = [], messages = []
+  for (let i = 0; i < 20; i++) { events.push(ev(2 * i, `user: q${i}`), ev(2 * i + 1, `assistant: a${i}`)); messages.push(msg('user', `q${i}`, { size: 1000 }), msg('assistant', `a${i}`, { size: 9000 })) }
+  const nodes = [node('a', 0, 0, 35)] // summaries cover turns 0-17
+  // 200K tokens over 200K characters: each turn is 10K tokens
+  const plan = (keepTokens) => planCompaction({ meta, events, nodes, messages, tokens: 200000, window: 300000, keepTokens })
+  assert.equal(plan(0).start, 36) // just the last two turns
+  assert.equal(plan(40000).start, 32) // four turns, about 40K
+  assert.equal(plan(500000).start, 20) // never more than half the context
+})

@@ -83,6 +83,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS host_writers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
+    if(!new Set(this.db.prepare('PRAGMA table_info(takeover_settings)').all().map(c=>c.name)).has('keep_tokens'))this.db.exec('ALTER TABLE takeover_settings ADD COLUMN keep_tokens INTEGER NOT NULL DEFAULT 40000')
     if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
     if(!deliveryColumns.has('delivery_route'))this.db.exec("ALTER TABLE deliveries ADD COLUMN delivery_route TEXT NOT NULL DEFAULT 'hook'")
     // Existing alpha.5 indexes have only (session,harness); preserve every row.
@@ -157,10 +158,10 @@ export class ClaudeStore {
   // summaries, the Stop hook does not start a separate `claude -p` for it.
   hostWriter(session) { return Boolean(this.db.prepare('SELECT 1 FROM host_writers WHERE session=? AND until_ms>?').get(session,Date.now())) }
   setHostWriter(session,on,duration=6*3600000) { if(on)this.db.prepare('INSERT INTO host_writers(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms').run(session,Date.now()+duration); else this.db.prepare('DELETE FROM host_writers WHERE session=?').run(session) }
-  takeover() { const r=this.db.prepare('SELECT enabled,window,previous FROM takeover_settings WHERE id=1').get(); return r?{enabled:Boolean(r.enabled),window:r.window,previous:r.previous}:{...takeoverDefaults,previous:null} }
-  setTakeover({enabled,window=this.takeover().window,previous=this.takeover().previous}) {
-    if (typeof enabled!=='boolean' || !Number.isSafeInteger(window) || window<50000 || window>2000000) throw new Error('Unsupported compaction takeover setting')
-    this.db.prepare('INSERT INTO takeover_settings(id,enabled,window,previous) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,window=excluded.window,previous=excluded.previous').run(enabled?1:0,window,previous)
+  takeover() { const r=this.db.prepare('SELECT enabled,window,previous,keep_tokens FROM takeover_settings WHERE id=1').get(); return r?{enabled:Boolean(r.enabled),window:r.window,keep:r.keep_tokens,previous:r.previous}:{...takeoverDefaults,previous:null} }
+  setTakeover({enabled,window=this.takeover().window,keep=this.takeover().keep,previous=this.takeover().previous}) {
+    if (typeof enabled!=='boolean' || !Number.isSafeInteger(window) || window<50000 || window>2000000 || !Number.isSafeInteger(keep) || keep<0 || keep>200000) throw new Error('Unsupported compaction takeover setting')
+    this.db.prepare('INSERT INTO takeover_settings(id,enabled,window,previous,keep_tokens) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,window=excluded.window,previous=excluded.previous,keep_tokens=excluded.keep_tokens').run(enabled?1:0,window,previous,keep)
     return this.takeover()
   }
   markCompaction(session,ordinal=this.stats(session).records) { if(this.source(session))this.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session,ordinal) }

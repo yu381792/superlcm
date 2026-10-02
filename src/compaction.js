@@ -3,7 +3,7 @@
 // written replace the part they cover, everything newer stays word for word, and no model is called.
 // When the summaries do not cover enough, the caller hands the compaction back to Claude Code.
 export const PACKET_TAG = 'superlcm-context'
-export const takeoverDefaults = { enabled: false, window: 300000 }
+export const takeoverDefaults = { enabled: false, window: 300000, keep: 40000 } // keep: newest tokens left word for word
 const MAX_PACKET_CHARS = 120000
 const KEEP_TURNS = 2 // the newest user prompts are always kept word for word
 const key = text => String(text || '').replace(/\s+/g, '').slice(0, 600)
@@ -79,19 +79,27 @@ export function renderPacket({ meta, summaries, through, keep, instructions }) {
 }
 // tokens: Claude Code's own count of the context now; window: the auto-compact window in tokens.
 // Returns { use:true, packet, start } or { use:false, reason }.
-export function planCompaction({ meta, events, nodes, messages, instructions = '', tokens = 0, window = takeoverDefaults.window }) {
+export function planCompaction({ meta, events, nodes, messages, instructions = '', tokens = 0, window = takeoverDefaults.window, keepTokens = takeoverDefaults.keep }) {
   const through = coveredThrough(nodes)
   if (through < 0) return { use: false, reason: 'no summaries written yet' }
   const cut = cutIndex(messages, events, through)
   if (cut === null) return { use: false, reason: 'could not place the summaries in the live conversation' }
-  const start = tailStart(messages, cut)
+  // Each message's share of Claude Code's own token count, by its size in characters.
+  const size = m => m.size ?? (m.text.length + 200)
+  const total = messages.reduce((s, m) => s + size(m), 0) || 1
+  let start = tailStart(messages, cut)
   if (start >= messages.length) return { use: false, reason: 'nothing recent to keep' }
+  // The newest keepTokens (at most half of the context) also stay word for word, from the start of a turn,
+  // even where summaries already cover them, so the work in hand continues with its full detail.
+  const want = Math.min(keepTokens, tokens / 2)
+  let wide = start, newest = messages.slice(start).reduce((s, m) => s + size(m), 0) * tokens / total
+  while (wide > 0 && newest < want) newest += size(messages[--wide]) * tokens / total
+  while (wide > 0 && !isPrompt(messages[wide])) wide--
+  if (wide > 0) start = Math.min(start, wide)
   const keep = messages.length - start
   const packet = renderPacket({ meta, summaries: frontier(nodes, through), through, keep, instructions })
   // Size check: the kept part's share of Claude Code's own count, plus the packet at ~2 characters a token
   // (Chinese is denser than English). Past 60% of the window the compaction would barely help.
-  const size = m => m.size ?? (m.text.length + 200)
-  const total = messages.reduce((s, m) => s + size(m), 0) || 1
   const kept = messages.slice(start).reduce((s, m) => s + size(m), 0)
   const after = Math.round(tokens * kept / total + packet.length / 2)
   if (after > window * 0.6) return { use: false, reason: `the summaries lag behind: about ${after} tokens would remain` }

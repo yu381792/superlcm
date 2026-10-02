@@ -22,13 +22,13 @@ function writeSettings(file, value) {
 export function claudeCompactWindow(env = process.env) {
   try { const v = readSettings(settingsFile(env)).autoCompactWindow; return Number.isFinite(v) ? v : null } catch { return null }
 }
-export function applyTakeover(store, { enabled, window }, env = process.env) {
+export function applyTakeover(store, { enabled, window, keep }, env = process.env) {
   const current = store.takeover(), file = settingsFile(env), settings = readSettings(file)
-  window = window ?? current.window
+  window = window ?? current.window; keep = keep ?? current.keep
   if (enabled) {
     // Remember Claude Code's own value only when turning on, so changing the size keeps the original.
     const previous = current.enabled ? current.previous : JSON.stringify(settings.autoCompactWindow ?? null)
-    store.setTakeover({ enabled: true, window, previous })
+    store.setTakeover({ enabled: true, window, keep, previous })
     if (settings.autoCompactWindow !== window) writeSettings(file, { ...settings, autoCompactWindow: window })
   } else {
     if (current.enabled) {
@@ -36,7 +36,7 @@ export function applyTakeover(store, { enabled, window }, env = process.env) {
       if (before === null) delete next.autoCompactWindow; else next.autoCompactWindow = before
       if (JSON.stringify(next) !== JSON.stringify(settings)) writeSettings(file, next)
     }
-    store.setTakeover({ enabled: false, window, previous: null })
+    store.setTakeover({ enabled: false, window, keep, previous: null })
   }
   return { ...store.takeover(), claude_window: claudeCompactWindow(env) }
 }
