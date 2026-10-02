@@ -2,11 +2,23 @@
 
 <h1 align="center">SuperLcm</h1>
 
-<p align="center"><b>Permanent context. Turn your context into an archive.</b></p>
+<p align="center"><b>Permanent context. Turn your context into an archive.</b><br>Lossless background compaction for Claude Code: no waiting, nothing thrown away.</p>
 
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
 
 Everything you and your agent say is kept, word for word, on your own computer. Summaries are filed in layers like the chapters of a book, and any detail can be pulled back out and quoted exactly, even long after the context window has been compacted. It works across Claude Code, Codex, Hermes and Pi, and a conversation started in one can be continued in another.
+
+## Highlight: lossless compaction that never makes you wait
+
+Claude Code's own compaction stops the conversation, asks a model to squeeze everything into one summary, and throws the originals away. With the SuperLcm plugin it can work the other way round:
+
+- **Asynchronous, in the background.** Summaries are written quietly after each stretch of conversation, while you keep working. By the time the context fills up, the replacement is already assembled.
+- **No stall at the threshold.** When the conversation reaches the threshold (300K tokens by default, adjustable, or the model's window if smaller), SuperLcm swaps the older part for its layered summaries in one step. No model is called at that moment, so the swap takes milliseconds instead of a minute of "Compacting…".
+- **Lossless.** Only the view is shortened. Every original message stays in the archive, and the agent reads any of them back word for word with `lcm_read`. The newest turns are kept verbatim.
+- **Cheap summaries, Haiku included.** The background summaries can be written by Claude Haiku (on the Claude Code card under Connect: Own tool, in the background, model `haiku`), by the agent itself, or by your own API, so the expensive main model is not spent on bookkeeping.
+- **Safe fallback.** If the summaries have not caught up, or anything goes wrong, Claude Code compacts the usual way. Turning it off restores your previous setting.
+
+Turn it on in the console under Settings › Compaction. Needs the plugin install (below) and Claude Code 2.1.287 or newer; it handles the main conversation, and subagents compact as usual.
 
 ## Compaction throws pages away. SuperLcm files them.
 
@@ -59,10 +71,6 @@ Chosen per tool in the console: **the agent itself** (the default; it has just b
 | A detail from 300 turns ago | Survives only if the summary kept it | Found by search, quoted exactly |
 | Continuing in another tool | Start over and re-explain | One sentence, with outline and recent messages |
 | Where it lives | — | A file on your computer |
-
-## Let SuperLcm take over Claude Code compaction
-
-Optional and off by default (Settings › Compaction). When on and a conversation reaches the threshold (300K tokens by default, or the model's window if smaller), SuperLcm handles the compaction: the layered summaries already written in the background replace the older part, the newest turns stay word for word, and every original is one `lcm_read` away. No model is called at that moment, so there is almost no wait. If the summaries have not caught up, or anything goes wrong, Claude Code compacts as usual. Needs the plugin install and Claude Code 2.1.287 or newer; main conversation only.
 
 ## Install as a Claude plugin
 

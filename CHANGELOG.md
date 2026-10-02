@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- The README and the plugin listing lead with the compaction takeover: summaries assembled in the background, a no-wait swap at the threshold, originals kept, and Haiku able to write the summaries.
+
 ## 0.4.1
 
 - The Claude Code card treats the plugin as the connection: it shows the plugin version, installs or updates it through `claude plugin`, says whether the terminal and desktop-app Claude Code can run the compaction module, and cleans up the older MCP entry and settings.json hooks (backed up first, other hooks untouched).

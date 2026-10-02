@@ -1,6 +1,6 @@
 {
   "name": "superlcm",
-  "description": "SuperLcm: lossless local conversation memory for Claude Code, Codex, Hermes and Pi.",
+  "description": "SuperLcm: lossless local conversation memory and no-wait background compaction for Claude Code, shared with Codex, Hermes and Pi.",
   "owner": {
     "name": "ygc381792"
   },
@@ -8,7 +8,7 @@
     {
       "name": "superlcm",
       "source": "./",
-      "description": "Lossless local conversation history with layered summaries and exact-source recall, shared across Claude Code, Codex, Hermes and Pi."
+      "description": "Lossless, no-wait compaction for Claude Code (summaries assembled in the background, Haiku-capable) plus exact-source recall of every conversation, shared across Claude Code, Codex, Hermes and Pi."
     }
   ]
 }
