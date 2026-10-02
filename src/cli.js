@@ -7,6 +7,7 @@ import { startServer } from './mcp.js'
 import { claudePluginEnabled } from './runtime.js'
 import { startWeb, defaultPort } from './web.js'
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 const [command,...rest]=process.argv.slice(2)
 const homeFlag=rest.indexOf('--home')
@@ -76,7 +77,8 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         if (input.session_id && (input.transcript_path || ['UserPromptSubmit','SessionStart'].includes(hookEvent))) {
           const event=input.hook_event_name
           const session=codex ? codexSessionKey(input.session_id) : input.session_id
-          const file=input.transcript_path ? (codex ? codexTranscript(input.transcript_path,{cwd:input.cwd}) : claudeTranscript(input.transcript_path)) : null
+          // A session that never wrote a transcript (such as `claude update`) has nothing to capture.
+          const file=input.transcript_path && existsSync(input.transcript_path) ? (codex ? codexTranscript(input.transcript_path,{cwd:input.cwd}) : claudeTranscript(input.transcript_path)) : null
           const shouldIndex=['Stop','PostCompact','SessionEnd','SessionStart','UserPromptSubmit'].includes(event)
           // A conversation the user deleted in SuperLcm is not captured again automatically.
           if (shouldIndex && file && !store.isDeleted(session)) result=store.ingest(session,file)
