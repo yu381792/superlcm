@@ -11,7 +11,7 @@ import { configFiles, readJson, mcpRegistration, ownMcp, hookInspection, script 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 export const PACKAGE_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
 const MARKETPLACE = (() => { try { return JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'marketplace.json'), 'utf8')).name } catch { return 'superlcm' } })()
-export const MODULE_MIN = '2.1.287' // first Claude Code with plugin modules (session.compact)
+export const MODULE_MIN = '2.1.286' // first Claude Code with plugin modules (session.compact)
 const parts = v => String(v || '').match(/\d+(\.\d+)*/)?.[0].split('.').map(Number) || []
 export function compareVersions(a, b) { const x = parts(a), y = parts(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return Math.sign(d) } return 0 }
 export const runsModules = version => !!parts(version).length && compareVersions(version, MODULE_MIN) >= 0

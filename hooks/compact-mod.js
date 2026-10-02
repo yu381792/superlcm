@@ -1,4 +1,4 @@
-// A Claude Code module (2.1.287+), two jobs:
+// A Claude Code module (2.1.286+), two jobs:
 // 接管压缩: when the main conversation compacts, SuperLcm answers with its own summaries plus the newest
 // messages word for word (see src/compaction.js). Anything unexpected, the setting being off, a subagent, or
 // summaries that lag behind, hands the compaction back to Claude Code.

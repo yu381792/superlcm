@@ -123,7 +123,7 @@ test('compact-packet answers from the recorded conversation, and declines while 
 test('the Claude card reads the plugin and cleans up only SuperLcm’s own old hooks', async () => {
   const { pluginAction, claudePlugin, compareVersions, runsModules, PACKAGE_VERSION } = await import('../src/claude-plugin.js')
   const { script } = await import('../src/harness.js')
-  assert.equal(compareVersions('2.1.284', '2.1.287'), -1); assert.equal(runsModules('2.1.287 (Claude Code)'), true); assert.equal(runsModules('2.1.284'), false)
+  assert.equal(compareVersions('2.1.284', '2.1.287'), -1); assert.equal(runsModules('2.1.287 (Claude Code)'), true); assert.equal(runsModules('2.1.284'), false); assert.equal(runsModules('2.1.286'), true)
   const { dir, claude } = claudeHome(), env = { ...process.env, CLAUDE_CONFIG_DIR: claude, HOME: dir, SUPERLCM_CLAUDE_CLI_BIN: process.execPath }
   const other = { type: 'command', command: 'echo keep-me' }, ours = { type: 'command', command: `'/usr/local/bin/node' '${script}' 'hook'`, timeout: 15 }
   writeFileSync(join(claude, 'settings.json'), JSON.stringify({ model: 'opus', hooks: { Stop: [{ hooks: [ours, other] }], SessionEnd: [{ hooks: [ours] }] } }))

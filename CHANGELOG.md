@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+
+- The plugin module (compaction takeover and in-conversation summaries) is marked as supported from Claude Code 2.1.286, the version the Claude desktop app now bundles; checked with a real run of its bundled binary.
+
 ## 0.4.3
 
 - 本工具后台写 for Claude Code runs inside Claude Code itself when the plugin is loaded on 2.1.287+: after each turn the plugin module writes the waiting summary pieces with `$.model.complete` on the session's own login (the turn does not wait), instead of starting a separate `claude -p`. New CLI commands `summary-host`, `summary-claim`, `summary-save` and `summary-handoff` carry it; the Stop hook skips its worker while a session writes its own, and at session end, or after a failed model call, the rest goes back to the `claude -p` worker.

@@ -158,7 +158,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
   finally { store.close() }
   process.stdout.write(JSON.stringify(reply)+'\n')
 } else if (['summary-host','summary-claim','summary-save','summary-handoff'].includes(command)) {
-  // 本工具后台写 inside Claude Code (hooks/compact-mod.js, 2.1.287+): the module asks for the next piece
+  // 本工具后台写 inside Claude Code (hooks/compact-mod.js, 2.1.286+): the module asks for the next piece
   // (summary-claim), writes it with $.model.complete on the session's own login, and hands it back
   // (summary-save). summary-host marks the session at its start so the Stop hook does not also start a
   // `claude -p`; summary-handoff, at the end or after a failed call, gives the rest back to that worker.
