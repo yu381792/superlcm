@@ -1,6 +1,6 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Cross-harness conversation summaries and exact-source recall over MCP",
   "type": "module",
   "private": true,

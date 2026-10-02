@@ -159,7 +159,7 @@ test('Claude Code writes its own summaries through summary-claim / summary-save,
   store.setHarnessSetting('claude-code', 'cli', 'haiku')
   store.close()
   const env = { ...process.env, SUPERLCM_HOME: home, CLAUDE_CONFIG_DIR: claude, SUPERLCM_CLAUDE_CLI_BIN: process.execPath, SUPERLCM_SEGMENT_MESSAGES: '2' }
-  const run = (cmd, input = '') => JSON.parse(spawnSync(process.execPath, ['src/cli.js', cmd, 's3'], { input, env, encoding: 'utf8' }).stdout)
+  const run = (cmd, input = '') => { const r = spawnSync(process.execPath, ['src/cli.js', cmd, 's3'], { input, env, encoding: 'utf8' }); try { return JSON.parse(r.stdout) } catch { throw new Error(cmd + ' failed: ' + r.stderr.slice(-600)) } }
   const claim = run('summary-claim')
   assert.equal(claim.work.model, 'haiku')
   assert.match(claim.work.prompt, /^<conversation_excerpt>\n\[event 0\] user: one please/)
@@ -253,4 +253,24 @@ test('the module answers Claude Code’s precompute as well as the threshold, bu
     assert.deepEqual(out.messages.map(m => m.text), [plan.packet, 'c', 'd'], trigger)
   }
   assert.equal((await hooks.get('session.compact')($, { trigger: 'auto', agentId: 'x', messages }, native)).messages[0].text, 'native summary')
+})
+
+test('past the console’s window the module starts the compaction itself, and not before or while summaries lag', async () => {
+  const { register } = await import('../hooks/compact-mod.js')
+  const hooks = new Map(); register((event, hook) => hooks.set(event, hook))
+  const messages = ['a', 'b', 'c', 'd'].map((text, i) => ({ role: i % 2 ? 'assistant' : 'user', text }))
+  const run = (reply) => async (_, $) => {
+    let compacted = 0, reads = 0
+    $.session.compact = async () => { compacted++; return hooks.get('session.compact')($, { trigger: 'plugin', messages }, async () => ({ messages: [{ role: 'user', text: 'native' }] })) }
+    $.session.messages = async () => { reads++; return messages }
+    await hooks.get('turn.complete')($, {}, async () => ({}))
+    await new Promise(r => setTimeout(r, 700))
+    return { compacted, reads, last: $.last }
+  }
+  const make = reply => ({ plugin: { root: '.' }, session: { id: async () => 's', usage: async () => ({ context: { tokens: 310000, window: 1000000 } }) },
+    process: { run: async (argv, { stdin }) => { const cmd = argv[2]; if (cmd !== 'compact-packet') return { stdout: '{}' }; const input = JSON.parse(stdin); return { stdout: JSON.stringify(reply(input)) } } } })
+  const ready = { use: true, start: 2, packet: '<superlcm-context conversation="#x" keep="2" through="1">s</superlcm-context>' }
+  assert.deepEqual(await run()(null, make(() => ({ use: false, reason: 'below the compaction window' }))), { compacted: 0, reads: 0, last: undefined })
+  assert.deepEqual(await run()(null, make(() => ({ use: false, reason: 'the summaries lag behind' }))), { compacted: 0, reads: 1, last: undefined })
+  assert.deepEqual(await run()(null, make(() => ready)), { compacted: 1, reads: 1, last: undefined })
 })

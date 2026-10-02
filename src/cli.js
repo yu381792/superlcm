@@ -159,6 +159,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     const input=JSON.parse(await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>32e6)reject(new Error('Oversized compaction input'))});process.stdin.on('end',()=>resolve(text))}))
     const session=rest[0],src=session&&store.source(session),setting=store.takeover()
     if(!setting.enabled)reply={use:false,reason:'compaction takeover is off'}
+    else if(input.threshold&&!((input.tokens||0)>=setting.window))reply={use:false,reason:'below the compaction window'}
     else if(!src||store.isDeleted(session))reply={use:false,reason:'conversation not recorded by SuperLcm'}
     else {
       if(existsSync(src.path))store.ingest(session,src.path) // the newest turns, written since the last hook
