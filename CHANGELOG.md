@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- The Claude Code card treats the plugin as the connection: it shows the plugin version, installs or updates it through `claude plugin`, says whether the terminal and desktop-app Claude Code can run the compaction module, and cleans up the older MCP entry and settings.json hooks (backed up first, other hooks untouched).
+- Settings › Compaction is a switch and a threshold choice that apply at once, with a checklist of what the takeover needs (plugin, Claude Code version, summaries, compaction window).
+
 ## 0.4.0
 
 - 接管压缩 (Settings › Compaction, off by default): a Claude Code module (`hooks/compact-mod.js`, Claude Code 2.1.287+) answers the main conversation's compaction the lossless-claw way. The level-0 summaries that chain from the first record are replaced by the fewest layered summaries that cover them, everything newer (and at least the last two prompts) stays word for word, and no model is called. A summary gap, an unplaceable cut, a kept part over 60% of the window, a subagent or Claude Code's own precompute all hand the compaction back to Claude Code. Turning it on sets Claude Code's `autoCompactWindow` (300K by default) and remembers the earlier value; turning it off restores it. The console warns when the Claude plugin is not enabled.

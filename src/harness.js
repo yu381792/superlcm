@@ -75,10 +75,14 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     let reg={found:false},hook={status:'unsupported',events:[]},plan=null
     if(native){reg=await mcpRegistration(def.id,{env,runCommand});hook=hookInspection(def.id,env)}
     else if(def.supported&&bin){try{const {setupPreview}=await import('./setup.js');plan=await setupPreview(store,def.id,{env,runCommand});reg={found:plan.existing||plan.mcp_action==='preserve'||(plan.can_apply===false&&!!plan.blocker&&/同名/.test(plan.blocker))};hook={status:plan.hook_events_added.length?'missing':'configured',events:[]}}catch(error){reg={found:false,error:error.message}}}
+    // Claude Code: SuperLcm as a plugin is the connection; the older MCP + hooks only count without it.
+    let claude=null
+    if(def.id==='claude-code'&&bin){const cp=await import('./claude-plugin.js');const plugin=await cp.claudePlugin({env,runCommand});claude={plugin,legacy:await cp.claudeLegacy(store,{env,runCommand}),terminal_version:version?.match(/\d+\.\d+\.\d+/)?.[0]||null,desktop_version:cp.desktopClaudeVersion(env),modules_min:cp.MODULE_MIN}}
     const hookSeen=seen.find(c=>c.kind==='hook'&&c.client===def.id)?.seen_at||null
     const mcpSeen=seen.find(c=>c.kind==='mcp-self-reported'&&(def.id==='claude-code'?/claude/i:/codex/i).test(c.client)&&!c.client.includes('self-test'))?.seen_at||null
-    const capture_stale=native&&!!reg.found&&captureStale(newestTranscript(def.id,env),hookSeen)
-    return {capture_stale,node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found,configuration_matches:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir}
+    const viaPlugin=!!claude?.plugin?.enabled
+    const capture_stale=native&&(!!reg.found||viaPlugin)&&captureStale(newestTranscript(def.id,env),hookSeen)
+    return {capture_stale,node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found||viaPlugin,configuration_matches:viaPlugin?!claude.plugin.outdated:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir,...(claude?{claude}:{})}
   }))
   for(const x of store.harnessSettings())if(!rows.some(r=>r?.harness===x.harness))rows.push({harness:x.harness,label:x.harness,supported:false,detected:false,configured:false,hook:{status:'unsupported'},connection:'unverified'})
   return rows.filter(Boolean)

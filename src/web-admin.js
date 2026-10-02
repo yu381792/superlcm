@@ -13,6 +13,10 @@ function connState(h) {
   const e = h.connection_evidence, tool = toolName(h.harness)
   if (!h.supported) return { cls: 'off', badge: t('仅导入'), text: h.local_conversations ? t('暂不支持自动接入，可导入本机对话') : t('暂不支持自动接入') }
   if (!h.bin) return { cls: 'off', badge: t('未安装'), text: t('未找到 {tool} 命令行', { tool }) }
+  const c = h.claude
+  if (c?.plugin && !c.plugin.enabled) return { cls: 'warn', badge: t('已停用'), text: t('SuperLcm 插件装了，但在 Claude Code 里被停用') }
+  if (c?.plugin?.outdated) return { cls: 'warn', badge: t('需更新'), text: t('插件是 v{a}，有新版 v{b}', { a: c.plugin.version, b: c.plugin.latest }) }
+  if (c && !c.plugin) return h.configured ? { cls: 'warn', badge: t('建议改装'), text: t('正在用旧方式（MCP + 钩子）存对话；装成插件才能接管压缩') } : { cls: 'warn', badge: t('未接入'), text: t('装上 SuperLcm 插件后，新对话会自动存入') }
   if (!h.configuration_matches) return h.configured ? { cls: 'warn', badge: t('需更新'), text: t('点「接入」更新一次，以后 {tool} 升级不会影响 SuperLcm', { tool }) } : { cls: 'warn', badge: t('未接入'), text: t('接入后，新对话会自动存入 SuperLcm') }
   if (h.capture_stale) return { cls: 'warn', badge: t('没在存'), text: h.harness === 'codex' ? t('最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。点「检查接入」可以一键允许') : t('最近的 {tool} 对话没有存进来。点「检查接入」看看哪里不对', { tool }) }
   if (h.node_borrowed) return { cls: 'warn', badge: t('已接入'), text: t('借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「接入」即可恢复', { owner: h.node_borrowed }) }
@@ -27,7 +31,7 @@ function connState(h) {
 /* ---------- connect view ---------- */
 async function loadHarnesses() {
   state.harnesses = (await api('/api/harnesses')).harnesses
-  renderTools(); renderStatus()
+  renderTools(); renderStatus(); renderTakeover(admin.settings?.takeover)
 }
 function renderStatus() {
   const ready = state.harnesses.filter(h => h.configuration_matches)
@@ -37,16 +41,22 @@ function renderStatus() {
 function renderTools() {
   $('#tools').innerHTML = state.harnesses.map(h => {
     const s = connState(h), count = state.groups?.find(g => g.harness === h.harness)?.n || 0
-    const buttons = (h.supported ? '<button type="button" class="btn' + (h.configuration_matches ? '' : ' primary') + '" data-setup="' + esc(h.harness) + '"' + (h.bin ? '' : ' disabled') + '>' + (h.configuration_matches ? t('检查接入') : t('接入')) + '</button>' : '') +
+    const plugin = h.claude?.plugin
+    const buttons = (h.claude ? (!plugin ? '<button type="button" class="btn primary" data-plugin="install">' + t('安装插件') + '</button>' : plugin.outdated ? '<button type="button" class="btn primary" data-plugin="update">' + t('更新插件') + '</button>' : '<button type="button" class="btn" data-recheck>' + t('检查接入') + '</button>')
+      : h.supported ? '<button type="button" class="btn' + (h.configuration_matches ? '' : ' primary') + '" data-setup="' + esc(h.harness) + '"' + (h.bin ? '' : ' disabled') + '>' + (h.configuration_matches ? t('检查接入') : t('接入')) + '</button>' : '') +
       (h.local_conversations && h.detected ? '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + t('导入历史对话') + '</button>' : '')
     const rows = [[t('状态'), esc(s.text)], [t('已存对话'), count ? t('{n} 个', { n: fmt(count) }) : '<span class="muted">' + t('暂无') + '</span>']]
     rows.push(...writerRows(h))
+    if (h.claude) rows.push(...claudeRows(h))
     return '<article class="tcard' + (h.detected ? '' : ' dim') + '"><header class="tc-h">' + mark(h.harness, 'lg') + '<div class="tc-name"><div class="tn">' + esc(toolName(h.harness)) + '</div>' + (h.detected ? '' : '<div class="tv">' + t('本机未检测到') + '</div>') + '</div><span class="state ' + s.cls + '">' + esc(s.badge) + '</span></header>' +
       '<dl class="tc-kv">' + rows.map(([k, v]) => '<div><dt>' + k + '</dt><dd>' + v + '</dd></div>').join('') + '</dl>' +
       (buttons ? '<footer class="tc-f">' + buttons + '</footer>' : '') + '</article>'
   }).join('') || '<div class="empty">' + t('本机未检测到支持的工具。') + '</div>'
   for (const b of $('#tools').querySelectorAll('[data-setup]')) b.onclick = () => openSetup(b.dataset.setup)
   for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
+  for (const b of $('#tools').querySelectorAll('[data-plugin]')) b.onclick = () => pluginAct(b.dataset.plugin, b)
+  for (const b of $('#tools').querySelectorAll('[data-recheck]')) b.onclick = () => act(async () => { await loadHarnesses(); toast(t('已重新检查')) }, b)
+  for (const b of $('#tools').querySelectorAll('[data-goto-compact]')) b.onclick = () => { show('settings'); settingsSection('compact') }
   for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => {
     const harness = select.dataset.tool, x = admin.settings.settings.find(y => y.harness === harness), models = admin.settings.api_models
     // Custom API picks one of the models added in Settings; with none yet, go add one first.
@@ -70,6 +80,28 @@ function renderTools() {
       await loadSettings(); toast(t('已保存'))
     }, select)
   }
+}
+
+// Claude Code connects as a plugin: how it is connected, whether compaction can be taken over, and leftovers.
+const kfmt = n => Math.round(n / 1000) + 'K'
+function moduleSupport(c) {
+  const ok = v => v && c.modules_min && v.localeCompare(c.modules_min, undefined, { numeric: true }) >= 0
+  return [c.terminal_version && [t('终端'), c.terminal_version, ok(c.terminal_version)], c.desktop_version && [t('桌面版'), c.desktop_version, ok(c.desktop_version)]].filter(Boolean)
+}
+function claudeRows(h) {
+  const c = h.claude, rows = []
+  rows.push([t('接入方式'), c.plugin ? t('Claude 插件 · v{v}', { v: esc(c.plugin.version || '?') }) : h.configured ? t('旧方式：MCP + 钩子') : '<span class="muted">' + t('尚未安装插件') + '</span>'])
+  const tk = admin.settings?.takeover
+  if (tk) {
+    const where = moduleSupport(c).map(([name, v, ok]) => '<span class="' + (ok ? 'ok' : 'no') + '">' + name + ' ' + esc(v) + (ok ? '' : ' · ' + t('待更新')) + '</span>').join('')
+    rows.push([t('接管压缩'), '<div class="tk-cell"><button type="button" class="link" data-goto-compact>' + (tk.enabled ? t('已打开 · {w}', { w: kfmt(tk.window) }) : t('未打开')) + '</button>' + (tk.enabled && where ? '<span class="tk-where">' + where + '</span>' : '') + '</div>'])
+  }
+  if (c.plugin?.enabled && (c.legacy?.hooks || c.legacy?.mcp)) rows.push([t('旧接入'), '<span class="muted">' + t('还留着旧的钩子/MCP 登记，已自动停用') + '</span> <button type="button" class="link" data-plugin="cleanup">' + t('清理') + '</button>'])
+  return rows
+}
+async function pluginAct(action, button) {
+  const done = { install: t('插件已安装，新开的 Claude Code 对话生效'), update: t('插件已更新，新开的 Claude Code 对话生效'), cleanup: t('旧接入已清理，原配置已备份') }
+  await act(async () => { await api('/api/claude-plugin', { action }); await loadHarnesses(); toast(done[action]) }, button)
 }
 
 // Setup: preview what changes → user confirms → write config → check it loads.
@@ -264,23 +296,30 @@ function renderTuning(tuning) {
   const big = n => LANG === 'zh' ? (n >= 10000 ? (n / 10000).toFixed(n % 10000 ? 1 : 0) + ' 万' : fmt(n)) : (n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + 'k' : fmt(n))
   $('#granEst').innerHTML = t('按当前设置：每段第 1 层摘要约覆盖 {a} 字原文，第 2 层约 {b} 字，第 3 层约 {c} 字。一段 100 万字的长对话大约产生 {n} 段第 1 层摘要。', { a: '<b>' + big(perL1) + '</b>', b: '<b>' + big(perL2) + '</b>', c: '<b>' + big(perL3) + '</b>', n: Math.ceil(1e6 / perL1) })
 }
+// 压缩 panel: changes apply at once; the checks say what the takeover needs on this computer.
 function renderTakeover(x) {
   if (!x) return
   $('#takeoverOn').checked = x.enabled
-  const select = $('#takeoverWindow')
-  if (![...select.options].some(o => o.value === String(x.window))) select.add(new Option(Math.round(x.window / 1000) + 'K · ' + t('当前'), String(x.window)))
-  select.value = String(x.window)
-  const k = n => Math.round(n / 1000) + 'K'
-  $('#takeoverNote').textContent = (x.enabled ? t('已打开。Claude Code 的自动压缩窗口现在是 {w}，上下文接近它时开始压缩；模型窗口更小时按模型窗口算。', { w: x.claude_window ? k(x.claude_window) : t('默认') })
-    : t('已关闭。打开后会把 Claude Code 设置里的自动压缩窗口（autoCompactWindow）设成所选大小，关闭时恢复原来的值（现在是 {w}）。', { w: x.claude_window ? k(x.claude_window) : t('默认') })) + ' ' + t('改动在新开的 Claude Code 对话里生效。') +
-    (x.plugin ? '' : ' ' + t('注意：接管要靠 SuperLcm 的 Claude 插件，现在 Claude Code 里没有启用它，打开开关只会改变压缩时机，压缩仍由 Claude Code 自己做。'))
+  for (const b of $('#takeoverWindow').querySelectorAll('[data-w]')) b.setAttribute('aria-checked', String(Number(b.dataset.w) === x.window))
+  const c = state.harnesses?.find(h => h.harness === 'claude-code')?.claude, items = []
+  if (!c) items.push(['wait', t('正在检查 Claude Code…')])
+  else {
+    items.push(c.plugin?.enabled ? ['ok', t('SuperLcm 插件已启用 · v{v}', { v: esc(c.plugin.version) })] : ['no', t('还没装 SuperLcm 插件，接管要靠它') + ' <button type="button" class="link" data-goto-connect>' + t('去安装') + '</button>'])
+    for (const [name, v, ok] of moduleSupport(c)) items.push(ok ? ['ok', t('{name} Claude Code {v} 支持接管', { name, v: esc(v) })] : ['no', t('{name} Claude Code {v} 还不支持，要 {min} 或更新；它更新后自动生效', { name, v: esc(v), min: c.modules_min })])
+  }
+  const mode = admin.settings?.settings.find(s => s.harness === 'claude-code')?.mode
+  items.push(mode === 'off' ? ['no', t('Claude Code 的摘要是关闭的，没有摘要就只能交回 Claude Code 压缩')] : ['ok', t('Claude Code 的摘要：{m}', { m: esc(writerLabel(mode || 'agent')) })])
+  items.push(['info', x.enabled ? t('Claude Code 的压缩窗口已设为 {w}，关闭后恢复原来的值', { w: kfmt(x.claude_window || x.window) }) : t('关闭中，Claude Code 的压缩窗口保持 {w}', { w: x.claude_window ? kfmt(x.claude_window) : t('默认') })])
+  $('#takeoverChecks').innerHTML = items.map(([cls, text]) => '<li class="' + cls + '">' + text + '</li>').join('')
+  $('#takeoverChecks').querySelector('[data-goto-connect]')?.addEventListener('click', () => show('connect'))
 }
-$('#saveTakeover').onclick = () => act(async () => {
-  const r = await api('/api/takeover', { enabled: $('#takeoverOn').checked, window: Number($('#takeoverWindow').value) })
-  admin.settings.takeover = r; renderTakeover(r)
-  $('#takeoverSaved').textContent = t('已保存')
-}, $('#saveTakeover'))
-for (const id of ['#takeoverOn', '#takeoverWindow']) $(id).onchange = () => { $('#takeoverSaved').textContent = t('有未保存的修改') }
+const saveTakeover = (change, control) => act(async () => {
+  const cur = admin.settings.takeover, r = await api('/api/takeover', { enabled: cur.enabled, window: cur.window, ...change })
+  admin.settings.takeover = r; renderTakeover(r); if (state.harnesses) renderTools()
+  toast(r.enabled ? t('已打开 · 门槛 {w}，新开的 Claude Code 对话生效', { w: kfmt(r.window) }) : t('已关闭，Claude Code 的压缩窗口已恢复'))
+}, control)
+$('#takeoverOn').onchange = e => saveTakeover({ enabled: e.target.checked }, e.target)
+for (const b of $('#takeoverWindow').querySelectorAll('[data-w]')) b.onclick = () => saveTakeover({ window: Number(b.dataset.w) }, b)
 const pickedTuning = () => ({ target_chars: Number($('#segSize').value), fanout: Number($('#fanout').value) })
 for (const id of ['#segSize', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 

@@ -94,14 +94,15 @@ export function page(nonce) {
         <div class="actions"><button type="button" class="btn primary" id="saveWriter">保存</button><span class="saved" id="writerSaved" aria-live="polite"></span></div>
       </div>
       <div class="panel" data-sec="compact" hidden>
-        <h2>接管压缩</h2>
-        <p class="desc">打开后，Claude Code 的对话到了门槛要压缩时，由 SuperLcm 接手：已经写好的摘要替换掉旧的部分，最近的对话一字不改地保留，完整原文随时能用 lcm_read 调回。替换时不再调用模型，几乎没有等待。摘要还没跟上，或者出了任何意外，就照旧交给 Claude Code 自己压缩。需要 Claude Code 2.1.287 或更新版本，只管主对话，子代理照旧。</p>
-        <div class="fields">
-          <label class="field check"><input type="checkbox" id="takeoverOn"> 由 SuperLcm 接管 Claude Code 的压缩</label>
-          <label class="field">上下文到多少开始压缩<select id="takeoverWindow"><option value="200000">200K</option><option value="300000">300K · 推荐</option><option value="500000">500K</option><option value="800000">800K</option></select></label>
-        </div>
-        <div class="notice calm"><span id="takeoverNote"></span></div>
-        <div class="actions"><button type="button" class="btn primary" id="saveTakeover">保存</button><span class="saved" id="takeoverSaved" aria-live="polite"></span></div>
+        <h2>压缩</h2>
+        <p class="desc">Claude Code 的对话太长时会压缩。交给 SuperLcm 后，旧的部分换成后台写好的摘要，最近几轮原样留下，原文随时能用 lcm_read 调回。</p>
+        <label class="toggle-row"><span><b>由 SuperLcm 接管压缩</b><span>到门槛时直接换上现成的摘要，不调用模型，几乎不用等</span></span><span class="switch"><input type="checkbox" id="takeoverOn" role="switch"><i></i></span></label>
+        <h3>压缩门槛</h3>
+        <p class="desc">上下文到这个大小开始压缩；模型窗口更小时按模型窗口算。</p>
+        <div class="choice" id="takeoverWindow" role="radiogroup" aria-label="压缩门槛"><button type="button" role="radio" data-w="200000">200K</button><button type="button" role="radio" data-w="300000">300K<small>推荐</small></button><button type="button" role="radio" data-w="500000">500K</button><button type="button" role="radio" data-w="800000">800K</button></div>
+        <h3>运行条件</h3>
+        <ul class="checks" id="takeoverChecks"></ul>
+        <details class="how"><summary>它怎么工作</summary><p>SuperLcm 平时就在后台把对话写成分层摘要，但不动 Claude Code 的上下文。到了门槛，Claude Code 要压缩时，SuperLcm 把已经被摘要覆盖的旧对话换成这些摘要，没覆盖到的部分和最近两轮一字不改地保留。</p><p>摘要还没跟上、对不上号、换完仍然太大，或者是子代理的对话，都照旧交给 Claude Code 自己压缩，对话不会因此卡住。打开时会把 Claude Code 设置里的 autoCompactWindow 改成所选门槛，关闭时恢复原来的值。</p></details>
       </div>
       <div class="panel" data-sec="mcp" hidden>
         <h2>AI 可用的 MCP 工具</h2>

@@ -71,13 +71,17 @@ try:
   page.locator('.nav [data-view="connect"]').click();page.wait_for_selector('#tools .tcard')
   expected_failure[0]=True
   page.route('**/api/setup-preview',lambda route:route.fulfill(status=503,content_type='application/json',body=json.dumps({'error':'fixture config unavailable'})))
-  page.locator('[data-setup="claude-code"]').click();page.wait_for_selector('.modal .notice.bad:has-text("fixture config unavailable")')
+  page.locator('[data-setup="codex"]').click();page.wait_for_selector('.modal .notice.bad:has-text("fixture config unavailable")')
   assert page.locator('#applySetup').is_disabled()
   page.locator('.modal [data-close]').first.click();page.unroute('**/api/setup-preview');expected_failure[0]=False
   page.locator('#tools [data-import="codex"]').click();page.wait_for_selector('.local-row')
   page.locator('.local-row',has_text='待导入本地记录').locator('button').click()
   page.wait_for_selector('.local-row:has-text("待导入本地记录") [data-open]');page.locator('.modal [data-close]').first.click()
-  for harness in ['codex','claude-code','hermes','pi']:
+  # Claude Code connects as a plugin: the card installs it through the real `claude plugin` CLI (temporary config).
+  if page.locator('#tools [data-plugin="install"]').count():
+   with page.expect_response(lambda r:'/api/claude-plugin' in r.url,timeout=120000) as inst:page.locator('#tools [data-plugin="install"]').click()
+   assert inst.value.status==200,inst.value.text();page.wait_for_selector('#tools .tcard:has-text("Claude 插件 · v")',timeout=60000);print('setup claude-code plugin installed',flush=True)
+  for harness in ['codex','hermes','pi']:
    if not page.locator('[data-setup="'+harness+'"]:not([disabled])').count():print('skip',harness,'(not installed)');continue
    page.locator('[data-setup="'+harness+'"]').click()
    page.wait_for_function("() => document.getElementById('applySetup') && (!document.getElementById('applySetup').disabled || document.querySelector('.modal .notice.bad'))",timeout=30000)
@@ -104,14 +108,16 @@ try:
   page.locator('.nav [data-view="settings"]').click()
   assert page.locator('#setNav button').all_inner_texts()==['外观','存储','摘要','压缩','MCP 工具']
   # 接管压缩: off by default; turning it on sets the fixture's Claude compaction window, off restores it.
-  page.locator('#setNav [data-sec="compact"]').click();page.wait_for_selector('#takeoverNote:has-text("已关闭")')
-  assert page.locator('#takeoverWindow').input_value()=='300000' and not page.locator('#takeoverOn').is_checked()
-  page.check('#takeoverOn');page.wait_for_selector('#takeoverSaved:has-text("未保存")')
-  with page.expect_response(lambda r:'/api/takeover' in r.url) as took:page.click('#saveTakeover')
-  assert took.value.status==200 and took.value.json()['claude_window']==300000;page.wait_for_selector('#takeoverNote:has-text("已打开")')
-  page.uncheck('#takeoverOn')
-  with page.expect_response(lambda r:'/api/takeover' in r.url) as off:page.click('#saveTakeover')
-  assert off.value.status==200 and off.value.json()['claude_window'] is None;page.wait_for_selector('#takeoverNote:has-text("已关闭")')
+  # 压缩: off by default; the switch and the threshold apply at once (fixture Claude config only).
+  page.locator('#setNav [data-sec="compact"]').click();page.wait_for_selector('#takeoverChecks li.ok:has-text("插件已启用")')
+  assert page.locator('#takeoverWindow [aria-checked="true"]').inner_text().startswith('300K') and not page.locator('#takeoverOn').is_checked()
+  with page.expect_response(lambda r:'/api/takeover' in r.url) as took:page.locator('.toggle-row').click()
+  assert took.value.status==200 and took.value.json()['claude_window']==300000;page.wait_for_selector('#takeoverChecks li:has-text("已设为 300K")')
+  with page.expect_response(lambda r:'/api/takeover' in r.url) as wider:page.locator('#takeoverWindow [data-w="500000"]').click()
+  assert wider.value.json()['claude_window']==500000 and page.locator('#takeoverWindow [aria-checked="true"]').inner_text()=='500K'
+  page.screenshot(path=str(shots/'superlcm-compaction.png'))
+  with page.expect_response(lambda r:'/api/takeover' in r.url) as off:page.locator('.toggle-row').click()
+  assert off.value.json()['claude_window'] is None and not page.locator('#takeoverOn').is_checked()
   page.locator('#setNav [data-sec="summary"]').click()
   # Custom API models are added once here (a local address needs no key), then picked on a tool card.
   page.wait_for_selector('#apiModels:has-text("还没有添加模型")');page.click('#amAdd')

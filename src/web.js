@@ -69,6 +69,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'POST /api/tuning': async req => store.setTuning(await body(req)),
     'GET /api/connections': () => ({ connections: definitions.map(h => ({ harness: h.id, evidence: connectionEvidence(store, h.id) })) }),
     'GET /api/harnesses': async () => ({ harnesses: await discovery(store, { env }) }),
+    // Claude card: install / update the SuperLcm plugin, or clean up the older MCP + hooks connection.
+    'POST /api/claude-plugin': async req => { const x = await body(req); const { pluginAction } = await import('./claude-plugin.js'); return pluginAction(store, x.action, { env }) },
     'GET /api/local-conversations': url => localConversations(store, url.searchParams.get('harness'), { env, offset: int(url.searchParams.get('offset'), 0) }),
     'POST /api/index-local': async req => { const x = await body(req); return indexLocalConversation(store, x.harness, x.key, { env }) },
     // Opens the tool itself so its own startup screen asks the user to approve new hooks; SuperLcm never approves them.

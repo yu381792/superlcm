@@ -119,3 +119,23 @@ test('compact-packet answers from the recorded conversation, and declines while 
   assert.equal(plan.start, 2)
   assert.match(plan.packet, /records="0-1">\ndid one/)
 })
+
+test('the Claude card reads the plugin and cleans up only SuperLcm’s own old hooks', async () => {
+  const { pluginAction, claudePlugin, compareVersions, runsModules, PACKAGE_VERSION } = await import('../src/claude-plugin.js')
+  const { script } = await import('../src/harness.js')
+  assert.equal(compareVersions('2.1.284', '2.1.287'), -1); assert.equal(runsModules('2.1.287 (Claude Code)'), true); assert.equal(runsModules('2.1.284'), false)
+  const { dir, claude } = claudeHome(), env = { ...process.env, CLAUDE_CONFIG_DIR: claude, HOME: dir, SUPERLCM_CLAUDE_CLI_BIN: process.execPath }
+  const other = { type: 'command', command: 'echo keep-me' }, ours = { type: 'command', command: `'/usr/local/bin/node' '${script}' 'hook'`, timeout: 15 }
+  writeFileSync(join(claude, 'settings.json'), JSON.stringify({ model: 'opus', hooks: { Stop: [{ hooks: [ours, other] }], SessionEnd: [{ hooks: [ours] }] } }))
+  const calls = [], plugins = [{ id: 'superlcm@superlcm', version: '0.0.1', scope: 'user', enabled: true }]
+  const runCommand = async (bin, args) => { calls.push(args.join(' ')); if (args[0] === 'plugin' && args[1] === 'list') return { stdout: JSON.stringify(plugins) }; return { stdout: '' } }
+  assert.deepEqual(await claudePlugin({ env, runCommand }), { id: 'superlcm@superlcm', version: '0.0.1', enabled: true, outdated: compareVersions('0.0.1', PACKAGE_VERSION) < 0, latest: PACKAGE_VERSION })
+  const store = new ClaudeStore(join(dir, 'home'))
+  const r = await pluginAction(store, 'cleanup', { env, runCommand })
+  assert.equal(r.backups.length, 1)
+  assert.deepEqual(JSON.parse(readFileSync(join(claude, 'settings.json'), 'utf8')), { model: 'opus', hooks: { Stop: [{ hooks: [other] }] } })
+  assert.deepEqual(r.legacy, { mcp: false, hooks: false })
+  await pluginAction(store, 'update', { env, runCommand })
+  assert.deepEqual(calls.filter(c => !c.startsWith('plugin list')), ['plugin marketplace update superlcm', 'plugin update superlcm@superlcm'])
+  store.close()
+})

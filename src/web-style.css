@@ -318,3 +318,36 @@ th { font-weight: 500; color: var(--ink3); font-size: 12px }
 .am-empty { margin: 0 }
 .am-help { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--ink3) }
 .am-note { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere }
+
+/* 压缩 panel: an on/off row, a threshold choice and a checklist of what the takeover needs. */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); cursor: pointer }
+.toggle-row > span:first-child { display: grid; gap: 2px; min-width: 0 }
+.toggle-row b { font-weight: 600; font-size: 14px }
+.toggle-row b + span { font-size: 12.5px; color: var(--ink2) }
+.switch { position: relative; flex: none; width: 42px; height: 24px }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer }
+.switch i { position: absolute; inset: 0; border-radius: 12px; background: var(--line); transition: background .15s; pointer-events: none }
+.switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / .25); transition: transform .15s }
+.switch input:checked + i { background: var(--accent) }
+.switch input:checked + i::after { transform: translateX(18px) }
+.switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px }
+.choice { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--bg) }
+.choice button { border: 0; border-left: 1px solid var(--line); background: none; padding: 9px 6px; font: 500 13px/1.3 var(--sans); color: var(--ink2); display: grid; justify-items: center; gap: 1px; cursor: pointer; font-variant-numeric: tabular-nums }
+.choice button:first-child { border-left: 0 }
+.choice button small { font-size: 11px; font-weight: 400; color: var(--ink3) }
+.choice button:hover { background: var(--hover); color: var(--ink) }
+.choice button[aria-checked="true"] { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent) }
+.choice button[aria-checked="true"] small { color: var(--accent) }
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; color: var(--ink2) }
+.checks li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start }
+.checks li::before { content: ""; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%; background: var(--sunk) center / 10px no-repeat }
+.checks li.ok::before { background-color: var(--good-soft); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 5.2l2 2L8 3' fill='none' stroke='%232F7A4F' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") }
+.checks li.no::before { background-color: var(--warn-soft); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M5 2.2v3.4M5 7.6v.2' fill='none' stroke='%239A6210' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") }
+.checks li.info::before { background-color: var(--sunk); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Ccircle cx='5' cy='5' r='1.4' fill='%238E8B85'/%3E%3C/svg%3E") }
+.how { font-size: 13px; color: var(--ink2); border-top: 1px solid var(--line); padding-top: 12px }
+.how summary { cursor: pointer; color: var(--ink); font-weight: 500 }
+.how p { margin: 8px 0 0; max-width: 68ch }
+.tk-cell { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline }
+.tk-where { display: inline-flex; gap: 8px; font-size: 12px }
+.tk-where .ok { color: var(--good) }
+.tk-where .no { color: var(--warn) }
