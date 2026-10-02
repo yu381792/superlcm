@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore } from '../src/store.js'
 import { planCompaction, coveredThrough, frontier, cutIndex } from '../src/compaction.js'
-import { applyTakeover } from '../src/takeover.js'
+import { applyTakeover, claudePctFor, claudeWindowFor } from '../src/takeover.js'
 
 const ev = (ordinal, preview) => ({ ordinal, preview })
 const msg = (role, text, extra = {}) => ({ role, text, ...extra })
@@ -85,6 +85,14 @@ test('a SuperLcm packet and the kept messages Claude Code writes again are not i
   writeFileSync(pasted, line('user', '<superlcm-context conversation="#x" keep="2" through="0">example</superlcm-context>') + line('user', 'unique requirement') + line('assistant', [{ type: 'text', text: 'ok' }]))
   store.ingest('s2', pasted)
   assert.deepEqual(store.eventRows('s2').map(e => e.preview.slice(0, 18)), ['user: <superlcm-co', 'user: unique requi', 'assistant: ok'])
+  // A packet Claude Code prepared ahead of time comes with the messages written since appended after its
+  // kept ones: those are copies too, and the first new message is indexed again.
+  const early = join(project, 's4.jsonl')
+  writeFileSync(early, line('user', 'a1') + line('assistant', [{ type: 'text', text: 'b1' }]) + line('user', 'a2') + line('assistant', [{ type: 'text', text: 'b2' }]) + line('user', 'late') + line('assistant', [{ type: 'text', text: 'late done' }]) +
+    JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' + line('user', '<superlcm-context conversation="#x" keep="2" through="1">s</superlcm-context>') +
+    line('user', 'a2') + line('assistant', [{ type: 'text', text: 'b2' }]) + line('user', 'late') + line('assistant', [{ type: 'text', text: 'late done' }]) + line('user', 'brand new'))
+  store.ingest('s4', early)
+  assert.deepEqual(store.eventRows('s4').slice(6).map(e => e.preview), ['', '', '', '', '', '', 'user: brand new'])
   store.close()
 })
 
@@ -131,6 +139,25 @@ test('turning the takeover on makes Claude Code compact at the chosen size, and 
   store.db.prepare('UPDATE takeover_settings SET enabled=1,window=60000,keep_tokens=0,previous=? WHERE id=1').run(JSON.stringify({ window: null, env: null, pct: null }))
   assert.equal(applyTakeover(store, { enabled: false }, env).enabled, false)
   assert.deepEqual(read(), {})
+  // The console sends the stored sizes back with every change; old ones are brought inside the limits too.
+  writeFileSync(file, JSON.stringify({ autoCompactWindow: 500000 }))
+  store.db.prepare('UPDATE takeover_settings SET enabled=1,window=60000,keep_tokens=0,previous=? WHERE id=1').run(JSON.stringify({ window: 500000, env: null, pct: null }))
+  assert.equal(applyTakeover(store, { enabled: false, window: 60000, keep: 0 }, env).enabled, false)
+  assert.deepEqual(read(), { autoCompactWindow: 500000 })
+  // If Claude's settings cannot be written, an old off setting stays off (not on in name only).
+  store.db.prepare('UPDATE takeover_settings SET enabled=0,window=60000,keep_tokens=0,previous=NULL WHERE id=1').run()
+  writeFileSync(file, '[]')
+  assert.throws(() => applyTakeover(store, { enabled: true }, env), /not a JSON object/)
+  assert.equal(store.takeover().enabled, false)
+  // A lower output cap keeps less for output; the start still lands on the size.
+  writeFileSync(file, JSON.stringify({ env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' } }))
+  applyTakeover(store, { enabled: true, window: 300000 }, env)
+  { const now = read(), E = 400000 - 8192; assert.equal(Math.floor(E * Number(now.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) / 100), 300000) }
+  applyTakeover(store, { enabled: false }, env)
+  assert.deepEqual(read(), { env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' } })
+  // Floating point never lands a token short, for any size.
+  for (let w = 100000; w <= 950000; w += 37) { const E = claudeWindowFor(w) - 20000; assert.ok(Math.floor(E * claudePctFor(w) / 100) >= w, String(w)) }
+  for (const w of [310625]) { const E = claudeWindowFor(w) - 20000; assert.ok(Math.floor(E * claudePctFor(w) / 100) >= w) }
   assert.throws(() => applyTakeover(store, { enabled: true, window: 10 }, env))
   assert.throws(() => applyTakeover(store, { enabled: true, window: 960000 }, env))
   assert.throws(() => applyTakeover(store, { enabled: true, window: 300000, keep: 1000 }, env))

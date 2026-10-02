@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.17
+
+Fixes from the second review of 0.4.14–0.4.15.
+
+- Turning the takeover off from the console with sizes an older version allowed (say 60K) no longer restores Claude Code's settings while the takeover stays on; the console sends the stored sizes back, and those are now brought inside the limits too. A failed turn-on of such an old setting rolls back to off instead of failing the rollback.
+- The compaction start accounts for a lower `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (Claude Code keeps min(output cap, 20K) for output), and the percentage is raised where floating point would land a token short, so the start is never below the chosen size.
+- A packet Claude Code prepared ahead of time is swapped in with the messages written since appended after its kept ones; those copies are no longer indexed and summarized a second time.
+- The console's history list accepts transcripts up to 4 GiB as well (it still said 256 MiB).
+
 ## 0.4.16
 
 - In-conversation summaries (本工具后台写 with the plugin) now work through the whole waiting backlog in one background run instead of 8 pieces per turn, so a long conversation that was never summarized catches up within the hour rather than over dozens of turns. Turns never wait for it.

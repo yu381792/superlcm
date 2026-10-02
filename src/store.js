@@ -10,7 +10,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
-const maxFile = 4 * 1024 * 1024 * 1024 // read in 64 KiB pieces, so the size costs disk (the private copy), not memory
+export const maxFile = 4 * 1024 * 1024 * 1024 // read in 64 KiB pieces, so the size costs disk (the private copy), not memory
 // Preserve the existing index path; both Claude and Codex must point at the same home.
 export const home = () => resolve(process.env.SUPERLCM_HOME || process.env.SUPERLCM_CLAUDE_HOME || join(homedir(), '.superlcm-claude'))
 function ensurePrivate(path) { mkdirSync(path, { recursive: true, mode: 0o700 }) }
@@ -534,9 +534,15 @@ export class ClaudeStore {
       const message = record?.type === 'user' || record?.type === 'assistant'
       const packet = copies === -1 && message && /^user: <superlcm-context [^>]*keep="(\d+)"/.exec(preview)
       if (record?.type === 'system' && record.subtype === 'compact_boundary') setCopies(-1)
-      else if (packet) { preview=''; setCopies(Number(packet[1])) }
+      else if (packet) { preview=''; setCopies(Number(packet[1]) || -2) }
       else if (copies === -1 && message) setCopies(0)
-      else if (copies > 0 && message) { preview=''; setCopies(copies - 1) }
+      else if (copies > 0 && message) { preview=''; setCopies(copies > 1 ? copies - 1 : -2) }
+      // A packet prepared ahead of time (precompute) is swapped in with the messages written since appended
+      // after its kept ones, so `keep` undercounts them: what still repeats a recent recorded message is a copy too.
+      else if (copies === -2 && message) {
+        if (preview && this.db.prepare('SELECT 1 FROM events WHERE session=? AND ordinal>=? AND preview=? LIMIT 1').get(session, ordinal - 20000, preview)) preview=''
+        else if (preview) setCopies(0)
+      }
       this.db.prepare('INSERT INTO events VALUES(?,?,?,?,?,?)').run(session, ordinal, start, end, hash(raw), preview)
       this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
       this.db.prepare("UPDATE sources SET offset=?,status='ok',updated_ms=? WHERE session=?").run(end, Date.now(), session)

@@ -2,7 +2,7 @@
 // plugin module answers it with SuperLcm's summaries (hooks/compact-mod.js). Claude Code reads its window
 // from env CLAUDE_CODE_AUTO_COMPACT_WINDOW before settings autoCompactWindow (the desktop app passes on only
 // the env), clamps it to [100K, 1M] and to the model's window, and starts compacting at
-// min(E * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE / 100, E - 13K), E being the window less 20K kept for output. So the
+// min(E * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE / 100, E - 13K), E being the window less what is kept for output (20K, or less with a lower output cap). So the
 // window is set 100K above the chosen size (the context it shows stays roomy) and the percentage puts the
 // start at the size itself. Whatever these three were before is remembered and restored when it is turned
 // off; only these keys are touched, with an atomic rewrite.
@@ -31,8 +31,20 @@ export function claudeCompactWindow(env = process.env) {
 const ENV_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', PCT_KEY = 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'
 export const HEADROOM = 100000, OUTPUT_RESERVE = 20000
 export const claudeWindowFor = window => Math.min(window + HEADROOM, 1000000)
-// The percentage of the window less its output reserve that lands on `window` (rounded up, so not below it).
-export const claudePctFor = window => Math.ceil(window * 1e6 / (claudeWindowFor(window) - OUTPUT_RESERVE)) / 1e4
+// Claude Code keeps min(max output tokens, 20K) of the window for output; a lower CLAUDE_CODE_MAX_OUTPUT_TOKENS
+// (in settings env or the environment) keeps less.
+export function outputReserve(settings = {}, env = process.env) {
+  const n = Number(settings.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? env.CLAUDE_CODE_MAX_OUTPUT_TOKENS)
+  return Number.isSafeInteger(n) && n > 0 ? Math.min(n, OUTPUT_RESERVE) : OUTPUT_RESERVE
+}
+// The percentage (4 decimals, as Claude Code reads it) at which Claude Code starts compacting at `window`:
+// rounded up, then raised a step at a time where floating point would still land a token short.
+export function claudePctFor(window, reserve = OUTPUT_RESERVE) {
+  const e = claudeWindowFor(window) - reserve
+  let pct = Math.ceil(window * 1e6 / e) / 1e4
+  while (Math.floor(e * pct / 100) < window) pct = Math.round(pct * 1e4 + 1) / 1e4
+  return pct
+}
 // What to restore later: Claude Code's own values of the keys this version sets. A key missing from a record
 // written by an older version was not touched by it, so it is left as it is.
 function remembered(previous) {
@@ -52,8 +64,11 @@ function withValues(settings, values) {
 const clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v))
 export function applyTakeover(store, { enabled, window, keep }, env = process.env) {
   const current = store.takeover(), file = settingsFile(env), settings = readSettings(file)
-  // Sizes an older version allowed are brought inside today's limits rather than refused.
-  window = window ?? clamp(current.window, takeoverLimits.window); keep = keep ?? clamp(current.keep, takeoverLimits.keep)
+  // Sizes an older version allowed are brought inside today's limits rather than refused, also when the
+  // console sends the stored value back unchanged.
+  const fit = (value, stored, limits) => value == null || value === stored ? clamp(stored, limits) : value
+  window = fit(window, current.window, takeoverLimits.window); keep = fit(keep, current.keep, takeoverLimits.keep)
+  const restore = () => store.setTakeover({ ...current, window: clamp(current.window, takeoverLimits.window), keep: clamp(current.keep, takeoverLimits.keep) })
   if (enabled) {
     // Claude Code's own values are remembered when turning on, so changing the size keeps the originals; a
     // key an older version did not remember is taken now, before this version changes it.
@@ -61,9 +76,9 @@ export function applyTakeover(store, { enabled, window, keep }, env = process.en
     store.setTakeover({ enabled: true, window, keep, previous })
     // If Claude's settings cannot be written, the takeover stays as it was rather than on in name only.
     try {
-      const now = readSettings(file), host = claudeWindowFor(window), next = withValues(now, { window: host, env: host, pct: claudePctFor(window) })
+      const now = readSettings(file), host = claudeWindowFor(window), next = withValues(now, { window: host, env: host, pct: claudePctFor(window, outputReserve(now, env)) })
       if (JSON.stringify(next) !== JSON.stringify(now)) writeSettings(file, next)
-    } catch (error) { store.setTakeover(current); throw error }
+    } catch (error) { restore(); throw error }
   } else {
     if (current.enabled) {
       const now = readSettings(file), next = withValues(now, remembered(current.previous))

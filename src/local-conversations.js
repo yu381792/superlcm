@@ -4,6 +4,7 @@ import { capturePi } from './pi.js'
 import { readdirSync, statSync, realpathSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
 import { join, relative, isAbsolute, sep, basename } from 'node:path'
 import { createHash } from 'node:crypto'
+import { maxFile } from './store.js'
 import { configFiles } from './harness.js'
 import { codexNativeName, codexSessionKey } from './codex.js'
 const inside=(root,file)=>{const rel=relative(root,file);return rel!== '..'&&!rel.startsWith('..'+sep)&&!isAbsolute(rel)}
@@ -30,7 +31,7 @@ export function localConversations(store,harness,{env=process.env,offset=0,limit
     const snapshot=harness==='pi'&&session&&!store.source(session)?store.resolveSession(id,'pi').matches[0]:null
     const known=snapshot?store.source(snapshot.session):session&&store.source(session);const metadata=known?store.metadata(known.session):null
     const conflict=harness!=='pi'&&!!known&&known.path!==file.path
-    return {key:keyFor(harness,file.path),harness,session,conversation_id:id||null,name:metadata?.name||native||derived?.replace(/\s+/g,' ').trim().slice(0,100)||id||basename(file.path),path:file.path,bytes:file.size,updated_at:new Date(file.mtime).toISOString(),indexed:!!known,summary_count:known?store.db.prepare('SELECT count(*) AS n FROM nodes WHERE session=?').get(known.session).n:0,import_kind:'live-jsonl',can_index:valid&&!conflict&&file.size<=256*1024*1024,error:!valid?'无法确定对话 ID':conflict?'同 ID 已绑定其他源路径':file.size>256*1024*1024?'超过单会话 256 MiB 限制':null}
+    return {key:keyFor(harness,file.path),harness,session,conversation_id:id||null,name:metadata?.name||native||derived?.replace(/\s+/g,' ').trim().slice(0,100)||id||basename(file.path),path:file.path,bytes:file.size,updated_at:new Date(file.mtime).toISOString(),indexed:!!known,summary_count:known?store.db.prepare('SELECT count(*) AS n FROM nodes WHERE session=?').get(known.session).n:0,import_kind:'live-jsonl',can_index:valid&&!conflict&&file.size<=maxFile,error:!valid?'无法确定对话 ID':conflict?'同 ID 已绑定其他源路径':file.size>maxFile?'超过单会话 4 GiB 限制':null}
   })
   return {harness,root:canonical,conversations,total:files.length,next_offset:offset+limit<files.length?offset+limit:null,scan_limited:limited}
 }
