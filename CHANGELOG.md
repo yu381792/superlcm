@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.8
+
+- The Claude desktop app does not pass `autoCompactWindow` to the Claude Code it runs, so its sessions kept compacting at the model default (about 367K) and the takeover's size had no effect there. Turning the takeover on now also sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` under `env` in Claude's settings.json, which every Claude Code reads first; turning it off restores the earlier value. Takes effect for sessions started or resumed afterwards.
+
 ## 0.4.7
 
 Fixes from an independent review (GPT-6.1 sol), each with a regression test:

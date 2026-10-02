@@ -1,6 +1,9 @@
 // Turning 接管压缩 on or off. On: Claude Code's autoCompactWindow (when its automatic compaction starts)
 // is set to the chosen size, and whatever it was before is remembered. Off: that earlier value comes back.
-// Only this one key of Claude Code's settings.json is touched, with an atomic rewrite.
+// The Claude desktop app does not pass autoCompactWindow on to the Claude Code it runs (its sessions keep
+// compacting at the model default), but every Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW first,
+// so the same size is also set under env in settings.json. Only these two keys are touched, with an
+// atomic rewrite.
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
@@ -22,20 +25,34 @@ function writeSettings(file, value) {
 export function claudeCompactWindow(env = process.env) {
   try { const v = readSettings(settingsFile(env)).autoCompactWindow; return Number.isFinite(v) ? v : null } catch { return null }
 }
+const ENV_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
+// What to restore later: Claude Code's own values of both keys (older versions stored only the first).
+function remembered(previous) {
+  const v = previous ? JSON.parse(previous) : null
+  return v && typeof v === 'object' && 'window' in v ? v : { window: v, env: null }
+}
+function withWindow(settings, window, envValue) {
+  const next = { ...settings }, env = { ...(settings.env && typeof settings.env === 'object' ? settings.env : {}) }
+  if (window === null || window === undefined) delete next.autoCompactWindow; else next.autoCompactWindow = window
+  if (envValue === null || envValue === undefined) delete env[ENV_KEY]; else env[ENV_KEY] = String(envValue)
+  if (Object.keys(env).length) next.env = env; else delete next.env
+  return next
+}
 export function applyTakeover(store, { enabled, window, keep }, env = process.env) {
   const current = store.takeover(), file = settingsFile(env), settings = readSettings(file)
   window = window ?? current.window; keep = keep ?? current.keep
   if (enabled) {
-    // Remember Claude Code's own value only when turning on, so changing the size keeps the original.
-    const previous = current.enabled ? current.previous : JSON.stringify(settings.autoCompactWindow ?? null)
+    // Remember Claude Code's own values only when turning on, so changing the size keeps the originals.
+    const previous = current.enabled ? current.previous : JSON.stringify({ window: settings.autoCompactWindow ?? null, env: settings.env?.[ENV_KEY] ?? null })
     store.setTakeover({ enabled: true, window, keep, previous })
     // If Claude's settings cannot be written, the takeover stays as it was rather than on in name only.
-    try { if (settings.autoCompactWindow !== window) writeSettings(file, { ...readSettings(file), autoCompactWindow: window }) }
-    catch (error) { store.setTakeover(current); throw error }
+    try {
+      const now = readSettings(file), next = withWindow(now, window, window)
+      if (JSON.stringify(next) !== JSON.stringify(now)) writeSettings(file, next)
+    } catch (error) { store.setTakeover(current); throw error }
   } else {
     if (current.enabled) {
-      const before = current.previous ? JSON.parse(current.previous) : null, now = readSettings(file), next = { ...now }
-      if (before === null) delete next.autoCompactWindow; else next.autoCompactWindow = before
+      const before = remembered(current.previous), now = readSettings(file), next = withWindow(now, before.window, before.env)
       if (JSON.stringify(next) !== JSON.stringify(now)) writeSettings(file, next)
     }
     store.setTakeover({ enabled: false, window, keep, previous: null })

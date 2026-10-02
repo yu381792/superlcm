@@ -157,7 +157,7 @@ export class ClaudeStore {
   // Where the host tool last compacted this conversation: records from this ordinal on were seen by the
   // AI after that compaction, so it can still summarize them from memory.
   // 接管压缩: off by default; window is the auto-compact window SuperLcm sets in Claude Code while on.
-  // previous holds Claude Code's own autoCompactWindow from before, as JSON ('null' when it had none).
+  // previous holds Claude Code's own values from before as JSON: {window, env} (older rows: the window alone).
   // 本工具后台写 inside Claude Code itself (hooks/compact-mod.js): while a session's own Claude Code writes its
   // summaries, the Stop hook does not start a separate `claude -p` for it.
   hostWriter(session) { return Boolean(this.db.prepare('SELECT 1 FROM host_writers WHERE session=? AND until_ms>?').get(session,Date.now())) }

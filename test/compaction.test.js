@@ -102,6 +102,12 @@ test('turning the takeover on sets Claude Code’s compaction window and off res
   applyTakeover(store, { enabled: true }, env)
   applyTakeover(store, { enabled: false }, env)
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { model: 'opus' })
+  // The desktop app ignores autoCompactWindow, so the size also goes into env; other env entries stay.
+  writeFileSync(file, JSON.stringify({ env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } }))
+  applyTakeover(store, { enabled: true, window: 300000 }, env)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' }, autoCompactWindow: 300000 })
+  applyTakeover(store, { enabled: false }, env)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } })
   assert.throws(() => applyTakeover(store, { enabled: true, window: 10 }, env))
   store.close()
 })
