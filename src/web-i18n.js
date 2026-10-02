@@ -57,7 +57,7 @@ const LANGS = {
     '需更新': 'Update',
     '点「接入」更新一次，以后 {tool} 升级不会影响 SuperLcm': 'Click Connect once more so {tool} updates no longer affect SuperLcm',
     '借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「接入」即可恢复': 'Runs on the node bundled with {owner}; if it stops working after an {owner} update, click Connect to restore it',
-    '压缩': 'Compaction', '接管压缩': 'Compaction takeover', '默认': 'default', '推荐': 'recommended',
+    'Claude Code 2.1.287+ 在对话里直接调用这个模型，不另开会话；对话结束后剩下的交给后台命令行补完': 'Claude Code 2.1.287+ calls this model from inside the conversation, without starting another session; what is left when it ends is finished by a background run.', '压缩': 'Compaction', '接管压缩': 'Compaction takeover', '默认': 'default', '推荐': 'recommended',
     'Claude Code 的对话太长时会压缩。交给 SuperLcm 后，旧的部分换成后台写好的摘要，最近几轮原样留下，原文随时能用 lcm_read 调回。': 'Claude Code compacts a conversation when it grows too long. With SuperLcm in charge, the older part is replaced by summaries written in the background, the newest turns stay word for word, and every original can be brought back with lcm_read.',
     '由 SuperLcm 接管压缩': 'Let SuperLcm handle compaction', '到门槛时直接换上现成的摘要，不调用模型，几乎不用等': 'At the threshold the ready summaries go in directly: no model call, almost no wait',
     '压缩门槛': 'Threshold', '上下文到这个大小开始压缩；模型窗口更小时按模型窗口算。': 'Compaction starts when context reaches this size, or the model’s window if that is smaller.',

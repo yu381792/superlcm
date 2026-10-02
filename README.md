@@ -15,7 +15,7 @@ Claude Code's own compaction stops the conversation, asks a model to squeeze eve
 - **Asynchronous, in the background.** Summaries are written quietly after each stretch of conversation, while you keep working. By the time the context fills up, the replacement is already assembled.
 - **No stall at the threshold.** When the conversation reaches the threshold (300K tokens by default, adjustable, or the model's window if smaller), SuperLcm swaps the older part for its layered summaries in one step. No model is called at that moment, so the swap takes milliseconds instead of a minute of "Compacting…".
 - **Lossless.** Only the view is shortened. Every original message stays in the archive, and the agent reads any of them back word for word with `lcm_read`. The newest turns are kept verbatim.
-- **Cheap summaries, Haiku included.** The background summaries can be written by Claude Haiku (on the Claude Code card under Connect: Own tool, in the background, model `haiku`), by the agent itself, or by your own API, so the expensive main model is not spent on bookkeeping.
+- **Cheap summaries, Haiku included.** The background summaries can be written by Claude Haiku (on the Claude Code card under Connect: Own tool, in the background, model `haiku`), by the agent itself, or by your own API, so the expensive main model is not spent on bookkeeping. With the plugin on Claude Code 2.1.287+, these summaries are written from inside the conversation with your existing login (`$.model.complete`), without starting another Claude Code session.
 - **Safe fallback.** If the summaries have not caught up, or anything goes wrong, Claude Code compacts the usual way. Turning it off restores your previous setting.
 
 Turn it on in the console under Settings › Compaction. Needs the plugin install (below) and Claude Code 2.1.287 or newer; it handles the main conversation, and subagents compact as usual.
@@ -60,7 +60,7 @@ Both sides start with the same 18 messages and a context window that holds six. 
 
 ## Who writes the summaries
 
-Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use, **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
+Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use (Claude Code 2.1.287+ with the plugin calls the model from inside the conversation instead), **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
 
 ## Compaction vs. an archive
 

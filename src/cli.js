@@ -16,6 +16,7 @@ const effective=(store,session)=>store.effectiveSetting(session)
 const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>resolve(JSON.parse(text)))})
 function scheduleSummary(store,session,mode,model) {
   if (!['cli','api'].includes(mode) || !summaryWork(store,session)) return
+  if (mode==='cli' && store.hostWriter(session)) return // Claude Code is writing this one itself (summary-claim)
   if (mode==='api' && (!(model||process.env.SUPERLCM_CLAUDE_MODEL) || store.apiCredential(session)===null)) {
     store.setStatus(session,'summary_unconfigured')
     process.stderr.write('SuperLcm: api mode needs a model ID and a configured scoped API key\n')
@@ -154,6 +155,48 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       reply=planCompaction({meta:store.metadata(session),events:store.eventRows(session),nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:input.messages||[],instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||setting.window,setting.window)})
     }
   } catch(error) { reply={use:false,reason:error.message} }
+  finally { store.close() }
+  process.stdout.write(JSON.stringify(reply)+'\n')
+} else if (['summary-host','summary-claim','summary-save','summary-handoff'].includes(command)) {
+  // 本工具后台写 inside Claude Code (hooks/compact-mod.js, 2.1.287+): the module asks for the next piece
+  // (summary-claim), writes it with $.model.complete on the session's own login, and hands it back
+  // (summary-save). summary-host marks the session at its start so the Stop hook does not also start a
+  // `claude -p`; summary-handoff, at the end or after a failed call, gives the rest back to that worker.
+  // Always answers one line of JSON.
+  const store=new ClaudeStore(),session=rest[0]
+  let reply={}
+  try {
+    if(!session)throw new Error('Usage: '+command+' <session>')
+    if(command==='summary-host')store.setHostWriter(session,true)
+    else if(command==='summary-handoff'){
+      if(store.hostWriter(session)){store.setHostWriter(session,false);store.release(session)}
+      if(store.source(session)&&!store.isDeleted(session)){const {mode,model}=effective(store,session);scheduleSummary(store,session,mode,model)}
+    } else {
+      const src=store.source(session)
+      if(!src||store.isDeleted(session))throw Object.assign(new Error('conversation not recorded by SuperLcm'),{none:true})
+      const {mode,model}=effective(store,session)
+      if(mode!=='cli'||writerTool(store.metadata(session).harness)!=='claude-code')throw Object.assign(new Error('summaries are not written by Claude Code for this conversation'),{none:true})
+      if(command==='summary-claim'){
+        store.setHostWriter(session,true)
+        if(existsSync(src.path))store.ingest(session,src.path)
+        const work=summaryWork(store,session)
+        if(!work)reply={none:'nothing to summarize yet'}
+        else if(!store.lease(session,300000))reply={none:'busy'}
+        else {const {SUMMARY_SYSTEM}=await import('./claude-cli.js');reply={work:{batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:`<conversation_excerpt>\n${work.content}\n</conversation_excerpt>`,model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}}
+      } else {
+        const input=await readHook(),summary=typeof input.summary==='string'?input.summary.trim().slice(0,6000):''
+        try {
+          const work=summaryWork(store,session)
+          if(!work||work.batch_id!==input.batch_id)throw new Error('stale summary batch')
+          if(summary.length<20)throw new Error('summary too short')
+          if(work.level===0)for(let i=work.first;i<=work.last;i++)store.exact(session,i)
+          store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`})
+          store.setStatus(session,'ok')
+          reply={saved:true,more:Boolean(summaryWork(store,session))}
+        } finally { store.release(session) }
+      }
+    }
+  } catch(error) { reply=error.none?{none:error.message}:{error:error.message} }
   finally { store.close() }
   process.stdout.write(JSON.stringify(reply)+'\n')
 } else if (command==='archive') {

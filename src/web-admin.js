@@ -278,6 +278,7 @@ function writerRows(h) {
   const mode = x ? x.mode : s.global.mode, rows = []
   rows.push([t('摘要生成'), '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '">' + WRITERS.map(([id, label]) => '<option value="' + id + '"' + (mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>'])
   if (mode === 'cli' && h.bin) rows.push([t('模型'), '<select aria-label="' + t('模型') + '" data-model="' + esc(h.harness) + '"><option value="' + esc(x?.model || '') + '">' + esc(x?.model || t('跟随 {tool} 当前模型', { tool: toolName(h.harness) })) + '</option></select>'])
+  if (mode === 'cli' && h.harness === 'claude-code' && h.claude?.plugin?.enabled) rows.push(['', '<span class="muted">' + t('Claude Code 2.1.287+ 在对话里直接调用这个模型，不另开会话；对话结束后剩下的交给后台命令行补完') + '</span>'])
   if (mode === 'api') {
     const current = s.api_models.find(m => m.id === x?.api_ref) || s.api_models.find(m => m.url === (x || s.global).api_url && m.model === (x || s.global).model)
     rows.push([t('模型'), s.api_models.length ? '<select aria-label="' + t('模型') + '" data-apimodel="' + esc(h.harness) + '">' + (current ? '' : '<option value="" selected disabled>' + t('选择一个模型') + '</option>') +

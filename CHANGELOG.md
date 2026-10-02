@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+
+- 本工具后台写 for Claude Code runs inside Claude Code itself when the plugin is loaded on 2.1.287+: after each turn the plugin module writes the waiting summary pieces with `$.model.complete` on the session's own login (the turn does not wait), instead of starting a separate `claude -p`. New CLI commands `summary-host`, `summary-claim`, `summary-save` and `summary-handoff` carry it; the Stop hook skips its worker while a session writes its own, and at session end, or after a failed model call, the rest goes back to the `claude -p` worker.
+
 ## 0.4.2
 
 - The README and the plugin listing lead with the compaction takeover: summaries assembled in the background, a no-wait swap at the threshold, originals kept, and Haiku able to write the summaries.

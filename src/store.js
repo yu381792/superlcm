@@ -80,6 +80,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS compactions(session TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(session,ordinal));
       CREATE TABLE IF NOT EXISTS takeover_settings(id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, window INTEGER NOT NULL, previous TEXT);
       CREATE TABLE IF NOT EXISTS takeover_copies(session TEXT PRIMARY KEY, remaining INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS host_writers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
@@ -152,6 +153,10 @@ export class ClaudeStore {
   // AI after that compaction, so it can still summarize them from memory.
   // 接管压缩: off by default; window is the auto-compact window SuperLcm sets in Claude Code while on.
   // previous holds Claude Code's own autoCompactWindow from before, as JSON ('null' when it had none).
+  // 本工具后台写 inside Claude Code itself (hooks/compact-mod.js): while a session's own Claude Code writes its
+  // summaries, the Stop hook does not start a separate `claude -p` for it.
+  hostWriter(session) { return Boolean(this.db.prepare('SELECT 1 FROM host_writers WHERE session=? AND until_ms>?').get(session,Date.now())) }
+  setHostWriter(session,on,duration=6*3600000) { if(on)this.db.prepare('INSERT INTO host_writers(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms').run(session,Date.now()+duration); else this.db.prepare('DELETE FROM host_writers WHERE session=?').run(session) }
   takeover() { const r=this.db.prepare('SELECT enabled,window,previous FROM takeover_settings WHERE id=1').get(); return r?{enabled:Boolean(r.enabled),window:r.window,previous:r.previous}:{...takeoverDefaults,previous:null} }
   setTakeover({enabled,window=this.takeover().window,previous=this.takeover().previous}) {
     if (typeof enabled!=='boolean' || !Number.isSafeInteger(window) || window<50000 || window>2000000) throw new Error('Unsupported compaction takeover setting')
@@ -445,7 +450,7 @@ export class ClaudeStore {
     try {
       const deliveries = this.db.prepare('SELECT id FROM deliveries WHERE source_session=? OR target_session=?').all(session, session).map(x => x.id)
       for (const id of deliveries) { this.db.prepare('DELETE FROM delivery_packets WHERE id=?').run(id); this.db.prepare('DELETE FROM deliveries WHERE id=?').run(id) }
-      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'compactions', 'takeover_copies', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'compactions', 'takeover_copies', 'host_writers', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
       this.db.prepare('INSERT INTO deleted_sessions(session,deleted_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET deleted_ms=excluded.deleted_ms').run(session, Date.now())
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }

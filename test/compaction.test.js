@@ -139,3 +139,27 @@ test('the Claude card reads the plugin and cleans up only SuperLcm’s own old h
   assert.deepEqual(calls.filter(c => !c.startsWith('plugin list')), ['plugin marketplace update superlcm', 'plugin update superlcm@superlcm'])
   store.close()
 })
+
+test('Claude Code writes its own summaries through summary-claim / summary-save, and hands the rest back', () => {
+  const { dir, claude, project } = claudeHome(), home = join(dir, 'home'), file = join(project, 's3.jsonl')
+  writeFileSync(file, ['one', 'two', 'three', 'four'].map(w => line('user', w + ' please') + line('assistant', [{ type: 'text', text: w + ' done' }])).join(''))
+  const store = new ClaudeStore(home)
+  store.ingest('s3', file); store.setMetadata('s3', { harness: 'claude-code', externalId: 's3', name: 's3', nameSource: 'derived' })
+  store.setHarnessSetting('claude-code', 'cli', 'haiku')
+  store.close()
+  const env = { ...process.env, SUPERLCM_HOME: home, CLAUDE_CONFIG_DIR: claude, SUPERLCM_CLAUDE_CLI_BIN: process.execPath, SUPERLCM_SEGMENT_MESSAGES: '2' }
+  const run = (cmd, input = '') => JSON.parse(spawnSync(process.execPath, ['src/cli.js', cmd, 's3'], { input, env, encoding: 'utf8' }).stdout)
+  const claim = run('summary-claim')
+  assert.equal(claim.work.model, 'haiku')
+  assert.match(claim.work.prompt, /^<conversation_excerpt>\n\[event 0\] user: one please/)
+  assert.deepEqual(run('summary-claim'), { none: 'busy' }) // one writer at a time
+  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: 'nope', summary: 'x'.repeat(30) })), { error: 'stale summary batch' })
+  const again = run('summary-claim') // the failed save released the piece
+  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: again.work.batch_id, summary: 'The user asked for one; it was done.', model: 'haiku' })), { saved: true, more: true })
+  const s = new ClaudeStore(home)
+  assert.equal(s.hostWriter('s3'), true)
+  assert.deepEqual(s.nodeRows('s3', 0).map(n => [n.first, n.last, n.model]), [[0, 1, 'claude-code-host:haiku']])
+  s.close()
+  assert.deepEqual(run('summary-handoff'), {}) // the end of the session: the separate worker takes over
+  const t = new ClaudeStore(home); assert.equal(t.hostWriter('s3'), false); t.close()
+})
