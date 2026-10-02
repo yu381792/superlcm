@@ -1,6 +1,6 @@
 # SuperLcm setup and reference (preview)
 
-This is an **independent cross-harness MCP package (not a DSH plugin)**. It does not replace any harness's native compaction. It builds an external layered summary DAG and retrieves the original conversation on demand. Summary modes are exclusive: the default is the conversation's own AI (`agent` mode, nudged by a short per-turn hook note), or a background writer (Claude or Codex subscription CLI, or a custom API), or `off`. Claude Code, Codex, Hermes and Pi each have an opt-in automatic hook adapter. No harness configuration is modified on startup. The explicit reviewed Web installer or setup --apply command can register MCP and merge hooks for supported harnesses.
+This is an **independent cross-harness MCP package (not a DSH plugin)**, installed into Claude Code as a Claude plugin. It replaces no harness's native compaction unless you turn on the Claude Code compaction takeover (below). It builds an external layered summary DAG and retrieves the original conversation on demand. Summary modes are exclusive: the default is the conversation's own AI (`agent` mode, nudged by a short per-turn hook note), or a background writer (Claude or Codex subscription CLI, or a custom API), or `off`. Claude Code, Codex, Hermes and Pi each have an opt-in automatic hook adapter. No harness configuration is modified on startup. The explicit reviewed Web installer or setup --apply command can register MCP and merge hooks for supported harnesses.
 
 ## Requirements and data ownership
 
@@ -82,7 +82,16 @@ Codex hooks use the same summary setting as Claude hooks: `cli` means a backgrou
 
 **Privacy boundary:** every process configured to use this local MCP and the same index can read *all* indexed sessions; there is no per-client authorization. Configure only trusted clients. Local stdio does not bridge separate computers: a Windows Claude Code session and a Mac Codex client do not share an index unless you arrange a secure common deployment and source access. No such sync/remote server is provided.
 
-## Claude Code CLI integration (manual setup, no configuration is written for you)
+## Claude Code: the plugin (recommended)
+
+`/plugin marketplace add yu381792/superlcm` then `/plugin install superlcm@superlcm` (or **安装插件** on the console's Claude card). The plugin carries the same capture hooks (`hooks/hooks.json`, run through `src/launch.js`), the lookup tools as the plugin's MCP server, the `/superlcm:console` skill, and a Claude Code module, `hooks/compact-mod.js`, which Claude Code 2.1.286+ loads (the terminal `claude` and the desktop app's bundled engine alike; older engines ignore it). The module does two things:
+
+- **Compaction takeover** (console › Settings › Compaction, off by default). On `session.compact` for the main conversation it runs `launch.js compact-packet <session>` with the live messages; the reply replaces the part covered by summaries with the fewest layered summaries, keeps the newest stretch word for word (Keep recent originals: 40K tokens by default, at most half the context, never fewer than the last two prompts) and calls no model. Any doubt (takeover off, a subagent, Claude Code's own precompute, summaries lagging, the result still over 60% of the window) returns the compaction to Claude Code. Turning it on sets `autoCompactWindow` in Claude's `settings.json` (300K by default) and remembers the earlier value; turning it off restores it.
+- **本工具后台写 inside the conversation.** When Claude Code's summaries are written by Claude Code itself (`cli`), each `turn.complete` writes the waiting pieces with `$.model.complete` on the session's own login (`summary-claim` → model → `summary-save`), without starting another Claude Code and without the turn waiting. `session.start` marks the session (`summary-host`) so the `Stop` hook does not also start `claude -p`; `session.end`, or a failed model call, hands what is left back to that worker (`summary-handoff`).
+
+When the plugin is enabled, an older manual connection (the settings.json hooks below) stays quiet, and the console's Claude card offers to remove it and the old user-level MCP entry, backing both files up first.
+
+## Claude Code CLI integration (older manual setup, no configuration is written for you)
 
 Replace `/ABSOLUTE_PATH_TO_REPO` with the repository's absolute path. Add this server and the hook blocks to the relevant Claude Code user or project settings *only if you choose to enable them*. An example server stanza for `.mcp.json` is:
 
@@ -119,7 +128,7 @@ Without a saved setting, `SUPERLCM_SUMMARY_MODE=auto` means `agent` (对话模�
 
 ### 本工具后台写 (`cli`)
 
-When a piece is ready (Claude Code/Codex `Stop`, `PostCompact`, `SessionEnd`; Hermes session end; Pi turn end and compaction), the hook starts a background worker that runs **the conversation's own tool** once, non-interactively, with the account, provider and model you configured in that tool; a model picked on the tool's card is passed explicitly. The live conversation is not involved. An imported conversation whose tool is not installed uses the first installed one (Claude Code, Codex, Hermes, Pi).
+When a piece is ready (Claude Code/Codex `Stop`, `PostCompact`, `SessionEnd`; Hermes session end; Pi turn end and compaction), the hook starts a background worker that runs **the conversation's own tool** once, non-interactively, with the account, provider and model you configured in that tool; a model picked on the tool's card is passed explicitly. The live conversation is not involved. (Claude Code with the plugin on 2.1.286+ writes from inside the conversation instead; see the plugin section above.) An imported conversation whose tool is not installed uses the first installed one (Claude Code, Codex, Hermes, Pi).
 
 | Tool | Command (prompt on stdin) | Kept out of history and capture |
 |---|---|---|
