@@ -1,14 +1,14 @@
 {
   "name": "superlcm",
   "displayName": "SuperLcm — Permanent context. Lossless, no-wait compaction.",
-  "version": "0.4.17",
+  "version": "0.4.18",
   "description": "Lossless compaction that never makes you wait: summaries are assembled quietly in the background (Haiku can write them), and when the context fills up they replace the older part in one step, with no model call and no 'Compacting…' pause, while every original stays one lcm_read away. SuperLcm saves every Claude Code conversation word for word on your computer, files layered summaries like the chapters of a book, and lets Claude find and quote the exact original later. Codex, Hermes and Pi share the same archive, so a conversation can be continued in another tool.",
   "author": {
     "name": "ygc381792"
   },
   "homepage": "https://github.com/yu381792/superlcm",
   "repository": "https://github.com/yu381792/superlcm",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "keywords": [
     "memory",
     "recall",

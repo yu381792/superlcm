@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.18
+
+- Relicensed from AGPL-3.0-only to MIT; the contributor license agreement is no longer needed.
+
 ## 0.4.17
 
 Fixes from the second review of 0.4.14–0.4.15.

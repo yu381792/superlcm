@@ -4,7 +4,7 @@
 
 SuperLcm is maintained by one person and kept deliberately small. The best way to help is an [issue](https://github.com/yu381792/superlcm/issues): a bug with steps to reproduce, or a clear use case. Issues are read, but not every request will be taken up, and there is no response-time promise.
 
-Pull requests are generally not merged. If a small fix is invited in an issue, it needs the [Contributor License Agreement](CLA.md) first: your contribution stays AGPL-3.0 for everyone, and you also allow the maintainer to include it in commercially licensed releases. You keep your copyright.
+Pull requests are generally not merged. If a small fix is invited in an issue, it is accepted under the same [MIT License](LICENSE) as the rest of SuperLcm (see [Contributions](CLA.md)). You keep your copyright.
 
 ## Development
 

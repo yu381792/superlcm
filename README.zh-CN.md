@@ -106,6 +106,6 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 
 ## 许可
 
-[AGPL-3.0](LICENSE)，版权所有 2026 ygc381792 及贡献者。修改 SuperLcm 后提供给他人使用（包括通过网络提供服务），必须以同样的许可证公开修改后的源码；闭源或商业授权请联系作者。本项目由个人维护、刻意保持精简：欢迎提 [issue](https://github.com/yu381792/superlcm/issues) 反馈问题和需求，但不保证每条都采纳，一般不合并代码请求（PR）。
+[MIT](LICENSE)，版权所有 2026 ygc381792 及贡献者。可以自由使用、修改和再发布（包括商用），保留版权声明即可。本项目由个人维护、刻意保持精简：欢迎提 [issue](https://github.com/yu381792/superlcm/issues) 反馈问题和需求，但不保证每条都采纳，一般不合并代码请求（PR）。
 
 Claude、Claude Code、Codex、Hermes、Pi 的名称和标志归各自所有者，这里只用来说明兼容的工具；SuperLcm 是独立项目，与它们没有隶属或背书关系。

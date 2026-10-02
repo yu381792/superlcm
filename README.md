@@ -129,7 +129,7 @@ Every tool is marked with MCP annotations: the four lookups are read-only, the t
 - [Setup, security and limitations](docs/SETUP.md)
 - [Console behavior and tests](docs/CONSOLE.md)
 - [Privacy](PRIVACY.md)
-- [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Contributor License Agreement](CLA.md) · [Security](SECURITY.md)
-- License: [AGPL-3.0](LICENSE). Copyright 2026 ygc381792 and contributors. If you modify SuperLcm and let others use it, including over a network, you must publish your modified source under the same license. For closed-source or commercial licensing, contact the author.
+- [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Contributions](CLA.md) · [Security](SECURITY.md)
+- License: [MIT](LICENSE). Copyright 2026 ygc381792 and contributors. Free to use, modify and redistribute, including commercially; keep the copyright notice.
 
 Claude, Claude Code, Codex, Hermes and Pi names and logos belong to their respective owners and are used only to identify compatible tools. SuperLcm is an independent project and is not affiliated with or endorsed by them.
