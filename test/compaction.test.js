@@ -72,6 +72,18 @@ function claudeHome() {
 }
 const line = (type, content, extra = {}) => JSON.stringify({ type, message: { role: type, content }, ...extra }) + '\n'
 
+test('summaries ending on a title record, with a repeated heartbeat prompt, still find their place', () => {
+  // The desktop app writes a title record every turn; one can end the covered part, and it is never in context.
+  const beat = 'user: [heartbeat] check the experiments'
+  const events = [ev(0, beat), ev(1, 'assistant: nothing new'), ev(2, 'custom-title: V9'), ev(3, 'user: real question'), ev(4, 'assistant: answer one'),
+    ev(5, 'custom-title: V9'), ev(6, beat), ev(7, 'assistant: still nothing'), ev(8, 'custom-title: V9'), ev(9, beat), ev(10, 'assistant: done'), ev(11, 'user: next'), ev(12, 'assistant: ok')]
+  const messages = events.filter(e => /^(user|assistant): /.test(e.preview)).map(e => { const [role, ...rest] = e.preview.split(': '); return msg(role, rest.join(': ')) })
+  assert.equal(cutIndex(messages, events, 8), 6) // covered through the title after record 7: cut after 'still nothing'
+  // The last covered message no longer in context: the cut is at the first later record, not an earlier copy of it.
+  const context = [msg('user', '[heartbeat] check the experiments'), msg('assistant', 'nothing new'), msg('user', '[heartbeat] check the experiments'), msg('assistant', 'done'), msg('user', 'next'), msg('assistant', 'ok')]
+  assert.equal(cutIndex(context, events, 8), 2)
+})
+
 test('a SuperLcm packet and the kept messages Claude Code writes again are not indexed twice', () => {
   const { dir, project } = claudeHome(), file = join(project, 's1.jsonl')
   writeFileSync(file, line('user', 'hello') + line('assistant', [{ type: 'text', text: 'hi' }]) + line('user', 'teal please') + line('assistant', [{ type: 'text', text: 'noted' }]))

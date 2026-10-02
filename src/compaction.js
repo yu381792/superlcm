@@ -37,7 +37,8 @@ export function frontier(nodes, through) {
 // uncovered record after it, so a repeated short message ("继续") or a repeated run of messages cannot be
 // mistaken for an earlier copy and drop what came between.
 export function cutIndex(messages, events, through) {
-  const visible = events.filter(e => e.preview.trim())
+  // Only messages can be found in context; title records (written every turn by the desktop app) cannot.
+  const visible = events.filter(e => /^(user|assistant): /.test(e.preview))
   const covered = visible.filter(e => e.ordinal <= through).map(e => key(e.preview))
   const later = visible.filter(e => e.ordinal > through).map(e => key(e.preview))
   const keys = messages.map(m => m.text.trim() ? key(`${m.role}: ${m.text.trim()}`) : null)
@@ -54,8 +55,17 @@ export function cutIndex(messages, events, through) {
   }
   if (covered.length) for (let i = keys.length - 1; i >= 0; i--) if (matches(covered, covered.length - 1, i)) return i + 1
   // The last covered record is no longer in context (an earlier compaction removed it): everything
-  // still in context starts after it, so the cut is at the first later record found.
-  if (later.length) for (let i = 0; i < keys.length; i++) if (keys[i] === later[0]) return i
+  // still in context starts after it, so the cut is at the first later record found, where up to 3 of the
+  // records after it agree too (a repeated message such as a heartbeat prompt has earlier copies).
+  const follows = index => {
+    for (let n = 1, i = index + 1; n <= 3 && n < later.length && i < keys.length; i++) {
+      if (keys[i] === null || isPacket(messages[i])) continue
+      if (keys[i] !== later[n]) return false
+      n++
+    }
+    return true
+  }
+  if (later.length) for (let i = 0; i < keys.length; i++) if (keys[i] === later[0] && follows(i)) return i
   return null
 }
 // Move the cut back to the start of a turn and keep the newest turns whole.

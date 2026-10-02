@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.19
+
+- Fixed: the compaction takeover gave up on conversations in the desktop app whenever the summaries ended on a title record (the app writes one every turn) and a message repeats (such as a recurring heartbeat prompt). The planner looked for the title in the live conversation, could not find it, then matched the first, hours-old copy of the repeated message, judged the summaries far behind ("about 283812 tokens would remain") and handed the compaction to Claude Code's own 70–90 s summary. Only messages are now used to place the summaries, and a repeated message is placed by the messages after it. On the real 21:12 compaction of a long conversation the plan is now to take over.
+
 ## 0.4.18
 
 - Relicensed from AGPL-3.0-only to MIT; the contributor license agreement is no longer needed.
