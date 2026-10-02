@@ -28,7 +28,7 @@ export function claudeCompactWindow(env = process.env) {
 }
 const ENV_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
 export const HEADROOM = 100000
-export const claudeWindowFor = window => window + HEADROOM
+export const claudeWindowFor = window => Math.min(window + HEADROOM, 1000000) // Claude Code caps its window at 1M
 // What to restore later: Claude Code's own values of both keys (older versions stored only the first).
 function remembered(previous) {
   const v = previous ? JSON.parse(previous) : null

@@ -2,7 +2,7 @@ import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS, validApiModel } from './api-endpoint.js'
 import { readApiKey, saveApiKey, removeApiKey } from './api-credentials.js'
-import { takeoverDefaults } from './compaction.js'
+import { takeoverDefaults, takeoverLimits } from './compaction.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -164,7 +164,7 @@ export class ClaudeStore {
   setHostWriter(session,on,duration=6*3600000) { if(on)this.db.prepare('INSERT INTO host_writers(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms').run(session,Date.now()+duration); else this.db.prepare('DELETE FROM host_writers WHERE session=?').run(session) }
   takeover() { const r=this.db.prepare('SELECT enabled,window,previous,keep_tokens FROM takeover_settings WHERE id=1').get(); return r?{enabled:Boolean(r.enabled),window:r.window,keep:r.keep_tokens,previous:r.previous}:{...takeoverDefaults,previous:null} }
   setTakeover({enabled,window=this.takeover().window,keep=this.takeover().keep,previous=this.takeover().previous}) {
-    if (typeof enabled!=='boolean' || !Number.isSafeInteger(window) || window<50000 || window>2000000 || !Number.isSafeInteger(keep) || keep<0 || keep>200000) throw new Error('Unsupported compaction takeover setting')
+    if (typeof enabled!=='boolean' || !Number.isSafeInteger(window) || window<takeoverLimits.window[0] || window>takeoverLimits.window[1] || !Number.isSafeInteger(keep) || keep<takeoverLimits.keep[0] || keep>takeoverLimits.keep[1]) throw new Error('Unsupported compaction takeover setting')
     this.db.prepare('INSERT INTO takeover_settings(id,enabled,window,previous,keep_tokens) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,window=excluded.window,previous=excluded.previous,keep_tokens=excluded.keep_tokens').run(enabled?1:0,window,previous,keep)
     return this.takeover()
   }

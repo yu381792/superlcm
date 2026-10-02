@@ -98,14 +98,16 @@ export function page(nonce) {
         <p class="desc">Claude Code 的对话太长时会压缩。交给 SuperLcm 后，旧的部分换成后台写好的摘要，最近几轮原样留下，原文随时能用 lcm_read 调回。</p>
         <label class="toggle-row"><span><b>由 SuperLcm 接管压缩</b><span>到门槛时直接换上现成的摘要，不调用模型，几乎不用等</span></span><span class="switch"><input type="checkbox" id="takeoverOn" role="switch"><i></i></span></label>
         <h3>压缩门槛</h3>
-        <p class="desc">上下文到这个大小开始压缩；模型窗口更小时按模型窗口算。</p>
-        <div class="choice" id="takeoverWindow" role="radiogroup" aria-label="压缩门槛"><button type="button" role="radio" data-w="200000">200K</button><button type="button" role="radio" data-w="300000">300K<small>推荐</small></button><button type="button" role="radio" data-w="500000">500K</button><button type="button" role="radio" data-w="800000">800K</button></div>
+        <p class="desc">上下文到这个大小，SuperLcm 换上摘要；模型窗口放不下时自动调低。</p>
+        <div class="choice" id="takeoverWindow" role="radiogroup" aria-label="压缩门槛"><button type="button" role="radio" data-w="200000">200K</button><button type="button" role="radio" data-w="300000">300K<small>推荐</small></button><button type="button" role="radio" data-w="500000">500K</button><button type="button" role="radio" data-w="800000">800K</button><button type="button" role="radio" data-custom>自定义<small></small></button></div>
+        <div class="custom-size" id="takeoverWindowCustom" hidden><input type="number" inputmode="numeric" min="100" max="950" step="10" aria-label="自定义压缩门槛"><span>K</span><button type="button" class="btn small">保存</button><span class="hint">100K–950K</span></div>
         <h3>最近原文保留</h3>
         <p class="desc">替换时最近这么多内容一字不改地留下，接着干活不丢细节；更早的才换成摘要。最多保留当前上下文的一半。</p>
-        <div class="choice" id="takeoverKeep" role="radiogroup" aria-label="最近原文保留"><button type="button" role="radio" data-k="20000">20K</button><button type="button" role="radio" data-k="40000">40K<small>推荐</small></button><button type="button" role="radio" data-k="80000">80K</button></div>
+        <div class="choice" id="takeoverKeep" role="radiogroup" aria-label="最近原文保留"><button type="button" role="radio" data-k="20000">20K</button><button type="button" role="radio" data-k="40000">40K<small>推荐</small></button><button type="button" role="radio" data-k="80000">80K</button><button type="button" role="radio" data-custom>自定义<small></small></button></div>
+        <div class="custom-size" id="takeoverKeepCustom" hidden><input type="number" inputmode="numeric" min="5" max="200" step="5" aria-label="自定义最近原文保留"><span>K</span><button type="button" class="btn small">保存</button><span class="hint">5K–200K</span></div>
         <h3>运行条件</h3>
         <ul class="checks" id="takeoverChecks"></ul>
-        <details class="how"><summary>它怎么工作</summary><p>SuperLcm 平时就在后台把对话写成分层摘要，但不动 Claude Code 的上下文。到了门槛，Claude Code 要压缩时，SuperLcm 把已经被摘要覆盖的旧对话换成这些摘要，没覆盖到的部分和最近一段（按「最近原文保留」，至少两轮）一字不改地保留。</p><p>摘要还没跟上、对不上号、换完仍然太大，或者是子代理的对话，都照旧交给 Claude Code 自己压缩，对话不会因此卡住。打开时会把 Claude Code 设置里的 autoCompactWindow 改成所选门槛，关闭时恢复原来的值。</p></details>
+        <details class="how"><summary>它怎么工作</summary><p>SuperLcm 平时就在后台把对话写成分层摘要，但不动 Claude Code 的上下文。到了门槛，Claude Code 要压缩时，SuperLcm 把已经被摘要覆盖的旧对话换成这些摘要，没覆盖到的部分和最近一段（按「最近原文保留」，至少两轮）一字不改地保留。</p><p>摘要还没跟上、对不上号、换完仍然太大，或者是子代理的对话，都照旧交给 Claude Code 自己压缩，对话不会因此卡住。打开时会把 Claude Code 自己的压缩窗口设成门槛再加 100K（最多 1M），让它只在摘要没跟上时兜底；关闭时恢复原来的值。</p></details>
       </div>
       <div class="panel" data-sec="mcp" hidden>
         <h2>AI 可用的 MCP 工具</h2>

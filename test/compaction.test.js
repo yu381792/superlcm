@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, ch
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore } from '../src/store.js'
-import { planCompaction, coveredThrough, frontier, cutIndex } from '../src/compaction.js'
+import { planCompaction, coveredThrough, frontier, cutIndex, triggerAt } from '../src/compaction.js'
 import { applyTakeover } from '../src/takeover.js'
 
 const ev = (ordinal, preview) => ({ ordinal, preview })
@@ -115,6 +115,14 @@ test('turning the takeover on sets Claude Code’s compaction window and off res
   applyTakeover(store, { enabled: false }, env)
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } })
   assert.throws(() => applyTakeover(store, { enabled: true, window: 10 }, env))
+  // On a 1M model each console size keeps Claude Code's own window 100K above it, within its 1M ceiling.
+  for (const [w, host] of [[300000, 400000], [500000, 600000], [800000, 900000], [950000, 1000000]]) {
+    assert.equal(applyTakeover(store, { enabled: true, window: w }, env).claude_window, host)
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, String(host))
+  }
+  assert.throws(() => applyTakeover(store, { enabled: true, window: 960000 }, env))
+  assert.throws(() => applyTakeover(store, { enabled: true, window: 300000, keep: 1000 }, env))
+  applyTakeover(store, { enabled: false }, env)
   store.close()
 })
 
@@ -279,4 +287,8 @@ test('past the console’s window the module starts the compaction itself, and n
   assert.deepEqual(await run()(null, make(() => ({ use: false, reason: 'below the compaction window' }))), { compacted: 0, reads: 0, last: undefined })
   assert.deepEqual(await run()(null, make(() => ({ use: false, reason: 'the summaries lag behind' }))), { compacted: 0, reads: 1, last: undefined })
   assert.deepEqual(await run()(null, make(() => ready)), { compacted: 1, reads: 1, last: undefined })
+})
+
+test('the plugin starts at the console size, or below a smaller live window so Claude Code stays the fallback', () => {
+  for (const [w, live, at] of [[300000, 400000, 300000], [800000, 900000, 800000], [800000, 1000000, 800000], [300000, 200000, 150000], [500000, 400000, 350000], [300000, 0, 300000]]) assert.equal(triggerAt(w, live), at)
 })

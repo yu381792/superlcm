@@ -15,8 +15,8 @@ Everything you and your agent say is kept, word for word, on your own computer. 
 Claude Code's own compaction stops the conversation at the threshold, asks the model to squeeze everything into one summary, and drops the originals. Installed as a Claude plugin, SuperLcm turns that around:
 
 - **Assembled in the background, ahead of time.** After each turn the plugin writes the waiting summary pieces while you keep working, so by the time the context fills up the replacement is already there.
-- **No stall at the threshold.** At the threshold (300K tokens by default) SuperLcm swaps the older part for the fewest layered summaries that cover it, in one step and with no model call. It takes milliseconds, not a minute of "Compacting…".
-- **The work in hand keeps its detail.** The newest 40K tokens (adjustable: 20K, 40K or 80K) stay word for word. Only older parts become summaries, so the agent carries on as if nothing happened.
+- **No stall at the threshold.** At the threshold (300K tokens by default; 200K, 500K, 800K or a custom size up to 950K) SuperLcm swaps the older part for the fewest layered summaries that cover it, in one step and with no model call. It takes milliseconds, not a minute of "Compacting…".
+- **The work in hand keeps its detail.** The newest 40K tokens (adjustable: 20K, 40K, 80K or a custom size) stay word for word. Only older parts become summaries, so the agent carries on as if nothing happened.
 - **Lossless.** Only the agent's view gets shorter. Every original stays in the archive, numbered, and the agent quotes it back with `lcm_read` when a detail matters.
 - **Summaries by Haiku, inside the conversation.** With "Own tool, in the background" and model `haiku` on the Claude Code card, the plugin calls Haiku through the conversation's own login. No API key, no second Claude Code session, and the expensive main model is not spent on bookkeeping.
 - **Safe by default.** Off until you turn it on. If the summaries have not caught up or anything looks wrong, Claude Code compacts the usual way, and turning it off restores your previous setting. Subagents always compact the usual way.

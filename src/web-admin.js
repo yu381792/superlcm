@@ -298,11 +298,18 @@ function renderTuning(tuning) {
   $('#granEst').innerHTML = t('按当前设置：每段第 1 层摘要约覆盖 {a} 字原文，第 2 层约 {b} 字，第 3 层约 {c} 字。一段 100 万字的长对话大约产生 {n} 段第 1 层摘要。', { a: '<b>' + big(perL1) + '</b>', b: '<b>' + big(perL2) + '</b>', c: '<b>' + big(perL3) + '</b>', n: Math.ceil(1e6 / perL1) })
 }
 // 压缩 panel: changes apply at once; the checks say what the takeover needs on this computer.
+// A size that is not one of the presets marks 自定义 and shows its value there.
+function markSize(group, key, value) {
+  const buttons = [...$(group).querySelectorAll('[data-' + key + ']')], preset = buttons.some(b => Number(b.dataset[key]) === value)
+  for (const b of buttons) b.setAttribute('aria-checked', String(Number(b.dataset[key]) === value))
+  const custom = $(group).querySelector('[data-custom]')
+  custom.setAttribute('aria-checked', String(!preset)); custom.querySelector('small').textContent = preset ? '' : kfmt(value)
+  if (preset) $(group + 'Custom').hidden = true
+}
 function renderTakeover(x) {
   if (!x) return
   $('#takeoverOn').checked = x.enabled
-  for (const b of $('#takeoverWindow').querySelectorAll('[data-w]')) b.setAttribute('aria-checked', String(Number(b.dataset.w) === x.window))
-  for (const b of $('#takeoverKeep').querySelectorAll('[data-k]')) b.setAttribute('aria-checked', String(Number(b.dataset.k) === x.keep))
+  markSize('#takeoverWindow', 'w', x.window); markSize('#takeoverKeep', 'k', x.keep)
   const c = state.harnesses?.find(h => h.harness === 'claude-code')?.claude, items = []
   if (!c) items.push(['wait', t('正在检查 Claude Code…')])
   else {
@@ -318,11 +325,23 @@ function renderTakeover(x) {
 const saveTakeover = (change, control) => act(async () => {
   const cur = admin.settings.takeover, r = await api('/api/takeover', { enabled: cur.enabled, window: cur.window, keep: cur.keep, ...change })
   admin.settings.takeover = r; renderTakeover(r); if (state.harnesses) renderTools()
-  toast(r.enabled ? t('已打开 · 门槛 {w}，新开的 Claude Code 对话生效', { w: kfmt(r.window) }) : t('已关闭，Claude Code 的压缩窗口已恢复'))
+  toast(r.enabled ? t('已打开 · 门槛 {w}，保留最近 {k}，新开的 Claude Code 对话生效', { w: kfmt(r.window), k: kfmt(r.keep) }) : t('已关闭，Claude Code 的压缩窗口已恢复'))
 }, control)
 $('#takeoverOn').onchange = e => saveTakeover({ enabled: e.target.checked }, e.target)
 for (const b of $('#takeoverWindow').querySelectorAll('[data-w]')) b.onclick = () => saveTakeover({ window: Number(b.dataset.w) }, b)
 for (const b of $('#takeoverKeep').querySelectorAll('[data-k]')) b.onclick = () => saveTakeover({ keep: Number(b.dataset.k) }, b)
+// 自定义: opens a box for a size in K, checked against the same limits the server enforces.
+for (const [group, field] of [['#takeoverWindow', 'window'], ['#takeoverKeep', 'keep']]) {
+  const box = $(group + 'Custom'), input = box.querySelector('input'), save = box.querySelector('button')
+  $(group).querySelector('[data-custom]').onclick = () => { box.hidden = false; input.value = Math.round(admin.settings.takeover[field] / 1000); input.focus(); input.select() }
+  const submit = () => {
+    const k = Number(input.value), min = Number(input.min), max = Number(input.max)
+    if (!Number.isFinite(k) || k < min || k > max) { toast(t('请输入 {min} 到 {max} 之间的数', { min, max })); return }
+    saveTakeover({ [field]: Math.round(k) * 1000 }, save)
+  }
+  save.onclick = submit
+  input.onkeydown = e => { if (e.key === 'Enter') submit() }
+}
 const pickedTuning = () => ({ target_chars: Number($('#segSize').value), fanout: Number($('#fanout').value) })
 for (const id of ['#segSize', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 

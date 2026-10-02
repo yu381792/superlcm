@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.13
+
+- Console › Settings › Compaction: the threshold and the recent originals kept each take a custom size besides the presets (threshold 100K–950K, kept 5K–200K).
+- Claude Code's own window (the threshold plus 100K) is capped at 1M, Claude Code's own ceiling, so 300K, 500K and 800K on a 1M model become 400K, 600K and 900K. On a model whose window leaves no room above the threshold, the plugin now starts 50K below that window (never below half of it) instead of never reaching the threshold.
+
 ## 0.4.12
 
 - Claude Code's own compaction window is now set 100K above the console's size (300K → 400K) instead of to the same value. Claude Code starts its own compaction a little before its window, so with both at 300K it compacted at about 270K, ahead of the plugin; now the plugin swaps in the summaries at 300K and Claude Code compacts only as a fallback when they lag.
