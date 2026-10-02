@@ -61,7 +61,7 @@ c = load_config_readonly()
 print("SUPERLCM_JSON " + json.dumps({"mcp": (c.get("mcp_servers") or {}).get("superlcm"), "hooks": c.get("hooks") or {}, "auto_accept": bool(c.get("hooks_auto_accept"))}))`)
 }
 // Adds the SuperLcm MCP server and hook entries; other servers and hooks are kept as they are.
-export function writeHermesConfig(env, { mcp, hooks }) {
+export function writeHermesConfig(env, { mcp, hooks, script }) {
   return runPython(env, `import json, sys
 from hermes_cli.config import load_config, save_config
 from hermes_cli.mcp_config import _save_mcp_server
@@ -73,14 +73,15 @@ h = c.get("hooks")
 if not isinstance(h, dict):
     h = {}
     c["hooks"] = h
-old = lambda i, entry: isinstance(i, dict) and isinstance(i.get("command"), str) and x.get("script") and x["script"] in i["command"] and "hermes-hook" in i["command"] and i["command"] != entry["command"]
+ours = lambda c: (x.get("script") and x["script"] in c) or "superlcm.js" in c
+old = lambda i, entry: isinstance(i, dict) and isinstance(i.get("command"), str) and ours(i["command"]) and "hermes-hook" in i["command"] and i["command"] != entry["command"]
 for event, entry in (x.get("hooks") or {}).items():
     items = [i for i in (h.get(event) or []) if not old(i, entry)]  # replace an older SuperLcm hook instead of adding a second one
     if not any(isinstance(i, dict) and i.get("command") == entry["command"] for i in items):
         items = list(items) + [entry]
     h[event] = items
 save_config(c)
-print("SUPERLCM_JSON " + json.dumps({"saved": True}))`, { mcp, hooks })
+print("SUPERLCM_JSON " + json.dumps({"saved": True}))`, { mcp, hooks, script })
 }
 // Read-only: which SuperLcm hook commands Hermes has already been allowed to run.
 export function hermesHookTrust(command, env = process.env) {

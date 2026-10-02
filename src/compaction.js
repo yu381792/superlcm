@@ -32,8 +32,9 @@ export function frontier(nodes, through) {
   return out
 }
 // Where the covered part ends inside the live transcript: the index just after the last covered record
-// that is still in context. Each candidate is checked against its predecessors so a repeated short
-// message ("继续") cannot be mistaken for another.
+// that is still in context. Each candidate is checked against its predecessors, and against the first
+// uncovered record after it, so a repeated short message ("继续") or a repeated run of messages cannot be
+// mistaken for an earlier copy and drop what came between.
 export function cutIndex(messages, events, through) {
   const visible = events.filter(e => e.preview.trim())
   const covered = visible.filter(e => e.ordinal <= through).map(e => key(e.preview))
@@ -46,6 +47,8 @@ export function cutIndex(messages, events, through) {
       if (keys[i] !== list[j]) return false
       back++; j--
     }
+    if (!later.length) return true
+    for (let i = index + 1; i < keys.length; i++) if (keys[i] !== null && !isPacket(messages[i])) return keys[i] === later[0]
     return true
   }
   if (covered.length) for (let i = keys.length - 1; i >= 0; i--) if (matches(covered, covered.length - 1, i)) return i + 1
@@ -88,6 +91,9 @@ export function planCompaction({ meta, events, nodes, messages, instructions = '
   const size = m => m.size ?? (m.text.length + 200)
   const total = messages.reduce((s, m) => s + size(m), 0) || 1
   let start = tailStart(messages, cut)
+  // tailStart moves forward only when the context opens with an unfinished turn; if that turn is not
+  // covered by the summaries, dropping it would lose it.
+  if (start > cut) return { use: false, reason: 'the oldest messages in context are not summarized yet' }
   if (start >= messages.length) return { use: false, reason: 'nothing recent to keep' }
   // The newest keepTokens (at most half of the context) also stay word for word, from the start of a turn,
   // even where summaries already cover them, so the work in hand continues with its full detail.

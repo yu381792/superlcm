@@ -180,7 +180,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     if(!session)throw new Error('Usage: '+command+' <session>')
     if(command==='summary-host')store.setHostWriter(session,true)
     else if(command==='summary-handoff'){
-      if(store.hostWriter(session)){store.setHostWriter(session,false);store.release(session)}
+      if(store.hostWriter(session)){store.setHostWriter(session,false);store.release(session,'host')}
       if(store.source(session)&&!store.isDeleted(session)){const {mode,model}=effective(store,session);scheduleSummary(store,session,mode,model)}
     } else {
       const src=store.source(session)
@@ -192,19 +192,20 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         if(existsSync(src.path))store.ingest(session,src.path)
         const work=summaryWork(store,session)
         if(!work)reply={none:'nothing to summarize yet'}
-        else if(!store.lease(session,300000))reply={none:'busy'}
+        else if(!store.lease(session,300000,'host'))reply={none:'busy'}
         else {const {SUMMARY_SYSTEM}=await import('./claude-cli.js');reply={work:{batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:`<conversation_excerpt>\n${work.content}\n</conversation_excerpt>`,model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}}
       } else {
         const input=await readHook(),summary=typeof input.summary==='string'?input.summary.trim().slice(0,6000):''
         try {
           const work=summaryWork(store,session)
+          if(!store.summarizing(session)||store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner!=='host')throw new Error('no summary claimed in this conversation')
           if(!work||work.batch_id!==input.batch_id)throw new Error('stale summary batch')
           if(summary.length<20)throw new Error('summary too short')
           if(work.level===0)for(let i=work.first;i<=work.last;i++)store.exact(session,i)
           store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`})
           store.setStatus(session,'ok')
           reply={saved:true,more:Boolean(summaryWork(store,session))}
-        } finally { store.release(session) }
+        } finally { store.release(session,'host') }
       }
     }
   } catch(error) { reply=error.none?{none:error.message}:{error:error.message} }

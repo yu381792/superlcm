@@ -29,12 +29,14 @@ export function applyTakeover(store, { enabled, window, keep }, env = process.en
     // Remember Claude Code's own value only when turning on, so changing the size keeps the original.
     const previous = current.enabled ? current.previous : JSON.stringify(settings.autoCompactWindow ?? null)
     store.setTakeover({ enabled: true, window, keep, previous })
-    if (settings.autoCompactWindow !== window) writeSettings(file, { ...settings, autoCompactWindow: window })
+    // If Claude's settings cannot be written, the takeover stays as it was rather than on in name only.
+    try { if (settings.autoCompactWindow !== window) writeSettings(file, { ...readSettings(file), autoCompactWindow: window }) }
+    catch (error) { store.setTakeover(current); throw error }
   } else {
     if (current.enabled) {
-      const before = current.previous ? JSON.parse(current.previous) : null, next = { ...settings }
+      const before = current.previous ? JSON.parse(current.previous) : null, now = readSettings(file), next = { ...now }
       if (before === null) delete next.autoCompactWindow; else next.autoCompactWindow = before
-      if (JSON.stringify(next) !== JSON.stringify(settings)) writeSettings(file, next)
+      if (JSON.stringify(next) !== JSON.stringify(now)) writeSettings(file, next)
     }
     store.setTakeover({ enabled: false, window, keep, previous: null })
   }

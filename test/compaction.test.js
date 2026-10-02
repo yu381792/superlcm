@@ -2,7 +2,7 @@ import './env.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore } from '../src/store.js'
@@ -80,6 +80,11 @@ test('a SuperLcm packet and the kept messages Claude Code writes again are not i
   const store = new ClaudeStore(join(dir, 'home'))
   store.ingest('s1', file)
   assert.deepEqual(store.eventRows('s1').map(e => e.preview), ['user: hello', 'assistant: hi', 'user: teal please', 'assistant: noted', '', '', '', '', '', 'user: what next'])
+  // The same text pasted into a prompt is an ordinary message, and so are the ones after it.
+  const pasted = join(project, 's2.jsonl')
+  writeFileSync(pasted, line('user', '<superlcm-context conversation="#x" keep="2" through="0">example</superlcm-context>') + line('user', 'unique requirement') + line('assistant', [{ type: 'text', text: 'ok' }]))
+  store.ingest('s2', pasted)
+  assert.deepEqual(store.eventRows('s2').map(e => e.preview.slice(0, 18)), ['user: <superlcm-co', 'user: unique requi', 'assistant: ok'])
   store.close()
 })
 
@@ -161,7 +166,13 @@ test('Claude Code writes its own summaries through summary-claim / summary-save,
   assert.deepEqual(s.nodeRows('s3', 0).map(n => [n.first, n.last, n.model]), [[0, 1, 'claude-code-host:haiku']])
   s.close()
   assert.deepEqual(run('summary-handoff'), {}) // the end of the session: the separate worker takes over
-  const t = new ClaudeStore(home); assert.equal(t.hostWriter('s3'), false); t.close()
+  const t = new ClaudeStore(home); assert.equal(t.hostWriter('s3'), false)
+  // A separate worker's lease is its own: a refused save or a handoff from the conversation leaves it alone.
+  assert.equal(t.lease('s3', 300000, 'worker:1'), true); t.close()
+  run('summary-host')
+  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: 'nope', summary: 'x'.repeat(30) })), { error: 'no summary claimed in this conversation' })
+  run('summary-handoff')
+  assert.deepEqual(run('summary-claim'), { none: 'busy' })
 })
 
 test('the newest stretch up to the keep size stays word for word, from the start of a turn', () => {
@@ -185,4 +196,41 @@ test('the retrieval note after a compaction is left out when SuperLcm did the co
   writeFileSync(theirs, base + line('user', 'This session is being continued from a previous conversation.'))
   assert.equal(hook('o1', ours), '')
   assert.match(hook('o2', theirs), /original records are preserved/)
+})
+
+test('a repeated run of messages does not move the cut past an uncovered one', () => {
+  const texts = ['A', 'B', 'C', 'D', 'unique decision', 'ok', 'A', 'B', 'C', 'D', 'next', 'ok', 'last', 'ok']
+  const messages = texts.map((t, i) => msg(i % 2 ? 'assistant' : 'user', t, { size: 1000 }))
+  const events = messages.map((m, i) => ev(i, `${m.role}: ${m.text}`))
+  assert.equal(cutIndex(messages, events, 3), 4)
+  const plan = planCompaction({ meta, events, nodes: [node('a', 0, 0, 3)], messages, tokens: 14000, keepTokens: 0 })
+  assert.equal(plan.use, true)
+  assert.ok(plan.start <= 4)
+})
+
+test('an unfinished first turn that is not summarized is never dropped', () => {
+  const messages = [msg('assistant', 'tool working', { toolUses: [{ id: 't' }] }), msg('user', '', { toolResults: 1 }), msg('user', 'new question'), msg('assistant', 'new answer'), msg('user', 'last question'), msg('assistant', 'last answer')]
+  const events = [ev(0, 'user: old'), ev(1, 'assistant: old done'), ev(2, 'assistant: tool working'), ev(3, ''), ev(4, 'user: new question'), ev(5, 'assistant: new answer'), ev(6, 'user: last question'), ev(7, 'assistant: last answer')]
+  const plan = planCompaction({ meta, events, nodes: [node('a', 0, 0, 1)], messages, tokens: 6000, keepTokens: 0 })
+  assert.equal(plan.use, false)
+})
+
+test('the takeover stays off when Claude’s settings cannot be written', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const { dir, claude } = claudeHome(), env = { ...process.env, CLAUDE_CONFIG_DIR: claude }, file = join(claude, 'settings.json')
+  writeFileSync(file, JSON.stringify({ model: 'opus' }))
+  const store = new ClaudeStore(join(dir, 'home'))
+  chmodSync(claude, 0o500)
+  try { assert.throws(() => applyTakeover(store, { enabled: true, window: 300000 }, env)) } finally { chmodSync(claude, 0o700) }
+  assert.equal(store.takeover().enabled, false)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { model: 'opus' })
+  store.close()
+})
+
+test('a very long message is indexed with a note that the record goes on', () => {
+  const { dir, project } = claudeHome(), file = join(project, 'long.jsonl')
+  writeFileSync(file, line('user', 'x'.repeat(20000)))
+  const store = new ClaudeStore(join(dir, 'home'))
+  store.ingest('long', file)
+  assert.match(store.eventRows('long')[0].preview, /x …\[4006 more characters; lcm_read has the full record\]$/)
+  store.close()
 })

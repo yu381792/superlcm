@@ -5,7 +5,8 @@
 import { spawn } from 'node:child_process'
 import { findCli } from './runtime.js'
 // Setup quotes each word ('...' on macOS/Linux, "..." on Windows), so allow a quote around either side.
-const ours = hook => hook.handlerType === 'command' && /cli\.js['"]? +['"]?codex-hook\b/.test(hook.command || '')
+// The entry is cli.js from a checkout, or superlcm.js (the fixed entry that follows plugin updates).
+const ours = hook => hook.handlerType === 'command' && /(?:cli|superlcm)\.js['"]? +['"]?codex-hook\b/.test(hook.command || '')
 export function codexHookTrust({ env = process.env, bin = findCli('codex', env), cwd = env.HOME || process.cwd(), timeoutMs = 10000, approve = false, command = null } = {}) {
   if (!bin) return Promise.resolve({ checked: false, error: 'Codex CLI not found' })
   return new Promise(resolve => {

@@ -51,22 +51,29 @@ export function captureHermes(store, sessionId, { env = process.env, automatic =
     if (automatic && store.isDeleted(session)) return { session, skipped: 'deleted' }
     const folder = join(store.dir, 'hermes'); mkdirSync(folder, { recursive: true, mode: 0o700 })
     const file = join(folder, hash(root).slice(0, 40) + '.jsonl')
-    const saved = store.db.prepare('SELECT last_id,last_sid FROM hermes_mirror WHERE session=?').get(session)
-    let last = saved?.last_id ?? 0, lastSid = saved?.last_sid ?? null
-    if (!existsSync(file)) { last = 0; lastSid = null } // a deleted conversation is mirrored again from the start
-    else if (last === 0 && readFileSync(file).length) throw new Error('Hermes mirror exists without a checkpoint; refusing to duplicate records')
+    // Two captures of the same conversation at once (a hook and the console) must not both append the
+    // same rows: reading the checkpoint, appending and moving the checkpoint happen under one write lock.
     const marks = ids.map(() => '?').join(',')
-    const rows = db.prepare(`SELECT * FROM messages WHERE session_id IN (${marks}) AND id>? ORDER BY id LIMIT 200001`).all(...ids, last)
-    if (rows.length > 200000) throw new Error('Too many new Hermes messages in one pass')
-    // Each mirrored row is one record. A row from the next session of the chain is where Hermes compressed
-    // the conversation: note that record so later summaries of it are not written from lost context.
-    const base = store.source(session) ? store.stats(session).records : 0, compactions = []
-    rows.forEach((r, k) => { if (lastSid !== null && r.session_id !== lastSid) compactions.push(base + k); lastSid = r.session_id })
-    if (rows.length) {
-      appendFileSync(file, rows.map(r => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 })
-      last = rows.at(-1).id
-    }
-    store.db.prepare('INSERT INTO hermes_mirror(session,root,last_id,last_sid) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET last_id=excluded.last_id,last_sid=excluded.last_sid').run(session, root, last, lastSid)
+    let rows, compactions
+    store.db.exec('BEGIN IMMEDIATE')
+    try {
+      const saved = store.db.prepare('SELECT last_id,last_sid FROM hermes_mirror WHERE session=?').get(session)
+      let last = saved?.last_id ?? 0, lastSid = saved?.last_sid ?? null
+      if (!existsSync(file)) { last = 0; lastSid = null } // a deleted conversation is mirrored again from the start
+      else if (last === 0 && readFileSync(file).length) throw new Error('Hermes mirror exists without a checkpoint; refusing to duplicate records')
+      rows = db.prepare(`SELECT * FROM messages WHERE session_id IN (${marks}) AND id>? ORDER BY id LIMIT 200001`).all(...ids, last)
+      if (rows.length > 200000) throw new Error('Too many new Hermes messages in one pass')
+      // Each mirrored row is one record. A row from the next session of the chain is where Hermes compressed
+      // the conversation: note that record so later summaries of it are not written from lost context.
+      const base = store.source(session) ? store.stats(session).records : 0; compactions = []
+      rows.forEach((r, k) => { if (lastSid !== null && r.session_id !== lastSid) compactions.push(base + k); lastSid = r.session_id })
+      if (rows.length) {
+        appendFileSync(file, rows.map(r => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 })
+        last = rows.at(-1).id
+      }
+      store.db.prepare('INSERT INTO hermes_mirror(session,root,last_id,last_sid) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET last_id=excluded.last_id,last_sid=excluded.last_sid').run(session, root, last, lastSid)
+      store.db.exec('COMMIT')
+    } catch (error) { store.db.exec('ROLLBACK'); throw error }
     const result = existsSync(file) ? store.ingest(session, file) : { session, added: 0 }
     for (const ordinal of compactions) store.markCompaction(session, ordinal)
     const nameColumn = s.has('display_name') ? "COALESCE(NULLIF(display_name,''),NULLIF(title,''))" : s.has('title') ? "NULLIF(title,'')" : 'NULL'

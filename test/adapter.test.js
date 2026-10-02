@@ -14,6 +14,7 @@ import { workerEnv } from '../src/runtime.js'
 import { summarizeWithHermes, summarizeWithPi } from '../src/cli-writers.js'
 import { summaryMode } from '../src/mode.js'
 import { codexHookTrust } from '../src/codex-hook-trust.js'
+import { writeHermesConfig } from '../src/hermes-config.js'
 import { openInTerminal } from '../src/open-terminal.js'
 import { call, startServer, tools } from '../src/mcp.js'
 import { PassThrough } from 'node:stream'
@@ -584,10 +585,12 @@ if(m.id===1)console.log(JSON.stringify({id:1,result:{}}))
 if(m.id===2)console.log(JSON.stringify({id:2,result:{data:[{hooks:[
 {eventName:'stop',handlerType:'command',command:'node /x/src/cli.js codex-hook',enabled:true,trustStatus:'trusted'},
 {eventName:'sessionStart',handlerType:'command',command:"'/n/node' '/x/src/cli.js' 'codex-hook' '--home' '/h'",enabled:true,trustStatus:'${status}'},
+{eventName:'userPromptSubmit',handlerType:'command',command:"'/n/node' '/h/.superlcm-claude/superlcm.js' 'codex-hook'",enabled:true,trustStatus:'trusted'},
 {eventName:'stop',handlerType:'command',command:'other-tool',enabled:true,trustStatus:'untrusted'}]}]}}))}})
 `);chmodSync(bin,0o755);return bin}
-  assert.deepEqual(await codexHookTrust({bin:fake('trusted'),cwd:dir}),{checked:true,total:2,trusted:2,untrusted:[],ok:true})
-  assert.deepEqual(await codexHookTrust({bin:fake('untrusted'),cwd:dir}),{checked:true,total:2,trusted:1,untrusted:['sessionStart'],ok:false})
+  // The plugin's fixed entry (superlcm.js) counts as SuperLcm's too.
+  assert.deepEqual(await codexHookTrust({bin:fake('trusted'),cwd:dir}),{checked:true,total:3,trusted:3,untrusted:[],ok:true})
+  assert.deepEqual(await codexHookTrust({bin:fake('untrusted'),cwd:dir}),{checked:true,total:3,trusted:2,untrusted:['sessionStart'],ok:false})
   assert.equal((await codexHookTrust({bin:join(dir,'missing'),cwd:dir})).checked,false)
   // approve:true records Codex's own trust for SuperLcm's exact command only, through config/batchWrite.
   const log=join(dir,'writes.json'),bin=join(dir,'codex-approve');writeFileSync(bin,'#!'+process.execPath+`
@@ -603,6 +606,18 @@ if(m.id===3){fs.writeFileSync(${JSON.stringify(log)},JSON.stringify(m.params));t
   assert.equal(approved.approved,true)
   // The other cli.js codex-hook entry is neither trusted nor counted when the exact command is known.
   assert.deepEqual([approved.total,approved.ok],[1,true])
+}))
+
+const python3=spawnSync('python3',['-c','pass']).status===0
+test('reconnecting Hermes replaces the older SuperLcm hook instead of adding a second one',{skip:!python3||process.platform==='win32'},fixture(async ({dir})=>{
+  const modules=join(dir,'py','hermes_cli');mkdirSync(modules,{recursive:true});writeFileSync(join(modules,'__init__.py'),'')
+  writeFileSync(join(modules,'config.py'),"import json, os\ndef load_config():\n    return json.load(open(os.environ['TEST_CONFIG']))\ndef save_config(v):\n    json.dump(v, open(os.environ['TEST_CONFIG'], 'w'))\n")
+  writeFileSync(join(modules,'mcp_config.py'),'def _save_mcp_server(name, value): return True\n')
+  const config=join(dir,'config.json'),script='/h/.superlcm-claude/superlcm.js',shim=join(dir,'python-shim')
+  writeFileSync(config,JSON.stringify({hooks:{on_session_end:[{command:`'/old/node' '${script}' hermes-hook`},{command:'echo other'}]}}))
+  writeFileSync(shim,`#!/bin/sh\nexec python3 -c 'import sys;sys.path.insert(0, "${join(dir,'py')}");exec(sys.argv[1])' "$2"\n`,{mode:0o700})
+  await writeHermesConfig({...process.env,HERMES_HOME:dir,SUPERLCM_HERMES_PYTHON:shim,TEST_CONFIG:config},{mcp:null,script,hooks:{on_session_end:{command:`'/new/node' '${script}' hermes-hook`}}})
+  assert.deepEqual(JSON.parse(readFileSync(config,'utf8')).hooks.on_session_end.map(h=>h.command),['echo other',`'/new/node' '${script}' hermes-hook`])
 }))
 
 test('opening Codex for its own hook review launches only the fixed CLI in a terminal',fixture(async ({dir})=>{
@@ -680,4 +695,18 @@ test('a local gateway on this computer needs no API key',fixture(async ({dir,sto
   store.setHarnessSetting('claude-code','api','gpt-6-luna','openai','http://127.0.0.1:10100/v1')
   assert.equal(store.apiCredential('gw'),'');assert.equal(store.apiConfig('gw').apiKey,'')
   store.setHarnessSetting('claude-code','api','m','openai','https://api.example.com/v1');assert.equal(store.apiCredential('gw'),null);assert.equal(store.apiConfig('gw'),null)
+}))
+
+test('Hermes captures running at the same time store each message once',fixture(async ({dir})=>{
+  const hermes=join(dir,'hermes-state'),home=join(dir,'capture-home');mkdirSync(hermes,{recursive:true})
+  const native=new DatabaseSync(join(hermes,'state.db'))
+  native.exec("CREATE TABLE sessions(id TEXT PRIMARY KEY,parent_session_id TEXT,end_reason TEXT,title TEXT,started_at INTEGER);CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT);INSERT INTO sessions VALUES('root',NULL,NULL,'t',1)")
+  const code=`import {ClaudeStore} from ${JSON.stringify(new URL('../src/store.js',import.meta.url).href)};import {captureHermes} from ${JSON.stringify(new URL('../src/hermes.js',import.meta.url).href)};const s=new ClaudeStore(${JSON.stringify(home)});captureHermes(s,'root',{env:{...process.env,HERMES_HOME:${JSON.stringify(hermes)}}});s.close()`
+  const capture=()=>new Promise(done=>spawn(process.execPath,['--no-warnings','--input-type=module','-e',code],{stdio:'ignore'}).on('close',done))
+  let id=1
+  for(let round=0;round<4;round++){for(let k=0;k<3;k++)native.exec(`INSERT INTO messages VALUES(${id},'root','user','m${id++}')`);await Promise.all([capture(),capture(),capture()])}
+  native.close()
+  const store=new ClaudeStore(home),[session]=store.db.prepare('SELECT session FROM sources').all().map(r=>r.session)
+  assert.equal(store.eventRows(session).length,id-1)
+  store.close()
 }))

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.7
+
+Fixes from an independent review (GPT-6.1 sol), each with a regression test:
+
+- Compaction takeover: a run of messages repeated later in the conversation could place the cut at the later copy and drop the uncovered messages between; the cut is now also checked against the first uncovered record after it. An unfinished first turn that no summary covers is no longer dropped (the compaction goes back to Claude Code).
+- A `<superlcm-context …>` block pasted into a prompt was taken for a compaction packet and hid that message and the next ones from the index; only the first message after Claude Code's compact boundary is treated as a packet now.
+- Summary leases have an owner: a refused save or a handoff from the conversation no longer releases a background worker's lease, and a refused save hands the rest back to that worker instead of retrying silently.
+- Hermes: reconnecting after Node moved replaced nothing and added a second capture hook; the older SuperLcm hook is replaced now. Two captures at the same moment could store the same messages twice; the mirror is now appended under a write lock.
+- Codex: hook trust was not found when the hooks point at the plugin's fixed entry (`~/.superlcm-claude/superlcm.js`).
+- A message longer than 16,000 characters was cut in the index without a mark; the cut now says how much more there is and that `lcm_read` has the full record.
+- Turning the takeover on when Claude's settings.json cannot be written leaves it off instead of on in name only, and the settings are read again right before they are written.
+
 ## 0.4.6
 
 - README: a full Claude Code section leads the page, with a new compaction-takeover animation (`docs/images/takeover-*.gif`, source in `scripts/demos/`), what the plugin brings, which Claude Code versions run the module, and a measured swap.

@@ -27,6 +27,9 @@ function visible(record) {
   if (!Array.isArray(parts)) return ''
   return parts.filter(p => ['text','input_text','output_text'].includes(p?.type) && typeof p.text === 'string').map(p => p.text).join('\n')
 }
+// Indexed text is capped; a cut says so, so summaries and searches know the record goes on.
+const PREVIEW_CHARS = 16000
+const clip = text => text.length > PREVIEW_CHARS ? `${text.slice(0, PREVIEW_CHARS)} …[${text.length - PREVIEW_CHARS} more characters; lcm_read has the full record]` : text
 function extract(raw, kind) {
   if (kind === 'text') return raw.toString('utf8')
   try {
@@ -45,10 +48,10 @@ function extract(raw, kind) {
     }
     if (role !== 'user' && role !== 'assistant') return ''
     const text=visible(item).trim()
-    return text ? `${role}: ${text}`.slice(0, 16000) : ''
+    return text ? clip(`${role}: ${text}`) : ''
   } catch { return '' }
 }
-function messageRecord(raw) { try { const r = JSON.parse(raw.toString('utf8')); return r?.type === 'user' || r?.type === 'assistant' } catch { return false } }
+function jsonRecord(raw) { try { return JSON.parse(raw.toString('utf8')) } catch { return null } }
 function derivedName(preview) { return typeof preview==='string' ? preview.replace(/^(user|assistant):\s*/,'').replace(/\s+/g,' ').trim().slice(0,90) : '' }
 export const shortCode = session => hash(String(session)).slice(0,5)
 function bounded(value, fallback, max) { return Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback }
@@ -83,6 +86,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS host_writers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
+    if(!new Set(this.db.prepare('PRAGMA table_info(leases)').all().map(c=>c.name)).has('owner'))this.db.exec("ALTER TABLE leases ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
     if(!new Set(this.db.prepare('PRAGMA table_info(takeover_settings)').all().map(c=>c.name)).has('keep_tokens'))this.db.exec('ALTER TABLE takeover_settings ADD COLUMN keep_tokens INTEGER NOT NULL DEFAULT 40000')
     if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
     if(!deliveryColumns.has('delivery_route'))this.db.exec("ALTER TABLE deliveries ADD COLUMN delivery_route TEXT NOT NULL DEFAULT 'hook'")
@@ -522,10 +526,17 @@ export class ClaudeStore {
     try {
       // A SuperLcm compaction packet, and the kept messages Claude Code writes again right after it, are
       // already recorded: their bytes stay in the archive, but they are not indexed or summarized twice.
-      const packet = /^user: <superlcm-context [^>]*keep="(\d+)"/.exec(preview)
+      // Only the first message after Claude Code's compact_boundary can be a packet (remaining -1 marks
+      // that point), so the same text pasted into a prompt is indexed like any other message.
+      const record = kind === 'jsonl' ? jsonRecord(raw) : null
       const copies = this.db.prepare('SELECT remaining FROM takeover_copies WHERE session=?').get(session)?.remaining || 0
-      if (packet) { preview=''; this.db.prepare('INSERT INTO takeover_copies(session,remaining) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET remaining=excluded.remaining').run(session, Number(packet[1])) }
-      else if (copies > 0 && kind === 'jsonl' && messageRecord(raw)) { preview=''; this.db.prepare('UPDATE takeover_copies SET remaining=remaining-1 WHERE session=?').run(session) }
+      const setCopies = n => this.db.prepare('INSERT INTO takeover_copies(session,remaining) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET remaining=excluded.remaining').run(session, n)
+      const message = record?.type === 'user' || record?.type === 'assistant'
+      const packet = copies === -1 && message && /^user: <superlcm-context [^>]*keep="(\d+)"/.exec(preview)
+      if (record?.type === 'system' && record.subtype === 'compact_boundary') setCopies(-1)
+      else if (packet) { preview=''; setCopies(Number(packet[1])) }
+      else if (copies === -1 && message) setCopies(0)
+      else if (copies > 0 && message) { preview=''; setCopies(copies - 1) }
       this.db.prepare('INSERT INTO events VALUES(?,?,?,?,?,?)').run(session, ordinal, start, end, hash(raw), preview)
       this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
       this.db.prepare("UPDATE sources SET offset=?,status='ok',updated_ms=? WHERE session=?").run(end, Date.now(), session)
@@ -574,13 +585,15 @@ export class ClaudeStore {
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }
-  lease(session, duration = 120000) {
+  // One writer per conversation at a time. owner is 'host' for the summaries Claude Code writes inside the
+  // conversation and 'worker:<pid>' for a separate run; only the owner renews or releases its lease.
+  lease(session, duration = 120000, owner = `worker:${process.pid}`) {
     const now = Date.now()
-    const result=this.db.prepare('INSERT INTO leases(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms WHERE leases.until_ms < ?').run(session, now+duration, now)
+    const result=this.db.prepare("INSERT INTO leases(session,until_ms,owner) VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms,owner=excluded.owner WHERE leases.until_ms < ?").run(session, now+duration, owner, now)
     return result.changes === 1
   }
-  renewLease(session, duration = 120000) { this.db.prepare('UPDATE leases SET until_ms=? WHERE session=?').run(Date.now()+duration, session) }
-  release(session) { this.db.prepare('UPDATE leases SET until_ms=0 WHERE session=?').run(session) }
+  renewLease(session, duration = 120000, owner = `worker:${process.pid}`) { this.db.prepare('UPDATE leases SET until_ms=? WHERE session=? AND owner=?').run(Date.now()+duration, session, owner) }
+  release(session, owner = `worker:${process.pid}`) { this.db.prepare('UPDATE leases SET until_ms=0 WHERE session=? AND owner=?').run(session, owner) }
   search(session, query, limit = 10) {
     if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new Error('Provide a query of 1–200 characters')
     const tokens = query.normalize('NFKC').match(/[\p{L}\p{N}_]+/gu)?.slice(0, 8) || []
