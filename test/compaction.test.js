@@ -240,3 +240,17 @@ test('a very long message is indexed with a note that the record goes on', () =>
   assert.match(store.eventRows('long')[0].preview, /x …\[4006 more characters; lcm_read has the full record\]$/)
   store.close()
 })
+
+test('the module answers Claude Code’s precompute as well as the threshold, but never a subagent’s', async () => {
+  const { register } = await import('../hooks/compact-mod.js')
+  const hooks = new Map(); register((event, hook) => hooks.set(event, hook))
+  const plan = { use: true, start: 2, packet: '<superlcm-context conversation="#x" keep="2" through="1">s</superlcm-context>' }
+  const $ = { plugin: { root: '.' }, session: { id: async () => 's', usage: async () => ({ context: { tokens: 100, window: 1000 } }) }, process: { run: async () => ({ stdout: JSON.stringify(plan) }) } }
+  const messages = ['a', 'b', 'c', 'd'].map((text, i) => ({ role: i % 2 ? 'assistant' : 'user', text }))
+  const native = async () => ({ messages: [{ role: 'user', text: 'native summary' }] })
+  for (const trigger of ['precompute', 'auto']) {
+    const out = await hooks.get('session.compact')($, { trigger, messages }, native)
+    assert.deepEqual(out.messages.map(m => m.text), [plan.packet, 'c', 'd'], trigger)
+  }
+  assert.equal((await hooks.get('session.compact')($, { trigger: 'auto', agentId: 'x', messages }, native)).messages[0].text, 'native summary')
+})

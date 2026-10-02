@@ -41,8 +41,10 @@ export function register(on) {
     return next(e)
   })
   on('session.compact', async ($, e, next) => {
-    // Precompute (Claude Code's own background preparation) and subagents stay with Claude Code.
-    if (e.trigger === 'precompute' || e.agentId) return next(e)
+    // Subagents stay with Claude Code. Precompute (Claude Code preparing the compaction ahead of time,
+    // kept and swapped in at the threshold without asking again) is answered too: when the summaries are
+    // ready, ours is what gets kept; when they are not, Claude Code prepares its own as usual.
+    if (e.agentId) return next(e)
     let plan
     try {
       const [id, usage] = await Promise.all([$.session.id(), $.session.usage()])

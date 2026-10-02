@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.9
+
+- Compaction takeover now also answers Claude Code's precompute (2.1.286 prepares the compaction in the background and swaps it in at the threshold without asking again). Before, the module let every precompute through, so Claude Code's own summary was what got swapped in and the takeover never ran on desktop sessions.
+
 ## 0.4.8
 
 - The Claude desktop app does not pass `autoCompactWindow` to the Claude Code it runs, so its sessions kept compacting at the model default (about 367K) and the takeover's size had no effect there. Turning the takeover on now also sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` under `env` in Claude's settings.json, which every Claude Code reads first; turning it off restores the earlier value. Takes effect for sessions started or resumed afterwards.
