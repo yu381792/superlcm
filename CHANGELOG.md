@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.15
+
+- A conversation's transcript may now be up to 4 GiB (was 256 MiB). It is read in 64 KiB pieces, so the size costs disk for the private copy, not memory (a 563 MB transcript indexes in about 17 s). Before, a longer Claude Code conversation was skipped without a word: nothing recorded, no summaries, so the compaction takeover always fell back to Claude Code's own summary there. A transcript over the cap is now marked `too-large`.
+
 ## 0.4.14
 
 - Fixed: the module no longer starts a compaction itself (added in 0.4.10). On a plugin's own `$.session.compact()` Claude Code 2.1.287 skips that plugin's hooks, so a compaction started there was always Claude Code's own summary, never SuperLcm's (checked on a live session; found in review). Instead, turning the takeover on now also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` so that Claude Code itself starts compacting right at the console's size (window 100K above it, the start at the size), where the module answers with the summaries. When they lag, Claude Code summarizes at that size the usual way.

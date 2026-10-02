@@ -10,7 +10,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
-const maxFile = 256 * 1024 * 1024
+const maxFile = 4 * 1024 * 1024 * 1024 // read in 64 KiB pieces, so the size costs disk (the private copy), not memory
 // Preserve the existing index path; both Claude and Codex must point at the same home.
 export const home = () => resolve(process.env.SUPERLCM_HOME || process.env.SUPERLCM_CLAUDE_HOME || join(homedir(), '.superlcm-claude'))
 function ensurePrivate(path) { mkdirSync(path, { recursive: true, mode: 0o700 }) }
@@ -413,7 +413,7 @@ export class ClaudeStore {
     const fd = openSync(file, 'r'), copy = this.#archiveWriter(session, src.offset)
     try {
       const size = fstatSync(fd).size
-      if (size > maxFile) throw new Error('Source exceeds 256 MiB per session; split it first')
+      if (size > maxFile) { this.db.prepare("UPDATE sources SET status='too-large' WHERE session=?").run(session); throw new Error('Source exceeds 4 GiB per session; split it first') }
       const last = this.db.prepare('SELECT * FROM events WHERE session=? ORDER BY ordinal DESC LIMIT 1').get(session)
       if (size < src.offset || (last && this.#readRange(fd, last.start, last.end, size)?.digest !== last.digest)) {
         this.db.prepare("UPDATE sources SET status='changed' WHERE session=?").run(session)
