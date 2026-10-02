@@ -710,3 +710,17 @@ test('Hermes captures running at the same time store each message once',fixture(
   assert.equal(store.eventRows(session).length,id-1)
   store.close()
 }))
+
+test('Hermes Python is found through a launcher that execs the entry script quoted or bare', async () => {
+  const { hermesRuntime } = await import('../src/hermes-config.js')
+  const dir = mkdtempSync(join(tmpdir(), 'superlcm-hermes-launcher-')), entry = join(dir, 'entry'), launcher = join(dir, 'hermes')
+  // Hermes 0.21.5+: the entry script reports its runtime command with --print-runtime-command.
+  writeFileSync(entry, `#!/bin/sh\n# --print-runtime-command\necho '${JSON.stringify([process.execPath, '-I', '-c', 'import sys; runpy.run_module("hermes_cli.main")'])}'\n`); chmodSync(entry, 0o755)
+  for (const line of [`exec ${entry} "$@"`, `exec "${entry}" "$@"`]) {
+    writeFileSync(launcher, `#!/bin/sh\n${line}\n`); chmodSync(launcher, 0o755)
+    const runtime = hermesRuntime({ ...process.env, SUPERLCM_HERMES_BIN: launcher, SUPERLCM_HERMES_PYTHON: '' })
+    assert.equal(runtime?.python, process.execPath, line)
+    assert.deepEqual(runtime.args, ['-I'])
+  }
+  rmSync(dir, { recursive: true, force: true })
+})

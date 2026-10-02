@@ -17,7 +17,8 @@ export function hermesRuntime(env = process.env) {
   if (env.SUPERLCM_HERMES_PYTHON) return { python: env.SUPERLCM_HERMES_PYTHON, args: [], prelude: '' }
   const bin = findCli('hermes', env); if (!bin) return null
   let entry = bin
-  try { const target = readFileSync(bin, 'utf8').slice(0, 4096).match(/exec\s+"([^"]+)"/)?.[1]; if (target && existsSync(target)) entry = target } catch {}
+  // The launcher execs the entry script by path, quoted or not (installs since late September write it bare).
+  try { const m = readFileSync(bin, 'utf8').slice(0, 4096).match(/exec\s+(?:"([^"]+)"|'([^']+)'|([^\s"';&|]+))/), target = m && (m[1] || m[2] || m[3]); if (target && existsSync(target)) entry = target } catch {}
   let script = ''; try { script = readFileSync(entry, 'utf8').slice(0, 20000) } catch {}
   if (script.includes('--print-runtime-command')) {
     try {
