@@ -299,20 +299,20 @@ footer{margin-top:72px;padding-top:18px;border-top:1.5px solid var(--ink);displa
   const two = (en, zh) => `<span lang="en">${en}</span><span lang="zh">${zh}</span>`
   const el = (html, cls = '', attrs = {}) => { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; for (const k in attrs) d.setAttribute(k, attrs[k]); return d }
   const T = [
-    ['u','Add a stop-loss to the backtest','给回测加上止损'],
-    ['a','Stop-loss at −7%, checked daily','止损 −7%，按日检查'],
-    ['u','Skip limit-up days on entry','涨停当天不买入'],
-    ['a','Entry filter added','买入过滤加好了'],
-    ['u','Rerun 2019–2024','重跑 2019–2024'],
-    ['a','Sharpe 1.42, max drawdown 18%','夏普 1.42，最大回撤 18%'],
-    ['u','Compare with the old version','和旧版本对比'],
-    ['a','Drawdown down 6 points','回撤少了 6 个点'],
-    ['u','Write the report','写成报告'],
-    ['a','Report drafted, 3 charts','报告初稿，3 张图'],
-    ['u','Check suspended stocks','检查停牌股'],
-    ['a','12 suspensions handled','12 次停牌已处理'],
+    ['u','Add a login page to the site','给网站加一个登录页'],
+    ['a','Login page added','登录页加好了'],
+    ['u','Keep people signed in for 30 days','登录状态保留 30 天'],
+    ['a','Sign-in now lasts 30 days','现在登录能保持 30 天'],
+    ['u','Run the tests','跑一下测试'],
+    ['a','All 42 tests pass','42 个测试全部通过'],
+    ['u','The home page feels slow','首页有点慢'],
+    ['a','Images now load lazily, 2× faster','图片改成按需加载，快了一倍'],
+    ['u','Write the release notes','写一下更新说明'],
+    ['a','Release notes drafted, 5 items','更新说明写好了，共 5 条'],
+    ['u','Check it on a phone','在手机上看看'],
+    ['a','Fixed 3 layout issues on phones','修好了手机上 3 处排版问题'],
   ]
-  const PROMPT = ['Next: tune the position size', '下一步：调仓位大小']
+  const PROMPT = ['Next: add a dark mode', '下一步：加个深色模式']
   let gen = 0
   const wait = ms => new Promise((res, rej) => { const g = gen; setTimeout(() => g === gen ? res() : rej('stop'), reduce ? 0 : ms) })
   const msg = (n, m) => el(`<b>#${String(n).padStart(3, '0')}</b><span class="who">${m[0] === 'u' ? 'YOU' : 'AI'}</span><span>${two(m[1], m[2])}</span>`, 'item in', { 'data-who': m[0] })
@@ -354,7 +354,7 @@ footer{margin-top:72px;padding-top:18px;border-top:1.5px solid var(--ink);displa
       ;[...cR.children].slice(0, cR.children.length - 4).forEach(n => n.classList.add('swapout'))
       await wait(450)
       cR.innerHTML = ''
-      cR.appendChild(el(`L1·01 <span>${two('stop-loss, filters, backtest, report', '止损、过滤、回测、报告')}</span>`, 'card l2'))
+      cR.appendChild(el(`L1·01 <span>${two('login page, tests, speed, release notes', '登录页、测试、提速、更新说明')}</span>`, 'card l2'))
       const kept = el(`<div class="cap">${two('NEWEST 40K · WORD FOR WORD', '最近 40K · 原样保留')}</div>`, 'kept')
       for (let i = 8; i < 12; i++) { const m = msg(i + 1, T[i]); m.classList.remove('in'); kept.appendChild(m) }
       cR.appendChild(kept)
@@ -368,7 +368,7 @@ footer{margin-top:72px;padding-top:18px;border-top:1.5px solid var(--ink);displa
       ;[...$('cL').children].forEach(n => n.classList.add('crush'))
       await wait(650)
       $('cL').innerHTML = ''
-      $('cL').appendChild(el(`<em>${two('SUMMARY', '摘要')}</em>${two('Worked on a backtest and a report.', '做了回测和报告。')}`, 'sum v2'))
+      $('cL').appendChild(el(`<em>${two('SUMMARY', '摘要')}</em>${two('Worked on the website.', '改了网站。')}`, 'sum v2'))
       $('mL').className = 'meter cool'; tok('L', 38); $('lostL').textContent = '12'
       $('stall').classList.remove('busy'); $('stallMsg').innerHTML = two('Done after 46 s', '46 秒后完成'); $('inL').classList.remove('blocked')
       $('resL').appendChild(el(two('Waited 46 s · originals gone', '干等 46 秒 · 原文没了'), 'result bad'))
