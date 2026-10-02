@@ -8,17 +8,31 @@
 
 Everything you and your agent say is kept, word for word, on your own computer. Summaries are filed in layers like the chapters of a book, and any detail can be pulled back out and quoted exactly, even long after the context window has been compacted. It works across Claude Code, Codex, Hermes and Pi, and a conversation started in one can be continued in another.
 
-## Highlight: lossless compaction that never makes you wait
+## For Claude Code: compaction you never wait for
 
-Claude Code's own compaction stops the conversation, asks a model to squeeze everything into one summary, and throws the originals away. With the SuperLcm plugin it can work the other way round:
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/takeover-en-dark.gif"><img src="docs/images/takeover-en-light.gif" alt="Animation: two conversations grow to Claude Code's 300K compaction threshold. On the left Claude Code stops for 46 seconds to summarize and the originals are lost. On the right Haiku has written L0 and L1 summaries in the background; at the threshold SuperLcm swaps the older part for them in 0.07 seconds, keeps the newest 40K word for word, and the conversation goes on."></picture>
 
-- **Asynchronous, in the background.** Summaries are written quietly after each stretch of conversation, while you keep working. By the time the context fills up, the replacement is already assembled.
-- **No stall at the threshold.** When the conversation reaches the threshold (300K tokens by default, adjustable, or the model's window if smaller), SuperLcm swaps the older part for its layered summaries in one step. No model is called at that moment, so the swap takes milliseconds instead of a minute of "Compacting…".
-- **Lossless.** Only the view is shortened. Every original message stays in the archive, and the agent reads any of them back word for word with `lcm_read`. The newest turns are kept verbatim.
-- **Cheap summaries, Haiku included.** The background summaries can be written by Claude Haiku (on the Claude Code card under Connect: Own tool, in the background, model `haiku`), by the agent itself, or by your own API, so the expensive main model is not spent on bookkeeping. With the plugin on Claude Code 2.1.286+, these summaries are written from inside the conversation with your existing login (`$.model.complete`), without starting another Claude Code session.
-- **Safe fallback.** If the summaries have not caught up, or anything goes wrong, Claude Code compacts the usual way. Turning it off restores your previous setting.
+Claude Code's own compaction stops the conversation at the threshold, asks the model to squeeze everything into one summary, and drops the originals. Installed as a Claude plugin, SuperLcm turns that around:
 
-Turn it on in the console under Settings › Compaction. Needs the plugin install (below) and Claude Code 2.1.286 or newer; it handles the main conversation, and subagents compact as usual.
+- **Assembled in the background, ahead of time.** After each turn the plugin writes the waiting summary pieces while you keep working, so by the time the context fills up the replacement is already there.
+- **No stall at the threshold.** At the threshold (300K tokens by default) SuperLcm swaps the older part for the fewest layered summaries that cover it, in one step and with no model call. It takes milliseconds, not a minute of "Compacting…".
+- **The work in hand keeps its detail.** The newest 40K tokens (adjustable: 20K, 40K or 80K) stay word for word. Only older parts become summaries, so the agent carries on as if nothing happened.
+- **Lossless.** Only the agent's view gets shorter. Every original stays in the archive, numbered, and the agent quotes it back with `lcm_read` when a detail matters.
+- **Summaries by Haiku, inside the conversation.** With "Own tool, in the background" and model `haiku` on the Claude Code card, the plugin calls Haiku through the conversation's own login. No API key, no second Claude Code session, and the expensive main model is not spent on bookkeeping.
+- **Safe by default.** Off until you turn it on. If the summaries have not caught up or anything looks wrong, Claude Code compacts the usual way, and turning it off restores your previous setting. Subagents always compact the usual way.
+
+What a swap looks like on a real conversation of about 12,000 records: the older part became 3 summaries of about 8,000 characters (a few thousand tokens), the newest stretch stayed verbatim, and a 300K context came back at roughly 70K, most of it Claude Code's own system prompt and tool definitions.
+
+**What the Claude plugin brings**
+
+| Part | What it does |
+|---|---|
+| Capture hooks | Save every turn to the archive as it happens |
+| Lookup tools | `lcm_find`, `lcm_outline`, `lcm_read`, `lcm_continue` for the agent |
+| Plugin module | Compaction takeover and in-conversation summaries (Claude Code 2.1.286+) |
+| `/superlcm:console` | Opens the local console: settings, conversations, connecting other tools |
+
+The module runs in the terminal `claude` and in the Claude desktop app's Code tab from Claude Code 2.1.286. Older versions still get capture and lookup; the takeover starts working when they update. Settings › Compaction in the console shows what this computer supports.
 
 ## Compaction throws pages away. SuperLcm files them.
 
@@ -60,7 +74,7 @@ Both sides start with the same 18 messages and a context window that holds six. 
 
 ## Who writes the summaries
 
-Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use (Claude Code 2.1.286+ with the plugin calls the model from inside the conversation instead), **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
+Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use (for Claude Code 2.1.286+ with the plugin, the model is called from inside the conversation instead; Haiku is a good choice), **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
 
 ## Compaction vs. an archive
 
@@ -69,6 +83,7 @@ Chosen per tool in the console: **the agent itself** (the default; it has just b
 | The original words | Out of the agent's reach after compaction | Kept in full, readable by record number |
 | Summary shape | One flat summary, shorter each time | Layers like a book, each pointing at its pages |
 | A detail from 300 turns ago | Survives only if the summary kept it | Found by search, quoted exactly |
+| When the context fills up (Claude Code) | Stop and wait while a model summarizes | Summaries ready in advance, swapped in at once |
 | Continuing in another tool | Start over and re-explain | One sentence, with outline and recent messages |
 | Where it lives | — | A file on your computer |
 
@@ -79,9 +94,9 @@ In Claude Code:
     /plugin marketplace add yu381792/superlcm
     /plugin install superlcm@superlcm
 
-The plugin brings the capture hooks and lookup tools for Claude Code itself; `/superlcm:console` opens the console, where Codex, Hermes and Pi are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
+The plugin brings everything listed above for Claude Code; to use the compaction takeover, open the console and turn it on under Settings › Compaction. `/superlcm:console` opens the console, where Codex, Hermes and Pi are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
 
-Plugin updates replace the plugin folder, so tools connected from the plugin's console are pointed at a fixed entry file in the SuperLcm folder (`~/.superlcm-claude/superlcm.js`) that follows updates. If Claude Code was connected from the console before, the older hooks in Claude's settings stay quiet once the plugin is enabled; remove the older `superlcm` MCP entry with `claude mcp remove superlcm -s user` so the tools are not listed twice.
+Plugin updates replace the plugin folder, so tools connected from the plugin's console are pointed at a fixed entry file in the SuperLcm folder (`~/.superlcm-claude/superlcm.js`) that follows updates. If Claude Code was connected from the console before, the older hooks in Claude's settings stay quiet once the plugin is enabled, and the console's Claude card offers to remove them and the older `superlcm` MCP entry (backed up first). The same card installs and updates the plugin.
 
 ## Quick start (from a checkout)
 
@@ -91,7 +106,7 @@ Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then
 
 1. **接入 (Connect)** — pick Claude Code, Codex, Hermes or Pi and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
 2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **换个工具继续** to get the one-line handoff for another tool.
-3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (the default: it writes each part from memory right after it happens, which costs almost nothing), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width.
+3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (the default: it writes each part from memory right after it happens, which costs almost nothing), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width, and turn on the Claude Code compaction takeover under Compaction.
 
 Terminal equivalents: `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 

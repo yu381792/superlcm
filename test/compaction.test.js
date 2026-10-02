@@ -174,3 +174,15 @@ test('the newest stretch up to the keep size stays word for word, from the start
   assert.equal(plan(40000).start, 32) // four turns, about 40K
   assert.equal(plan(500000).start, 20) // never more than half the context
 })
+
+test('the retrieval note after a compaction is left out when SuperLcm did the compaction', () => {
+  const { dir, claude, project } = claudeHome(), home = join(dir, 'home')
+  const env = { ...process.env, SUPERLCM_HOME: home, CLAUDE_CONFIG_DIR: claude }
+  const hook = (id, file) => spawnSync(process.execPath, ['src/cli.js', 'hook'], { input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact', session_id: id, transcript_path: file }), env, encoding: 'utf8' }).stdout
+  const base = line('user', 'hello') + line('assistant', [{ type: 'text', text: 'hi' }]) + JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n'
+  const ours = join(project, 'o1.jsonl'), theirs = join(project, 'o2.jsonl')
+  writeFileSync(ours, base + line('user', '<superlcm-context conversation="#x" keep="0" through="1">s</superlcm-context>'))
+  writeFileSync(theirs, base + line('user', 'This session is being continued from a previous conversation.'))
+  assert.equal(hook('o1', ours), '')
+  assert.match(hook('o2', theirs), /original records are preserved/)
+})

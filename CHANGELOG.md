@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6
+
+- README: a full Claude Code section leads the page, with a new compaction-takeover animation (`docs/images/takeover-*.gif`, source in `scripts/demos/`), what the plugin brings, which Claude Code versions run the module, and a measured swap.
+- The in-conversation summary note now says plainly that it comes from the plugin the user installed and the mode the user chose, so models do not read it as an injection.
+- After a compaction SuperLcm itself answered, the SessionStart retrieval note is left out (the packet already says where the originals are).
+
 ## 0.4.5
 
 - Compaction takeover keeps the newest stretch word for word (Settings › Compaction › Keep recent originals: 20K, 40K by default, or 80K tokens, at most half the context), from the start of a turn, even where summaries already cover it; only older parts become summaries.

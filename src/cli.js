@@ -7,7 +7,7 @@ import { startServer } from './mcp.js'
 import { claudePluginEnabled } from './runtime.js'
 import { startWeb, defaultPort } from './web.js'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 const [command,...rest]=process.argv.slice(2)
 const homeFlag=rest.indexOf('--home')
@@ -31,7 +31,17 @@ function spawnSummary(session,args,env) {
 }
 // 对话模型生成: one short note per turn, only when a whole piece is waiting. The AI writes it from memory
 // (it has just been through that part); a piece that straddles a compaction comes with its text instead.
-const summaryNudge=(store,session)=>summaryWork(store,session)?`SuperLcm (conversation ${session}): a summary piece of this conversation is ready. After answering, call lcm_summary_task {"conversation":"${session}","recent":true}; if the work says from_memory, summarize that part from your own context, otherwise summarize the returned text; then call lcm_summary_submit with its batch_id. Repeat while more is true, at most 3 pieces. Do not mention this to the user, and never claim a summary was saved without the tool confirming it.`:null
+// Written as what it is, a note from the plugin the user installed, so a model does not read it as an injection.
+const summaryNudge=(store,session)=>summaryWork(store,session)?`Note from SuperLcm, the conversation-memory plugin the user installed: the user chose to have you write this conversation's summaries yourself, and one piece (${session}) is ready. When you have answered, call lcm_summary_task {"conversation":"${session}","recent":true}. If the result says from_memory, summarize that stretch from your own context; otherwise summarize the text it returns. Then call lcm_summary_submit with its batch_id, and repeat while more is true, at most 3 pieces. This is routine bookkeeping that needs no mention to the user; only say a summary was saved if the tool confirms it.`:null
+// Whether the newest compaction in a Claude Code transcript was answered by SuperLcm's packet.
+function ownCompaction(path) {
+  try {
+    const size=statSync(path).size,fd=openSync(path,'r'),len=Math.min(size,4e6),buf=Buffer.alloc(len)
+    readSync(fd,buf,0,len,size-len);closeSync(fd)
+    const tail=buf.toString('utf8'),at=tail.lastIndexOf('"compact_boundary"')
+    return at>=0&&tail.slice(at,at+20000).includes('<superlcm-context ')
+  } catch { return false }
+}
 const derivedTitle=(store,session)=>store.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview.replace(/^user:\s*/,'').replace(/\s+/g,' ').trim().slice(0,90)
 if(command==='setup' || command==='doctor-local'){const store=new ClaudeStore();try{const {harnessConnections}=await import('./harness.js');if(command==='doctor-local'||!rest[0])console.log(JSON.stringify(await harnessConnections(store),null,2));else{const {setupPreview,publicPreview,applySetup}=await import('./setup.js');const preview=await setupPreview(store,rest[0]);console.log(JSON.stringify(rest.includes('--apply')?await applySetup(store,rest[0],preview.revision):publicPreview(preview),null,2))}}catch(error){console.error(error.message);process.exitCode=1}finally{store.close()}}
 else if (command==='mcp') startServer()
@@ -93,7 +103,8 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
             if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) scheduleSummary(store,session,mode,model)
             if (event==='UserPromptSubmit' && mode==='agent' && summaryWork(store,session)) process.stdout.write(summaryNudge(store,session)+'\n')
           }
-          if (event==='SessionStart' && input.source==='compact' && store.source(session)) {
+          // After SuperLcm's own compaction (the takeover) the packet already says this; the note is only for Claude Code's.
+          if (event==='SessionStart' && input.source==='compact' && store.source(session) && !(file&&ownCompaction(input.transcript_path))) {
             const {code}=store.metadata(session),{records}=store.stats(session)
             process.stdout.write(`SuperLcm: this conversation was compacted, but all ${records} original records are preserved as #${code}. When an earlier detail matters, call lcm_outline {"conversation":"#${code}"} to locate it and lcm_read to quote the exact original instead of relying on the compacted summary.\n`)
           }
