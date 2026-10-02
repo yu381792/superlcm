@@ -10,7 +10,7 @@
 // when the session ends, or after a failed call, goes to the separate `claude -p` worker as before.
 const cli = ($, command, id, stdin) => $.process.run(['node', `${$.plugin.root}/src/launch.js`, command, id], { stdin: stdin ?? '', timeoutMs: 60000 })
   .then(r => JSON.parse(r.stdout.trim().split('\n').at(-1) || '{}'))
-const MAX_PIECES = 8 // per turn; a long backlog continues after the next turn
+const MAX_PIECES = 2000 // a whole backlog in one background run (one at a time per session); turns never wait for it
 const writing = new Set()
 async function writeSummaries($, id) {
   if (writing.has(id)) return

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.16
+
+- In-conversation summaries (本工具后台写 with the plugin) now work through the whole waiting backlog in one background run instead of 8 pieces per turn, so a long conversation that was never summarized catches up within the hour rather than over dozens of turns. Turns never wait for it.
+
 ## 0.4.15
 
 - A conversation's transcript may now be up to 4 GiB (was 256 MiB). It is read in 64 KiB pieces, so the size costs disk for the private copy, not memory (a 563 MB transcript indexes in about 17 s). Before, a longer Claude Code conversation was skipped without a word: nothing recorded, no summaries, so the compaction takeover always fell back to Claude Code's own summary there. A transcript over the cap is now marked `too-large`.
