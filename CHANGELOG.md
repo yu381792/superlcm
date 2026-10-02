@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+- 接管压缩 (Settings › Compaction, off by default): a Claude Code module (`hooks/compact-mod.js`, Claude Code 2.1.287+) answers the main conversation's compaction the lossless-claw way. The level-0 summaries that chain from the first record are replaced by the fewest layered summaries that cover them, everything newer (and at least the last two prompts) stays word for word, and no model is called. A summary gap, an unplaceable cut, a kept part over 60% of the window, a subagent or Claude Code's own precompute all hand the compaction back to Claude Code. Turning it on sets Claude Code's `autoCompactWindow` (300K by default) and remembers the earlier value; turning it off restores it. The console warns when the Claude plugin is not enabled.
+- A SuperLcm compaction packet, and the kept messages Claude Code writes again after it, are archived but not indexed or summarized twice.
+
 ## 0.3.0
 
 - Custom API models are added once in Settings (name, protocol, endpoint, model ID, reasoning effort, key) and picked on any tool's card; there is no global summary method any more. Editing a model applies to every tool using it, a model in use cannot be deleted, and the same endpoint reuses a saved key. Existing custom API settings become added models with their keys.

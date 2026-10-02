@@ -1,5 +1,8 @@
 {
   "description": "SuperLcm saves each turn locally and reminds Claude where earlier detail lives.",
+  "modules": [
+    "./compact-mod.js"
+  ],
   "hooks": {
     "SessionStart": [
       {

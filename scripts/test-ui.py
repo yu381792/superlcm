@@ -102,7 +102,16 @@ try:
   page.wait_for_selector('#rows .row-wrap:has-text("待导入本地记录")',state='detached');assert page.locator('#rows .row').count()==2
   # Settings: real CLI catalogs, saving, granularity and appearance.
   page.locator('.nav [data-view="settings"]').click()
-  assert page.locator('#setNav button').all_inner_texts()==['外观','存储','摘要','MCP 工具']
+  assert page.locator('#setNav button').all_inner_texts()==['外观','存储','摘要','压缩','MCP 工具']
+  # 接管压缩: off by default; turning it on sets the fixture's Claude compaction window, off restores it.
+  page.locator('#setNav [data-sec="compact"]').click();page.wait_for_selector('#takeoverNote:has-text("已关闭")')
+  assert page.locator('#takeoverWindow').input_value()=='300000' and not page.locator('#takeoverOn').is_checked()
+  page.check('#takeoverOn');page.wait_for_selector('#takeoverSaved:has-text("未保存")')
+  with page.expect_response(lambda r:'/api/takeover' in r.url) as took:page.click('#saveTakeover')
+  assert took.value.status==200 and took.value.json()['claude_window']==300000;page.wait_for_selector('#takeoverNote:has-text("已打开")')
+  page.uncheck('#takeoverOn')
+  with page.expect_response(lambda r:'/api/takeover' in r.url) as off:page.click('#saveTakeover')
+  assert off.value.status==200 and off.value.json()['claude_window'] is None;page.wait_for_selector('#takeoverNote:has-text("已关闭")')
   page.locator('#setNav [data-sec="summary"]').click()
   # Custom API models are added once here (a local address needs no key), then picked on a tool card.
   page.wait_for_selector('#apiModels:has-text("还没有添加模型")');page.click('#amAdd')

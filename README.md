@@ -60,6 +60,10 @@ Chosen per tool in the console: **the agent itself** (the default; it has just b
 | Continuing in another tool | Start over and re-explain | One sentence, with outline and recent messages |
 | Where it lives | — | A file on your computer |
 
+## Let SuperLcm take over Claude Code compaction
+
+Optional and off by default (Settings › Compaction). When on and a conversation reaches the threshold (300K tokens by default, or the model's window if smaller), SuperLcm handles the compaction: the layered summaries already written in the background replace the older part, the newest turns stay word for word, and every original is one `lcm_read` away. No model is called at that moment, so there is almost no wait. If the summaries have not caught up, or anything goes wrong, Claude Code compacts as usual. Needs the plugin install and Claude Code 2.1.287 or newer; main conversation only.
+
 ## Install as a Claude plugin
 
 In Claude Code:

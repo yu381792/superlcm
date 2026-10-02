@@ -154,7 +154,7 @@ async function openImport(harness) {
 /* ---------- settings ---------- */
 async function loadSettings() {
   const s = admin.settings = await api('/api/settings')
-  renderApiModels(); renderTuning(s.tuning)
+  renderApiModels(); renderTuning(s.tuning); renderTakeover(s.takeover)
   if (state.harnesses) renderTools()
   $('#dataDir').value = s.index_home || ''
 }
@@ -264,6 +264,23 @@ function renderTuning(tuning) {
   const big = n => LANG === 'zh' ? (n >= 10000 ? (n / 10000).toFixed(n % 10000 ? 1 : 0) + ' 万' : fmt(n)) : (n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + 'k' : fmt(n))
   $('#granEst').innerHTML = t('按当前设置：每段第 1 层摘要约覆盖 {a} 字原文，第 2 层约 {b} 字，第 3 层约 {c} 字。一段 100 万字的长对话大约产生 {n} 段第 1 层摘要。', { a: '<b>' + big(perL1) + '</b>', b: '<b>' + big(perL2) + '</b>', c: '<b>' + big(perL3) + '</b>', n: Math.ceil(1e6 / perL1) })
 }
+function renderTakeover(x) {
+  if (!x) return
+  $('#takeoverOn').checked = x.enabled
+  const select = $('#takeoverWindow')
+  if (![...select.options].some(o => o.value === String(x.window))) select.add(new Option(Math.round(x.window / 1000) + 'K · ' + t('当前'), String(x.window)))
+  select.value = String(x.window)
+  const k = n => Math.round(n / 1000) + 'K'
+  $('#takeoverNote').textContent = (x.enabled ? t('已打开。Claude Code 的自动压缩窗口现在是 {w}，上下文接近它时开始压缩；模型窗口更小时按模型窗口算。', { w: x.claude_window ? k(x.claude_window) : t('默认') })
+    : t('已关闭。打开后会把 Claude Code 设置里的自动压缩窗口（autoCompactWindow）设成所选大小，关闭时恢复原来的值（现在是 {w}）。', { w: x.claude_window ? k(x.claude_window) : t('默认') })) + ' ' + t('改动在新开的 Claude Code 对话里生效。') +
+    (x.plugin ? '' : ' ' + t('注意：接管要靠 SuperLcm 的 Claude 插件，现在 Claude Code 里没有启用它，打开开关只会改变压缩时机，压缩仍由 Claude Code 自己做。'))
+}
+$('#saveTakeover').onclick = () => act(async () => {
+  const r = await api('/api/takeover', { enabled: $('#takeoverOn').checked, window: Number($('#takeoverWindow').value) })
+  admin.settings.takeover = r; renderTakeover(r)
+  $('#takeoverSaved').textContent = t('已保存')
+}, $('#saveTakeover'))
+for (const id of ['#takeoverOn', '#takeoverWindow']) $(id).onchange = () => { $('#takeoverSaved').textContent = t('有未保存的修改') }
 const pickedTuning = () => ({ target_chars: Number($('#segSize').value), fanout: Number($('#fanout').value) })
 for (const id of ['#segSize', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 

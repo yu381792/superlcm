@@ -1,0 +1,121 @@
+import './env.mjs'
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { ClaudeStore } from '../src/store.js'
+import { planCompaction, coveredThrough, frontier, cutIndex } from '../src/compaction.js'
+import { applyTakeover } from '../src/takeover.js'
+
+const ev = (ordinal, preview) => ({ ordinal, preview })
+const msg = (role, text, extra = {}) => ({ role, text, ...extra })
+const node = (id, level, first, last, summary = `summary ${id}`) => ({ id, level, first, last, summary })
+const meta = { code: 'abcde' }
+
+test('a compaction replaces covered turns with summaries and keeps the newest turns whole', () => {
+  // records: 0 user, 1 assistant, 2 tool-only (no text), 3 user, 4 assistant, 5 user, 6 assistant, 7 user, 8 assistant
+  const events = [ev(0, 'user: plan the build'), ev(1, 'assistant: here is the plan'), ev(2, ''), ev(3, 'user: run step one'), ev(4, 'assistant: step one done'),
+    ev(5, 'user: run step two'), ev(6, 'assistant: step two done'), ev(7, 'user: and three'), ev(8, 'assistant: three done')]
+  const nodes = [node('a', 0, 0, 2), node('b', 0, 3, 4), node('c', 1, 0, 4, 'merged a+b')]
+  assert.equal(coveredThrough(nodes), 4)
+  assert.deepEqual(frontier(nodes, 4).map(n => n.id), ['c'])
+  const messages = [msg('user', 'plan the build'), msg('assistant', 'here is the plan'), msg('assistant', '', { size: 5000 }), msg('user', '', { toolResults: 1 }), msg('user', 'run step one'), msg('assistant', 'step one done'),
+    msg('user', 'run step two'), msg('assistant', ''), msg('assistant', 'step two done'), msg('user', 'and three'), msg('assistant', 'three done')]
+  const plan = planCompaction({ meta, events, nodes, messages, tokens: 60000, window: 300000, instructions: 'keep the build plan' })
+  assert.equal(plan.use, true)
+  assert.equal(plan.start, 6) // first uncovered message is a prompt ("run step two")
+  assert.equal(plan.keep, 5)
+  assert.match(plan.packet, /^<superlcm-context conversation="#abcde" keep="5" through="4">/)
+  assert.match(plan.packet, /<summary id="c" level="1" records="0-4">\nmerged a\+b\n<\/summary>/)
+  assert.match(plan.packet, /keep the build plan/)
+  assert.match(plan.packet, /lcm_read \{"conversation":"#abcde"/)
+})
+
+test('the newest two prompts stay word for word even when summaries already cover them', () => {
+  const events = [ev(0, 'user: one'), ev(1, 'assistant: a'), ev(2, 'user: two'), ev(3, 'assistant: b'), ev(4, 'user: three'), ev(5, 'assistant: c')]
+  const plan = planCompaction({ meta, events, nodes: [node('a', 0, 0, 5)], messages: events.map(e => msg(e.preview.split(': ')[0], e.preview.split(': ')[1])), tokens: 50000 })
+  assert.equal(plan.use, true)
+  assert.equal(plan.start, 2)
+})
+
+test('a repeated short message is placed by the messages before it', () => {
+  const events = [ev(0, 'user: 继续'), ev(1, 'assistant: first'), ev(2, 'user: 继续'), ev(3, 'assistant: second'), ev(4, 'user: 继续'), ev(5, 'assistant: third')]
+  const messages = events.map(e => msg(e.preview.split(': ')[0], e.preview.split(': ')[1]))
+  assert.equal(cutIndex(messages, events, 2), 3) // covered through the second 继续, not the third
+})
+
+test('after an earlier SuperLcm compaction the old packet is replaced, not kept', () => {
+  const events = [ev(0, 'user: old'), ev(1, 'assistant: old answer'), ev(2, ''), ev(3, 'user: new work'), ev(4, 'assistant: done'), ev(5, 'user: more'), ev(6, 'assistant: ok'), ev(7, 'user: last'), ev(8, 'assistant: fine')]
+  const messages = [msg('user', '<superlcm-context conversation="#abcde" keep="2" through="1">old</superlcm-context>'), msg('user', 'new work'), msg('assistant', 'done'), msg('user', 'more'), msg('assistant', 'ok'), msg('user', 'last'), msg('assistant', 'fine')]
+  const plan = planCompaction({ meta, events, nodes: [node('a', 0, 0, 2), node('b', 0, 3, 6)], messages, tokens: 40000 })
+  assert.equal(plan.use, true)
+  assert.equal(plan.start, 3)
+})
+
+test('compaction goes back to Claude Code when summaries are missing or lag behind', () => {
+  const events = [ev(0, 'user: a'), ev(1, 'assistant: b'), ev(2, 'user: c'), ev(3, 'assistant: d')]
+  const messages = events.map(e => msg(e.preview.split(': ')[0], e.preview.split(': ')[1], { size: 1000 }))
+  assert.deepEqual(planCompaction({ meta, events, nodes: [], messages, tokens: 250000 }), { use: false, reason: 'no summaries written yet' })
+  const lag = planCompaction({ meta, events, nodes: [node('a', 0, 0, 0)], messages, tokens: 250000, window: 300000 })
+  assert.equal(lag.use, false)
+  assert.match(lag.reason, /lag/)
+  const lost = planCompaction({ meta, events, nodes: [node('a', 0, 0, 1)], messages: [msg('user', 'something else entirely')], tokens: 1000 })
+  assert.equal(lost.use, false)
+})
+
+function claudeHome() {
+  const dir = mkdtempSync(join(tmpdir(), 'superlcm-compact-'))
+  const project = join(dir, 'claude', 'projects', 'p'); mkdirSync(project, { recursive: true })
+  return { dir, claude: join(dir, 'claude'), project }
+}
+const line = (type, content, extra = {}) => JSON.stringify({ type, message: { role: type, content }, ...extra }) + '\n'
+
+test('a SuperLcm packet and the kept messages Claude Code writes again are not indexed twice', () => {
+  const { dir, project } = claudeHome(), file = join(project, 's1.jsonl')
+  writeFileSync(file, line('user', 'hello') + line('assistant', [{ type: 'text', text: 'hi' }]) + line('user', 'teal please') + line('assistant', [{ type: 'text', text: 'noted' }]))
+  appendFileSync(file, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' + line('user', '<superlcm-context conversation="#x" keep="2" through="1">s</superlcm-context>') +
+    JSON.stringify({ type: 'attachment' }) + '\n' + line('user', 'teal please') + line('assistant', [{ type: 'text', text: 'noted' }]) + line('user', 'what next'))
+  const store = new ClaudeStore(join(dir, 'home'))
+  store.ingest('s1', file)
+  assert.deepEqual(store.eventRows('s1').map(e => e.preview), ['user: hello', 'assistant: hi', 'user: teal please', 'assistant: noted', '', '', '', '', '', 'user: what next'])
+  store.close()
+})
+
+test('turning the takeover on sets Claude Code’s compaction window and off restores it', () => {
+  const { dir, claude } = claudeHome(), env = { ...process.env, CLAUDE_CONFIG_DIR: claude }, file = join(claude, 'settings.json')
+  writeFileSync(file, JSON.stringify({ model: 'opus', autoCompactWindow: 500000 }))
+  const store = new ClaudeStore(join(dir, 'home'))
+  assert.equal(store.takeover().enabled, false)
+  assert.equal(applyTakeover(store, { enabled: true, window: 300000 }, env).claude_window, 300000)
+  applyTakeover(store, { enabled: true, window: 200000 }, env) // a new size keeps the original value to restore
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).autoCompactWindow, 200000)
+  applyTakeover(store, { enabled: false }, env)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { model: 'opus', autoCompactWindow: 500000 })
+  writeFileSync(file, JSON.stringify({ model: 'opus' }))
+  applyTakeover(store, { enabled: true }, env)
+  applyTakeover(store, { enabled: false }, env)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { model: 'opus' })
+  assert.throws(() => applyTakeover(store, { enabled: true, window: 10 }, env))
+  store.close()
+})
+
+test('compact-packet answers from the recorded conversation, and declines while the takeover is off', () => {
+  const { dir, claude, project } = claudeHome(), home = join(dir, 'home'), file = join(project, 's2.jsonl')
+  writeFileSync(file, ['one', 'two', 'three'].map(w => line('user', w) + line('assistant', [{ type: 'text', text: w + ' done' }])).join(''))
+  const store = new ClaudeStore(home)
+  store.ingest('s2', file)
+  store.addNode({ session: 's2', id: 'n0', level: 0, first: 0, last: 1, children: [], summary: 'did one', digest: 'd', model: 'm' })
+  store.close()
+  const env = { ...process.env, SUPERLCM_HOME: home, CLAUDE_CONFIG_DIR: claude }
+  const messages = ['one', 'two', 'three'].flatMap(w => [{ role: 'user', text: w }, { role: 'assistant', text: w + ' done' }])
+  const run = () => JSON.parse(spawnSync(process.execPath, ['src/cli.js', 'compact-packet', 's2'], { input: JSON.stringify({ messages, tokens: 30000, window: 1000000 }), env, encoding: 'utf8' }).stdout)
+  assert.deepEqual(run(), { use: false, reason: 'compaction takeover is off' })
+  const s = new ClaudeStore(home); s.setTakeover({ enabled: true, window: 300000 }); s.close()
+  appendFileSync(file, line('user', 'four')) // written after the last hook: picked up before planning
+  const plan = run()
+  assert.equal(plan.use, true)
+  assert.equal(plan.start, 2)
+  assert.match(plan.packet, /records="0-1">\ndid one/)
+})

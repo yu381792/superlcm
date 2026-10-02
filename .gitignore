@@ -5,3 +5,5 @@ node_modules/
 *.tgz
 .DS_Store
 .trash/
+tsconfig.json
+.claude-plugin/types/

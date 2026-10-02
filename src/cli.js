@@ -138,9 +138,27 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     else result=store.overview(rest[0])
     if (command!=='hook' && command!=='codex-hook') process.stdout.write(JSON.stringify(result)+'\n')
   } catch(error) {process.stderr.write(`SuperLcm: ${error.message}\n`);process.exitCode=1} finally {store.close()}
+} else if (command==='compact-packet') {
+  // Called by the plugin's compaction module (hooks/compact-mod.js) with the live transcript on stdin.
+  // Always answers JSON; { use:false, reason } hands the compaction back to Claude Code.
+  let reply
+  const store=new ClaudeStore()
+  try {
+    const input=JSON.parse(await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>32e6)reject(new Error('Oversized compaction input'))});process.stdin.on('end',()=>resolve(text))}))
+    const session=rest[0],src=session&&store.source(session),setting=store.takeover()
+    if(!setting.enabled)reply={use:false,reason:'compaction takeover is off'}
+    else if(!src||store.isDeleted(session))reply={use:false,reason:'conversation not recorded by SuperLcm'}
+    else {
+      if(existsSync(src.path))store.ingest(session,src.path) // the newest turns, written since the last hook
+      const {planCompaction}=await import('./compaction.js')
+      reply=planCompaction({meta:store.metadata(session),events:store.eventRows(session),nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:input.messages||[],instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||setting.window,setting.window)})
+    }
+  } catch(error) { reply={use:false,reason:error.message} }
+  finally { store.close() }
+  process.stdout.write(JSON.stringify(reply)+'\n')
 } else if (command==='archive') {
   // Copy every conversation's indexed originals into the private archive (safe to repeat).
   const store=new ClaudeStore()
   try { const results=store.archiveAll(); for(const r of results)if(!r.archived||r.copied||r.found_at)process.stdout.write(JSON.stringify(r)+'\n'); process.stdout.write(`archived ${results.filter(r=>r.archived).length}/${results.length} conversations\n`); if(results.some(r=>!r.archived))process.exitCode=1 }
   finally { store.close() }
-} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|archive|doctor-local|setup <codex|claude-code|hermes|pi> [--apply]|hook|codex-hook|hermes-hook|pi-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }
+} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|archive|compact-packet <session>|doctor-local|setup <codex|claude-code|hermes|pi> [--apply]|hook|codex-hook|hermes-hook|pi-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }

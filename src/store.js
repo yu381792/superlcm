@@ -2,6 +2,7 @@ import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS, validApiModel } from './api-endpoint.js'
 import { readApiKey, saveApiKey, removeApiKey } from './api-credentials.js'
+import { takeoverDefaults } from './compaction.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -47,6 +48,7 @@ function extract(raw, kind) {
     return text ? `${role}: ${text}`.slice(0, 16000) : ''
   } catch { return '' }
 }
+function messageRecord(raw) { try { const r = JSON.parse(raw.toString('utf8')); return r?.type === 'user' || r?.type === 'assistant' } catch { return false } }
 function derivedName(preview) { return typeof preview==='string' ? preview.replace(/^(user|assistant):\s*/,'').replace(/\s+/g,' ').trim().slice(0,90) : '' }
 export const shortCode = session => hash(String(session)).slice(0,5)
 function bounded(value, fallback, max) { return Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback }
@@ -76,6 +78,8 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS deleted_sessions(session TEXT PRIMARY KEY, deleted_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS compactions(session TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(session,ordinal));
+      CREATE TABLE IF NOT EXISTS takeover_settings(id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, window INTEGER NOT NULL, previous TEXT);
+      CREATE TABLE IF NOT EXISTS takeover_copies(session TEXT PRIMARY KEY, remaining INTEGER NOT NULL);
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!deliveryColumns.has('issued_via'))this.db.exec('ALTER TABLE deliveries ADD COLUMN issued_via TEXT')
@@ -146,6 +150,14 @@ export class ClaudeStore {
   }
   // Where the host tool last compacted this conversation: records from this ordinal on were seen by the
   // AI after that compaction, so it can still summarize them from memory.
+  // 接管压缩: off by default; window is the auto-compact window SuperLcm sets in Claude Code while on.
+  // previous holds Claude Code's own autoCompactWindow from before, as JSON ('null' when it had none).
+  takeover() { const r=this.db.prepare('SELECT enabled,window,previous FROM takeover_settings WHERE id=1').get(); return r?{enabled:Boolean(r.enabled),window:r.window,previous:r.previous}:{...takeoverDefaults,previous:null} }
+  setTakeover({enabled,window=this.takeover().window,previous=this.takeover().previous}) {
+    if (typeof enabled!=='boolean' || !Number.isSafeInteger(window) || window<50000 || window>2000000) throw new Error('Unsupported compaction takeover setting')
+    this.db.prepare('INSERT INTO takeover_settings(id,enabled,window,previous) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,window=excluded.window,previous=excluded.previous').run(enabled?1:0,window,previous)
+    return this.takeover()
+  }
   markCompaction(session,ordinal=this.stats(session).records) { if(this.source(session))this.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session,ordinal) }
   lastCompaction(session) { return this.db.prepare('SELECT MAX(ordinal) AS o FROM compactions WHERE session=?').get(session)?.o ?? 0 }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }
@@ -433,7 +445,7 @@ export class ClaudeStore {
     try {
       const deliveries = this.db.prepare('SELECT id FROM deliveries WHERE source_session=? OR target_session=?').all(session, session).map(x => x.id)
       for (const id of deliveries) { this.db.prepare('DELETE FROM delivery_packets WHERE id=?').run(id); this.db.prepare('DELETE FROM deliveries WHERE id=?').run(id) }
-      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'compactions', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'compactions', 'takeover_copies', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
       this.db.prepare('INSERT INTO deleted_sessions(session,deleted_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET deleted_ms=excluded.deleted_ms').run(session, Date.now())
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }
@@ -499,9 +511,15 @@ export class ClaudeStore {
     return [archive, src.path, this.#moved(src.path)].filter(p => p && existsSync(p))
   }
   #addEvent(session, ordinal, start, end, raw, kind) {
-    const preview = extract(raw, kind)
+    let preview = extract(raw, kind)
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      // A SuperLcm compaction packet, and the kept messages Claude Code writes again right after it, are
+      // already recorded: their bytes stay in the archive, but they are not indexed or summarized twice.
+      const packet = /^user: <superlcm-context [^>]*keep="(\d+)"/.exec(preview)
+      const copies = this.db.prepare('SELECT remaining FROM takeover_copies WHERE session=?').get(session)?.remaining || 0
+      if (packet) { preview=''; this.db.prepare('INSERT INTO takeover_copies(session,remaining) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET remaining=excluded.remaining').run(session, Number(packet[1])) }
+      else if (copies > 0 && kind === 'jsonl' && messageRecord(raw)) { preview=''; this.db.prepare('UPDATE takeover_copies SET remaining=remaining-1 WHERE session=?').run(session) }
       this.db.prepare('INSERT INTO events VALUES(?,?,?,?,?,?)').run(session, ordinal, start, end, hash(raw), preview)
       this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
       this.db.prepare("UPDATE sources SET offset=?,status='ok',updated_ms=? WHERE session=?").run(end, Date.now(), session)

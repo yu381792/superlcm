@@ -54,7 +54,7 @@ export function page(nonce) {
     <div class="page-inner">
       <div class="page-h"><h1>设置</h1></div>
       <div class="set-layout">
-        <nav class="set-nav" id="setNav" aria-label="设置分类"><button type="button" data-sec="look" aria-current="true">外观</button><button type="button" data-sec="storage">存储</button><button type="button" data-sec="summary">摘要</button><button type="button" data-sec="mcp">MCP 工具</button></nav>
+        <nav class="set-nav" id="setNav" aria-label="设置分类"><button type="button" data-sec="look" aria-current="true">外观</button><button type="button" data-sec="storage">存储</button><button type="button" data-sec="summary">摘要</button><button type="button" data-sec="compact">压缩</button><button type="button" data-sec="mcp">MCP 工具</button></nav>
         <div class="set-body">
       <div class="panel" data-sec="look">
         <h2>外观</h2>
@@ -92,6 +92,16 @@ export function page(nonce) {
         </div>
         <div class="notice calm"><span id="granEst"></span></div>
         <div class="actions"><button type="button" class="btn primary" id="saveWriter">保存</button><span class="saved" id="writerSaved" aria-live="polite"></span></div>
+      </div>
+      <div class="panel" data-sec="compact" hidden>
+        <h2>接管压缩</h2>
+        <p class="desc">打开后，Claude Code 的对话到了门槛要压缩时，由 SuperLcm 接手：已经写好的摘要替换掉旧的部分，最近的对话一字不改地保留，完整原文随时能用 lcm_read 调回。替换时不再调用模型，几乎没有等待。摘要还没跟上，或者出了任何意外，就照旧交给 Claude Code 自己压缩。需要 Claude Code 2.1.287 或更新版本，只管主对话，子代理照旧。</p>
+        <div class="fields">
+          <label class="field check"><input type="checkbox" id="takeoverOn"> 由 SuperLcm 接管 Claude Code 的压缩</label>
+          <label class="field">上下文到多少开始压缩<select id="takeoverWindow"><option value="200000">200K</option><option value="300000">300K · 推荐</option><option value="500000">500K</option><option value="800000">800K</option></select></label>
+        </div>
+        <div class="notice calm"><span id="takeoverNote"></span></div>
+        <div class="actions"><button type="button" class="btn primary" id="saveTakeover">保存</button><span class="saved" id="takeoverSaved" aria-live="polite"></span></div>
       </div>
       <div class="panel" data-sec="mcp" hidden>
         <h2>AI 可用的 MCP 工具</h2>
