@@ -6,6 +6,10 @@ export const PACKET_TAG = 'superlcm-context'
 export const takeoverDefaults = { enabled: false, window: 300000, keep: 40000 } // keep: newest tokens left word for word
 export const takeoverLimits = { window: [100000, 950000], keep: [5000, 200000] }
 const MAX_PACKET_CHARS = 120000
+// A stretch of mostly tool calls can fill the window while its dialogue is still too short to close a
+// summary segment. Dialogue up to this size goes into the packet word for word instead (tool output stays
+// readable through lcm_read), so such a stretch does not hand the compaction back to Claude Code.
+const RECENT_CHARS = 40000, RECENT_RECORD = 3000
 const KEEP_TURNS = 2 // the newest user prompts are always kept word for word
 const key = text => String(text || '').replace(/\s+/g, '').slice(0, 600)
 const isPacket = m => m.role === 'user' && m.text.trimStart().startsWith(`<${PACKET_TAG} `)
@@ -76,7 +80,14 @@ export function tailStart(messages, cut) {
   if (start === 0 && messages.length && !isPrompt(messages[0])) start = prompts.find(i => i > 0) ?? messages.length
   return start
 }
-export function renderPacket({ meta, summaries, through, keep, instructions }) {
+// The dialogue after the summaries, one line per record; a long record keeps its head and tail.
+function recentText(events, through) {
+  return events.filter(e => e.ordinal > through && /^(user|assistant): /.test(e.preview)).map(e => {
+    const t = e.preview.replace(/\s+/g, ' ').trim(), h = Math.ceil(RECENT_RECORD * 0.6)
+    return `[record ${e.ordinal}] ` + (t.length <= RECENT_RECORD ? t : t.slice(0, h) + ` …[${t.length - RECENT_RECORD} characters omitted; lcm_read record ${e.ordinal}]… ` + t.slice(t.length - (RECENT_RECORD - h)))
+  }).join('\n')
+}
+export function renderPacket({ meta, summaries, through, keep, instructions, recent = null }) {
   const code = meta.code
   const head = `<${PACKET_TAG} conversation="#${code}" keep="${keep}" through="${through}">\n` +
     `This session is being continued from a previous conversation that ran out of context. The summaries below cover the earlier portion of the conversation (records 0-${through}), written by SuperLcm, the user's conversation-memory plugin, as the conversation went; the messages after this one continue it word for word. ` +
@@ -89,14 +100,26 @@ export function renderPacket({ meta, summaries, through, keep, instructions }) {
     body += block
   }
   if (omitted) body += `(${omitted} more summaries did not fit; lcm_outline {"conversation":"#${code}"} lists them.)\n`
+  if (recent) body += `<recent records="${recent.first}-${recent.last}">\nNot summarized yet: the dialogue of records ${recent.first}-${recent.last} word for word, tool calls and their output left out (lcm_read has them).\n${recent.text}\n</recent>\n`
   return head + body + `</${PACKET_TAG}>`
 }
 // tokens: Claude Code's own count of the context now; window: the auto-compact window in tokens.
 // Returns { use:true, packet, start } or { use:false, reason }.
-export function planCompaction({ meta, events, nodes, messages, instructions = '', tokens = 0, window = takeoverDefaults.window, keepTokens = takeoverDefaults.keep }) {
+export function planCompaction(input) {
+  const plan = planWith(input, null)
+  if (plan.use) return plan
+  // The summaries lag behind: carry the dialogue they do not cover yet, when it is short enough.
+  const { events, nodes } = input, through = coveredThrough(nodes), last = events.at(-1)?.ordinal ?? -1
+  const text = recentText(events, through)
+  if (last <= through || !text || text.length > RECENT_CHARS) return plan
+  const inline = planWith(input, { first: through + 1, last, text })
+  return inline.use ? inline : plan
+}
+function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0, window = takeoverDefaults.window, keepTokens = takeoverDefaults.keep }, recent) {
   const through = coveredThrough(nodes)
-  if (through < 0) return { use: false, reason: 'no summaries written yet' }
-  const cut = cutIndex(messages, events, through)
+  if (through < 0 && !recent) return { use: false, reason: 'no summaries written yet' }
+  // With the dialogue carried along, every message in context is covered: the cut is at the end.
+  const cut = recent ? messages.length : cutIndex(messages, events, through)
   if (cut === null) return { use: false, reason: 'could not place the summaries in the live conversation' }
   // Each message's share of Claude Code's own token count, by its size in characters.
   const size = m => m.size ?? (m.text.length + 200)
@@ -111,14 +134,21 @@ export function planCompaction({ meta, events, nodes, messages, instructions = '
   const want = Math.min(keepTokens, tokens / 2)
   let wide = start, newest = messages.slice(start).reduce((s, m) => s + size(m), 0) * tokens / total
   while (wide > 0 && newest < want) newest += size(messages[--wide]) * tokens / total
-  while (wide > 0 && !isPrompt(messages[wide])) wide--
-  if (wide > 0) start = Math.min(start, wide)
+  while (wide > 0 && !isPrompt(messages[wide])) newest += size(messages[--wide]) * tokens / total
+  // One very long turn (a big task run in one go) would pull its whole length in: then keep less instead.
+  if (wide > 0 && newest <= want * 2) start = Math.min(start, wide)
+  if (recent) { // the context must be this record: what is dropped, and the newest message, are all in it
+    const known = new Set(events.filter(e => /^(user|assistant): /.test(e.preview)).map(e => key(e.preview)))
+    const text = messages.map(m => m.text.trim() && !isPacket(m) ? key(`${m.role}: ${m.text.trim()}`) : null)
+    const newest = text.findLast(k => k !== null)
+    if (!newest || !known.has(newest) || text.slice(0, start).some(k => k !== null && !known.has(k))) return { use: false, reason: 'the conversation in context does not match the record' }
+  }
   const keep = messages.length - start
-  const packet = renderPacket({ meta, summaries: frontier(nodes, through), through, keep, instructions })
+  const packet = renderPacket({ meta, summaries: frontier(nodes, through), through: recent ? recent.last : through, keep, instructions, recent })
   // Size check: the kept part's share of Claude Code's own count, plus the packet at ~2 characters a token
   // (Chinese is denser than English). Past 60% of the window the compaction would barely help.
   const kept = messages.slice(start).reduce((s, m) => s + size(m), 0)
   const after = Math.round(tokens * kept / total + packet.length / 2)
   if (after > window * 0.6) return { use: false, reason: `the summaries lag behind: about ${after} tokens would remain` }
-  return { use: true, packet, start, keep, through, after }
+  return { use: true, packet, start, keep, through: recent ? recent.last : through, after, ...(recent ? { recent: true } : {}) }
 }

@@ -282,7 +282,23 @@ test('an unfinished first turn that is not summarized is never dropped', () => {
   const messages = [msg('assistant', 'tool working', { toolUses: [{ id: 't' }] }), msg('user', '', { toolResults: 1 }), msg('user', 'new question'), msg('assistant', 'new answer'), msg('user', 'last question'), msg('assistant', 'last answer')]
   const events = [ev(0, 'user: old'), ev(1, 'assistant: old done'), ev(2, 'assistant: tool working'), ev(3, ''), ev(4, 'user: new question'), ev(5, 'assistant: new answer'), ev(6, 'user: last question'), ev(7, 'assistant: last answer')]
   const plan = planCompaction({ meta, events, nodes: [node('a', 0, 0, 1)], messages, tokens: 6000, keepTokens: 0 })
-  assert.equal(plan.use, false)
+  // Its dialogue is short, so it goes into the packet word for word instead of being dropped.
+  assert.equal(plan.use, true)
+  assert.match(plan.packet, /<recent records="2-7">[\s\S]*\[record 2\] assistant: tool working/)
+  assert.equal(plan.through, 7)
+})
+
+test('a stretch of tool calls with little dialogue is carried word for word, not handed back', () => {
+  // Summaries stop at record 1; records 2-9 are mostly tool output (big sizes) with short dialogue.
+  const events = [ev(0, 'user: old'), ev(1, 'assistant: old done'), ev(2, 'user: build it'), ev(3, ''), ev(4, ''), ev(5, 'assistant: built'), ev(6, 'user: test it'), ev(7, 'assistant: passed'), ev(8, 'user: ship'), ev(9, 'assistant: shipped')]
+  const messages = [msg('user', 'build it'), msg('assistant', '', { size: 90000 }), msg('user', '', { toolResults: 1, size: 90000 }), msg('assistant', 'built'),
+    msg('user', 'test it'), msg('assistant', 'passed'), msg('user', 'ship'), msg('assistant', 'shipped')]
+  const plan = planCompaction({ meta, events, nodes: [node('a', 0, 0, 1)], messages, tokens: 200000, window: 300000 })
+  assert.equal(plan.use, true)
+  assert.equal(plan.start, 4) // the 180k-token first turn is not pulled back in to reach the keep target
+  assert.match(plan.packet, /\[record 2\] user: build it[\s\S]*\[record 9\] assistant: shipped/)
+  // Context that is not this record is never replaced.
+  assert.equal(planCompaction({ meta, events, nodes: [node('a', 0, 0, 1)], messages: [...messages, msg('user', 'not recorded')], tokens: 200000, window: 300000 }).use, false)
 })
 
 test('the takeover stays off when Claude’s settings cannot be written', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {

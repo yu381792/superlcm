@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.21
+
+- Fixed: the compaction takeover still handed long tool-heavy conversations back to Claude Code's own 70–100 s summary. Two causes, both seen on a real conversation run through Paseo: (1) a stretch of mostly tool calls filled the window while its dialogue stayed under one summary segment, so no summary covered it; the planner now carries such dialogue (up to 40000 characters) into the packet word for word, tool output left to lcm_read, after checking that the conversation in context matches the record. (2) Keeping the newest 40k tokens extended back to the start of a turn even when that turn was one 190k-token task; the planner now keeps less instead of pulling in more than twice its target. On the real 23:26 compaction the plan is now to take over.
+
 ## 0.4.20
 
 - Fixed: Hermes showed as not connected, and Connect refused with “找不到 Hermes 自带的 Python”, on Hermes installs whose `~/.local/bin/hermes` launcher execs the entry script without quotes (written that way since late September). The launcher is now read quoted or bare, so Hermes' own Python and config code are found again; an existing SuperLcm setup is recognized as connected.
