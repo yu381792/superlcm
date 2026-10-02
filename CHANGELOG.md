@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.12
+
+- Claude Code's own compaction window is now set 100K above the console's size (300K → 400K) instead of to the same value. Claude Code starts its own compaction a little before its window, so with both at 300K it compacted at about 270K, ahead of the plugin; now the plugin swaps in the summaries at 300K and Claude Code compacts only as a fallback when they lag.
+
 ## 0.4.11
 
 - Turning the takeover off now restores your own `CLAUDE_CODE_AUTO_COMPACT_WINDOW` even when the takeover was first turned on by 0.4.7 or earlier (which remembered only `autoCompactWindow`); before, that value was dropped instead of restored.

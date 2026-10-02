@@ -1,5 +1,7 @@
-// Turning 接管压缩 on or off. On: Claude Code's autoCompactWindow (when its automatic compaction starts)
-// is set to the chosen size, and whatever it was before is remembered. Off: that earlier value comes back.
+// Turning 接管压缩 on or off. The plugin module starts the compaction itself at the chosen size; Claude
+// Code's own window (autoCompactWindow, when its automatic compaction starts) is set HEADROOM above it, so
+// Claude Code compacts only as a fallback when the summaries lag, and whatever it was before is remembered.
+// Off: that earlier value comes back.
 // Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW before autoCompactWindow, so an env value set
 // there would override the takeover's size: the same size is also set under env in settings.json. Only these two keys are touched, with an
 // atomic rewrite.
@@ -25,6 +27,8 @@ export function claudeCompactWindow(env = process.env) {
   try { const v = readSettings(settingsFile(env)).autoCompactWindow; return Number.isFinite(v) ? v : null } catch { return null }
 }
 const ENV_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
+export const HEADROOM = 100000
+export const claudeWindowFor = window => window + HEADROOM
 // What to restore later: Claude Code's own values of both keys (older versions stored only the first).
 function remembered(previous) {
   const v = previous ? JSON.parse(previous) : null
@@ -49,7 +53,7 @@ export function applyTakeover(store, { enabled, window, keep }, env = process.en
     store.setTakeover({ enabled: true, window, keep, previous })
     // If Claude's settings cannot be written, the takeover stays as it was rather than on in name only.
     try {
-      const now = readSettings(file), next = withWindow(now, window, window)
+      const now = readSettings(file), host = claudeWindowFor(window), next = withWindow(now, host, host)
       if (JSON.stringify(next) !== JSON.stringify(now)) writeSettings(file, next)
     } catch (error) { store.setTakeover(current); throw error }
   } else {

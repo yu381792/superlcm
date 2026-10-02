@@ -93,9 +93,9 @@ test('turning the takeover on sets Claude Code’s compaction window and off res
   writeFileSync(file, JSON.stringify({ model: 'opus', autoCompactWindow: 500000 }))
   const store = new ClaudeStore(join(dir, 'home'))
   assert.equal(store.takeover().enabled, false)
-  assert.equal(applyTakeover(store, { enabled: true, window: 300000 }, env).claude_window, 300000)
+  assert.equal(applyTakeover(store, { enabled: true, window: 300000 }, env).claude_window, 400000)
   applyTakeover(store, { enabled: true, window: 200000 }, env) // a new size keeps the original value to restore
-  assert.equal(JSON.parse(readFileSync(file, 'utf8')).autoCompactWindow, 200000)
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).autoCompactWindow, 300000)
   applyTakeover(store, { enabled: false }, env)
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { model: 'opus', autoCompactWindow: 500000 })
   writeFileSync(file, JSON.stringify({ model: 'opus' }))
@@ -105,7 +105,7 @@ test('turning the takeover on sets Claude Code’s compaction window and off res
   // The desktop app ignores autoCompactWindow, so the size also goes into env; other env entries stay.
   writeFileSync(file, JSON.stringify({ env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } }))
   applyTakeover(store, { enabled: true, window: 300000 }, env)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' }, autoCompactWindow: 300000 })
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' }, autoCompactWindow: 400000 })
   applyTakeover(store, { enabled: false }, env)
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { env: { FOO: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } })
   // Turned on by an older version (only the window remembered): the env value is still restored.
