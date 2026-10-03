@@ -31,9 +31,9 @@ function connState(h) {
   if (c?.plugin && !c.plugin.enabled) return { cls: 'warn', badge: t('已停用'), text: t('SuperLcm 插件装了，但在 Claude Code 里被停用') }
   if (c?.plugin?.outdated) return { cls: 'warn', badge: t('需更新'), text: t('插件是 v{a}，有新版 v{b}', { a: c.plugin.version, b: c.plugin.latest }) }
   if (c && !c.plugin) return h.configured ? { cls: 'warn', badge: t('建议改装'), text: t('正在用旧方式（MCP + 钩子）存对话；装成插件才能接管压缩') } : { cls: 'warn', badge: t('未接入'), text: t('装上 SuperLcm 插件后，新对话会自动存入') }
-  if (!h.configuration_matches) return h.configured ? { cls: 'warn', badge: t('需更新'), text: t('点「接入」更新一次，以后 {tool} 升级不会影响 SuperLcm', { tool }) } : { cls: 'warn', badge: t('未接入'), text: t('接入后，新对话会自动存入 SuperLcm') }
-  if (h.capture_stale) return { cls: 'warn', badge: t('没在存'), text: h.harness === 'codex' ? t('最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。点「检查接入」可以一键允许') : t('最近的 {tool} 对话没有存进来。点「检查接入」看看哪里不对', { tool }) }
-  if (h.node_borrowed) return { cls: 'warn', badge: t('已接入'), text: t('借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「接入」即可恢复', { owner: h.node_borrowed }) }
+  if (!h.configuration_matches) return h.configured ? { cls: 'warn', badge: t('需更新'), text: t('点「管理接入」更新一次，以后 {tool} 升级不会影响 SuperLcm', { tool }) } : { cls: 'warn', badge: t('未接入'), text: t('接入后，新对话会自动存入 SuperLcm') }
+  if (h.capture_stale) return { cls: 'warn', badge: t('没在存'), text: h.harness === 'codex' ? t('最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。到「管理接入」检查并更新接入') : t('最近的 {tool} 对话没有存进来。点「管理接入」看看哪里不对', { tool }) }
+  if (h.node_borrowed) return { cls: 'warn', badge: t('已接入'), text: t('借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「管理接入」即可恢复', { owner: h.node_borrowed }) }
   // Capture is what shows the connection works; the AI calling SuperLcm's tools is optional and rarer.
   if (h.hook_seen) return { cls: 'on', badge: t('已接入'), text: t('最近一次存入：{t}', { t: ago(Date.parse(h.hook_seen.replace(' ', 'T') + 'Z')) }) }
   if (e?.last_call_at) return { cls: 'on', badge: t('已接入'), text: t('AI 最近一次调用：{t}', { t: ago(Date.parse(e.last_call_at)) }) }
@@ -58,9 +58,7 @@ function renderStatus() {
 function renderTools() {
   $('#tools').innerHTML = state.harnesses.map(h => {
     const s = connState(h), count = state.groups?.find(g => g.harness === h.harness)?.n || 0
-    const plugin = h.claude?.plugin
-    const buttons = (h.harness === 'dsh' ? '<button type="button" class="btn primary" data-dsh-connect' + (admin.outdated?' disabled':'') + '>' + (h.configured ? t('更新接入') : t('接入')) + '</button>' + (h.configured ? '<button type="button" class="btn" data-dsh-check>' + t('检查接入') + '</button>' : '') : h.claude ? (!plugin ? '<button type="button" class="btn primary" data-plugin="install">' + t('安装插件') + '</button>' : plugin.outdated ? '<button type="button" class="btn primary" data-plugin="update">' + t('更新插件') + '</button>' : '<button type="button" class="btn" data-recheck>' + t('检查接入') + '</button>')
-      : h.supported ? '<button type="button" class="btn' + (h.configuration_matches ? '' : ' primary') + '" data-setup="' + esc(h.harness) + '"' + (h.bin ? '' : ' disabled') + '>' + (h.configuration_matches ? t('检查接入') : t('接入')) + '</button>' : '') +
+    const buttons = (h.supported ? '<button type="button" class="btn primary" data-manage="' + esc(h.harness) + '"' + (!h.bin || h.harness === 'dsh' && admin.outdated ? ' disabled' : '') + '>' + t('管理接入') + '</button>' : '') +
       (h.local_conversations && h.detected ? '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + t('导入历史对话') + '</button>' : '')
     const rows = [[t('状态'), esc(s.text)], [t('已存对话'), count ? t('{n} 个', { n: fmt(count) }) : '<span class="muted">' + t('暂无') + '</span>']]
     rows.push(...writerRows(h))
@@ -71,16 +69,9 @@ function renderTools() {
       '<dl class="tc-kv">' + rows.map(([k, v]) => '<div><dt>' + k + '</dt><dd>' + v + '</dd></div>').join('') + '</dl>' +
       (buttons ? '<footer class="tc-f">' + buttons + '</footer>' : '') + '</article>'
   }).join('') || '<div class="empty">' + t('本机未检测到支持的工具。') + '</div>'
-  for (const b of $('#tools').querySelectorAll('[data-setup]')) b.onclick = () => openSetup(b.dataset.setup)
+  for (const b of $('#tools').querySelectorAll('[data-manage]')) b.onclick = () => openConnectionManager(b.dataset.manage)
   for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
   for (const b of $('#tools').querySelectorAll('[data-plugin]')) b.onclick = () => pluginAct(b.dataset.plugin, b)
-  for (const b of $('#tools').querySelectorAll('[data-recheck]')) b.onclick = () => act(async () => { await loadHarnesses(); toast(t('已重新检查')) }, b)
-  for (const b of $('#tools').querySelectorAll('[data-dsh-connect]')) b.onclick = () => openDshSetup()
-  for (const b of $('#tools').querySelectorAll('[data-dsh-check]')) b.onclick = () => act(async () => {
-    await loadHarnesses(); await loadCompression()
-    const h = state.harnesses.find(h => h.harness === 'dsh')
-    overlay('<div class="modal" role="dialog" aria-labelledby="dshTitle"><div class="card"><div class="card-h"><h3 id="dshTitle">dsh harness · '+t('全局接入')+'</h3><button type="button" class="x" data-close>×</button></div><div class="card-b"><p>'+esc(dshCompressionLabel(h))+'</p><p>'+t('只有运行中的压缩引擎和归档插件都回报状态，才会显示已接管。更新插件后需要重新加载 dsh harness。')+'</p><div class="actions"><button type="button" class="btn" data-close>'+t('关闭')+'</button></div></div></div></div>')
-  }, b)
   for (const b of $('#tools').querySelectorAll('[data-goto-compact]')) b.onclick = () => { show('settings'); settingsSection('compact') }
   for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => {
     const harness = select.dataset.tool, x = admin.settings.settings.find(y => y.harness === harness), models = admin.settings.api_models
@@ -106,6 +97,26 @@ function renderTools() {
     }, select)
   }
 }
+// Every card opens the same management window; installation stays explicit.
+function openConnectionManager(harness) {
+  const render = () => {
+    const h = state.harnesses.find(x => x.harness === harness), s = connState(h)
+    const configured = h.claude ? !!h.claude.plugin : h.configured
+    overlay('<div class="modal" role="dialog" aria-labelledby="connectionTitle"><div class="card"><div class="card-h"><h3 id="connectionTitle">' + t('管理接入') + ' · ' + esc(toolName(harness)) + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
+      '<p><span class="state ' + s.cls + '">' + esc(s.badge) + '</span></p><p>' + esc(s.text) + '</p>' +
+      (harness === 'dsh' ? '<p class="muted">' + t('只有运行中的压缩引擎和归档插件都回报状态，才会显示已接管。更新插件后需要重新加载 dsh harness。') + '</p>' : '') +
+      '<div class="actions"><button type="button" class="btn primary" id="manageApply">' + t(configured ? '更新接入' : '接入') + '</button><button type="button" class="btn" id="manageCheck">' + t('检查接入') + '</button><button type="button" class="btn" data-close>' + t('关闭') + '</button></div></div></div></div>', root => {
+      root.querySelector('#manageCheck').onclick = event => act(async () => { await loadHarnesses(); render(); toast(t('已重新检查')) }, event.currentTarget)
+      root.querySelector('#manageApply').onclick = event => {
+        if (harness === 'dsh') return openDshSetup()
+        if (h.claude) return pluginAct(configured ? 'update' : 'install', event.currentTarget).then(render)
+        return openSetup(harness)
+      }
+    })
+  }
+  render()
+}
+
 function moduleSupport(c) {
   const ok = v => v && c.modules_min && v.localeCompare(c.modules_min, undefined, { numeric: true }) >= 0
   return [c.terminal_version && [t('终端'), c.terminal_version, ok(c.terminal_version)], c.desktop_version && [t('桌面版'), c.desktop_version, ok(c.desktop_version)]].filter(Boolean)
@@ -116,7 +127,7 @@ function claudeRows(h) {
   const tk = admin.settings?.takeover
   if (tk) {
     const where = moduleSupport(c).map(([name, v, ok]) => '<span class="' + (ok ? 'ok' : 'no') + '">' + name + ' ' + esc(v) + (ok ? '' : ' · ' + t('待更新')) + '</span>').join('')
-    rows.push([t('接管压缩'), '<div class="tk-cell"><button type="button" class="link" data-goto-compact>' + (tk.enabled ? t('已打开 · {w}', { w: kfmt(tk.window) }) : t('未打开')) + '</button>' + (tk.enabled && where ? '<span class="tk-where">' + where + '</span>' : '') + '</div>'])
+    rows.push([t('压缩接管'), '<div class="tk-cell"><button type="button" class="link" data-goto-compact>' + (tk.enabled ? t('已打开 · {w}', { w: kfmt(tk.window) }) : t('未打开')) + '</button>' + (tk.enabled && where ? '<span class="tk-where">' + where + '</span>' : '') + '</div>'])
   }
   if (c.plugin?.enabled && (c.legacy?.hooks || c.legacy?.mcp)) rows.push([t('旧接入'), '<span class="muted">' + t('还留着旧的钩子/MCP 登记，已自动停用') + '</span> <button type="button" class="link" data-plugin="cleanup">' + t('清理') + '</button>'])
   return rows

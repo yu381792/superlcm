@@ -4,6 +4,7 @@ const LANGS = {
   // Keys that need context to disambiguate; Chinese shows the short form.
   zh: { '关闭（摘要方式）': '关闭' },
   en: {
+    '管理接入': 'Manage connection',
     "全局接入一次，SuperLcm 接管压缩、自动存档和跨载体接续。": "Connect once globally for SuperLcm compaction takeover, automatic archiving and cross-harness continuation.",
     "写入 dsh harness 全局接入配置，所有启动方式和之后新增的使用方式共用 SuperLcm 压缩与会话档案。原配置先备份，不自动重启 dsh harness。": "Save the global integration. Existing and future launch modes share SuperLcm compaction and the archive. Back up configuration first; dsh harness is not restarted automatically.",
     "安装并启用 SuperLcm 压缩": "Install and enable SuperLcm compaction",
@@ -146,7 +147,7 @@ const LANGS = {
     '领取下一段待写的摘要（仅「对话模型生成」模式可用）。': 'Get the next summary piece to write (In-conversation mode only).',
     '同时替我在 {tool} 里允许': 'Also approve it in {tool} for me',
     '相当于替你在 {tool} 里点一次「允许」，只针对 SuperLcm 自己的钩子。不勾的话，接入后要打开 {tool} 亲自确认。': 'Same as clicking Allow in {tool} yourself, for SuperLcm\'s own hooks only. Leave it unchecked to approve them in {tool} after connecting.',
-    '对话模型生成': 'In-conversation', '本工具后台写': 'Own tool, in the background', '没在存': 'Not saving', '最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。点「检查接入」可以一键允许': 'Recent Codex conversations were not saved; Codex is probably waiting for you to approve the hooks. Click Check to approve them in one step', '最近的 {tool} 对话没有存进来。点「检查接入」看看哪里不对': 'Recent {tool} conversations were not saved. Click Check to see what is wrong',
+    '对话模型生成': 'In-conversation', '本工具后台写': 'Own tool, in the background', '没在存': 'Not saving', '最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。到「管理接入」检查并更新接入': 'Recent Codex conversations were not saved; Codex is probably waiting for you to approve the hooks. Use Manage connection to check and update the integration', '最近的 {tool} 对话没有存进来。点「管理接入」看看哪里不对': 'Recent {tool} conversations were not saved. Click Manage connection to see what is wrong',
     '自定义 API': 'Custom API', '不生成摘要，原文照常保存': 'No summaries; originals are still stored',
     '暂不支持自动接入，可导入本机对话': 'No automatic setup yet; local conversations can be imported', '未找到 {tool} 命令行': '{tool} CLI not found', '尚未接入': 'Not connected',
     '已接入 · AI 已成功调用': 'Connected · the AI has called it', '已接入 · 等待首次调用': 'Connected · waiting for the first call', '已写入配置 · 重启 {tool} 后生效': 'Configured · restart {tool} to apply', '已接入 {tools}': 'Connected: {tools}', '尚未接入工具': 'No tool connected',
@@ -164,8 +165,8 @@ const LANGS = {
     '已保存，留空保持不变': 'Saved; leave blank to keep', '修改': 'Edit', '首次保存必须填写；本机地址不需要可留空': 'Required on first save; may be left empty for a local address that needs none',
     '摘要滞后：还差约 {n} 次摘要（含向上合并）。': 'Summaries are behind: about {n} passes left, including merges. ',
     '需更新': 'Update',
-    '点「接入」更新一次，以后 {tool} 升级不会影响 SuperLcm': 'Click Connect once more so {tool} updates no longer affect SuperLcm',
-    '借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「接入」即可恢复': 'Runs on the node bundled with {owner}; if it stops working after an {owner} update, click Connect to restore it',
+    '点「管理接入」更新一次，以后 {tool} 升级不会影响 SuperLcm': 'Click Manage connection once more so {tool} updates no longer affect SuperLcm',
+    '借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「管理接入」即可恢复': 'Runs on the node bundled with {owner}; if it stops working after an {owner} update, click Manage connection to restore it',
     'Claude Code 2.1.286+ 在对话里直接调用这个模型，不另开会话；对话结束后剩下的交给后台命令行补完': 'Claude Code 2.1.286+ calls this model from inside the conversation, without starting another session; what is left when it ends is finished by a background run.', '压缩': 'Compaction', '接管压缩': 'Compaction takeover', '默认': 'default', '推荐': 'recommended', '自定义': 'Custom', '自定义压缩门槛': 'Custom threshold', '自定义最近原文保留': 'Custom recent originals', '请输入 {min} 到 {max} 之间的数': 'Enter a number from {min} to {max}',
     'Claude Code 的对话太长时会压缩。交给 SuperLcm 后，旧的部分换成后台写好的摘要，最近几轮原样留下，原文随时能用 lcm_read 调回。': 'Claude Code compacts a conversation when it grows too long. With SuperLcm in charge, the older part is replaced by summaries written in the background, the newest turns stay word for word, and every original can be brought back with lcm_read.',
     '由 SuperLcm 接管压缩': 'Let SuperLcm handle compaction', '到门槛时直接换上现成的摘要，不调用模型，几乎不用等': 'At the threshold the ready summaries go in directly: no model call, almost no wait',
