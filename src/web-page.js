@@ -139,6 +139,7 @@ const ICONS = ${JSON.stringify(icons)};
 ${asset('web-i18n.js')}
 ${asset('web-client.js')}
 ${asset('web-admin.js')}
+${asset('web-dsh.js')}
 boot();
 </script>
 </body>
