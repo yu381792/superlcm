@@ -3,7 +3,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { findCli, paths } from './runtime.js'
+import { findCli, paths, runCommand } from './runtime.js'
 // pre_llm_call is the one per-turn moment a shell hook can hand the AI a short note (对话模型生成).
 export const HERMES_EVENTS = ['on_session_end', 'on_session_finalize', 'pre_llm_call']
 export const hermesHome = (env = process.env) => env.HERMES_HOME || join(paths(env).home, '.hermes')
@@ -13,19 +13,26 @@ const shebang = file => { try { const first = readFileSync(file, 'utf8').split('
 // Newer Hermes (0.21.5+) has no venv: its entry script runs a standalone Python with -I and puts the
 // install folder on sys.path. It reports that exact command with --print-runtime-command, which we reuse,
 // swapping only its final "run Hermes' CLI" step for our snippet.
-export function hermesRuntime(env = process.env) {
-  if (env.SUPERLCM_HERMES_PYTHON) return { python: env.SUPERLCM_HERMES_PYTHON, args: [], prelude: '' }
+function runtimeEntry(env) {
   const bin = findCli('hermes', env); if (!bin) return null
   let entry = bin
   // The launcher execs the entry script by path, quoted or not (installs since late September write it bare).
   try { const m = readFileSync(bin, 'utf8').slice(0, 4096).match(/exec\s+(?:"([^"]+)"|'([^']+)'|([^\s"';&|]+))/), target = m && (m[1] || m[2] || m[3]); if (target && existsSync(target)) entry = target } catch {}
   let script = ''; try { script = readFileSync(entry, 'utf8').slice(0, 20000) } catch {}
+  return {bin,entry,script}
+}
+function reportedRuntime(out) {
+  const command=JSON.parse(out.trim().split('\n').pop()),at=command.indexOf('-c'),code=command[at+1]||'',cut=code.search(/runpy\.run_module\(/)
+  return at>0&&cut>0&&existsSync(command[0])?{python:command[0],args:command.slice(1,at),prelude:code.slice(0,cut)}:null
+}
+export function hermesRuntime(env = process.env) {
+  if (env.SUPERLCM_HERMES_PYTHON) return { python: env.SUPERLCM_HERMES_PYTHON, args: [], prelude: '' }
+  const found=runtimeEntry(env);if(!found)return null
+  const {bin,entry,script}=found
   if (script.includes('--print-runtime-command')) {
     try {
       const clean = { ...env }; delete clean.PYTHONPATH; delete clean.PYTHONHOME
-      const out = spawnSync(bin, ['--print-runtime-command'], { env: clean, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] }).stdout.trim().split('\n').pop()
-      const command = JSON.parse(out), at = command.indexOf('-c'), code = command[at + 1] || '', cut = code.search(/runpy\.run_module\(/)
-      if (at > 0 && cut > 0 && existsSync(command[0])) return { python: command[0], args: command.slice(1, at), prelude: code.slice(0, cut) }
+      return reportedRuntime(spawnSync(bin, ['--print-runtime-command'], { env: clean, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] }).stdout)
     } catch {}
     return null
   }
@@ -35,9 +42,20 @@ export function hermesRuntime(env = process.env) {
   const python = ['python3', 'python'].map(n => join(dirname(realpathSync(entry)), n)).find(existsSync)
   return python ? { python, args: [], prelude: '' } : null
 }
+// Console/config reads must not block all HTTP requests while a launcher boots.
+export async function hermesRuntimeAsync(env=process.env) {
+  if(env.SUPERLCM_HERMES_PYTHON)return {python:env.SUPERLCM_HERMES_PYTHON,args:[],prelude:''}
+  const found=runtimeEntry(env);if(!found)return null
+  if(!found.script.includes('--print-runtime-command'))return hermesRuntime(env)
+  try {
+    const clean={...env};delete clean.PYTHONPATH;delete clean.PYTHONHOME
+    const {stdout}=await runCommand(found.bin,['--print-runtime-command'],{env:clean,timeout:15000,maxBuffer:1024*1024,windowsHide:true})
+    return reportedRuntime(stdout)
+  }catch{return null}
+}
 export const hermesPython = (env = process.env) => hermesRuntime(env)?.python || null
-export function runPython(env, code, input) {
-  const runtime = hermesRuntime(env)
+export async function runPython(env, code, input) {
+  const runtime = await hermesRuntimeAsync(env)
   if (!runtime) return Promise.reject(new Error('Hermes Python not found'))
   return new Promise((resolve, reject) => {
     const clean = { ...env }; delete clean.PYTHONPATH; delete clean.PYTHONHOME // as Hermes' own launcher does

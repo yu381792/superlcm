@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { configFiles, readJson, mcpRegistration, matchingMcp, ownMcp, script } from './harness.js'
 import { findCli, runCommand as run, commandOptions, preferredNode } from './runtime.js'
-import { readHermesConfig, writeHermesConfig, hermesPython, approveHermesHooks, HERMES_EVENTS } from './hermes-config.js'
+import { readHermesConfig, writeHermesConfig, hermesRuntimeAsync, approveHermesHooks, HERMES_EVENTS } from './hermes-config.js'
 import { codexHookTrust } from './codex-hook-trust.js'
 import { piExtension } from './pi.js'
 const hash=text=>createHash('sha256').update(text).digest('hex')
@@ -19,7 +19,7 @@ export function nativeHooksCurrent(store,harness,env=process.env){
 }
 // Hermes: MCP server + per-turn shell hooks, written through Hermes' own config code.
 async function hermesPreview(store,env){
-  const files={mcp:configFiles('hermes',env).mcp,hooks:configFiles('hermes',env).mcp},bin=findCli('hermes',env),py=hermesPython(env)
+  const files={mcp:configFiles('hermes',env).mcp,hooks:configFiles('hermes',env).mcp},bin=findCli('hermes',env),py=(await hermesRuntimeAsync(env))?.python||null
   const cfg=py?await readHermesConfig(env):{mcp:null,hooks:{}}
   const reg={found:!!cfg.mcp,enabled:cfg.mcp?.enabled!==false,config:cfg.mcp},matches=matchingMcp(reg,store,env),conflict=reg.found&&!ownMcp(reg,store)
   const command=hookCommandFor(store,'hermes-hook',env),added=HERMES_EVENTS.filter(event=>!(cfg.hooks?.[event]||[]).some(h=>h?.command===command))

@@ -230,7 +230,8 @@ export class ClaudeStore {
   clearHarnessSetting(harness) {this.harnessSetting(harness);this.db.prepare('DELETE FROM harness_summary_settings WHERE harness=?').run(harness);return null}
   harnessSettings() {return this.db.prepare(ClaudeStore.SETTING+' ORDER BY h.harness').all()}
   effectiveSetting(session,env=process.env) {
-    const harness=this.metadata(session).harness
+    if(!this.source(session))throw new Error('Unknown session')
+    const harness=this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness||'legacy'
     // SuperLcm's DSH compaction plugin is its only summary writer, including when a user
     // changes the global archive preference. Recall never starts a second AI.
     if(harness==='dsh')return {mode:'off',model:null,scope:'compaction-plugin',harness}
@@ -251,7 +252,8 @@ export class ClaudeStore {
   }
   // A saved custom API (this conversation's tool first, then global) usable for a one-off catch-up in any mode.
   apiConfig(session,env=process.env) {
-    const harness=this.metadata(session).harness
+    if(!this.source(session))throw new Error('Unknown session')
+    const harness=this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness||'legacy'
     const own=harness!=='legacy'?this.harnessSetting(harness):null
     for (const [scope,choice] of [[this.harnessKeyScope(harness,own),own],['global',this.globalSetting()]]) {
       if (choice?.mode!=='api') continue
@@ -294,7 +296,7 @@ export class ClaudeStore {
   metadata(session) {
     if (!this.source(session)) throw new Error('Unknown session')
     const row=this.db.prepare('SELECT harness,external_id,display_name,name_source FROM session_origins WHERE session=?').get(session)
-    const first=this.db.prepare("SELECT preview FROM events WHERE session=? AND preview<>'' ORDER BY ordinal LIMIT 1").get(session)?.preview
+    const first=row?.display_name&&row.name_source?null:this.db.prepare("SELECT preview FROM events WHERE session=? AND preview<>'' ORDER BY ordinal LIMIT 1").get(session)?.preview
     return {session,code:shortCode(session),harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
   }
   sources() { return this.listSessions(2147483647,0).sessions }
@@ -302,7 +304,7 @@ export class ClaudeStore {
     const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
-    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session) AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session) AS levels,CASE WHEN COALESCE(o.display_name,'')<>'' THEN NULL ELSE (SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) END AS first_message FROM page p JOIN sources s ON p.session=s.session LEFT JOIN session_origins o ON s.session=o.session"
+    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session) AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session) AS levels,CASE WHEN COALESCE(o.display_name,'')<>'' AND COALESCE(o.name_source,'')<>'' THEN NULL ELSE (SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) END AS first_message FROM page p JOIN sources s ON p.session=s.session LEFT JOIN session_origins o ON s.session=o.session"
     const page="WITH page AS MATERIALIZED (SELECT s.session FROM sources s LEFT JOIN session_origins o ON s.session=o.session"+where+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session LIMIT ? OFFSET ?) '
     const sessions=this.db.prepare(page+select+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,code:shortCode(row.session),summary_mode:setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}

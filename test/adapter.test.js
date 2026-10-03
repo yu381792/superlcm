@@ -712,7 +712,7 @@ test('Hermes captures running at the same time store each message once',fixture(
 }))
 
 test('Hermes Python is found through a launcher that execs the entry script quoted or bare', async () => {
-  const { hermesRuntime } = await import('../src/hermes-config.js')
+  const { hermesRuntime,hermesRuntimeAsync } = await import('../src/hermes-config.js')
   const dir = mkdtempSync(join(tmpdir(), 'superlcm-hermes-launcher-')), entry = join(dir, 'entry'), launcher = join(dir, 'hermes')
   // Hermes 0.21.5+: the entry script reports its runtime command with --print-runtime-command.
   writeFileSync(entry, `#!/bin/sh\n# --print-runtime-command\necho '${JSON.stringify([process.execPath, '-I', '-c', 'import sys; runpy.run_module("hermes_cli.main")'])}'\n`); chmodSync(entry, 0o755)
@@ -721,6 +721,20 @@ test('Hermes Python is found through a launcher that execs the entry script quot
     const runtime = hermesRuntime({ ...process.env, SUPERLCM_HERMES_BIN: launcher, SUPERLCM_HERMES_PYTHON: '' })
     assert.equal(runtime?.python, process.execPath, line)
     assert.deepEqual(runtime.args, ['-I'])
+    assert.deepEqual(await hermesRuntimeAsync({ ...process.env, SUPERLCM_HERMES_BIN: launcher, SUPERLCM_HERMES_PYTHON: '' }),runtime)
   }
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('Hermes runtime discovery yields while a launcher is starting',async()=>{
+  const {hermesRuntimeAsync}=await import('../src/hermes-config.js')
+  const dir=mkdtempSync(join(tmpdir(),'superlcm-hermes-async-')),launcher=join(dir,'hermes')
+  const command=[process.execPath,'-I','-c','import sys; runpy.run_module("hermes_cli.main")']
+  writeFileSync(launcher,`#!${process.execPath}\n// --print-runtime-command\nsetTimeout(()=>process.stdout.write(${JSON.stringify(JSON.stringify(command)+'\n')}),100)\n`);chmodSync(launcher,0o755)
+  let yielded=false
+  const timer=setTimeout(()=>{yielded=true},10)
+  try {
+    const runtime=await hermesRuntimeAsync({...process.env,SUPERLCM_HERMES_BIN:launcher,SUPERLCM_HERMES_PYTHON:''})
+    assert.equal(runtime.python,process.execPath);assert.equal(yielded,true,'another console request can run while Hermes starts')
+  }finally{clearTimeout(timer)}
 })

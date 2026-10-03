@@ -182,7 +182,9 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       }
       const route = routes[`${req.method} ${url.pathname}`]
       if (!route) return json(res, 404, { error: 'Unknown console route' })
-      json(res, 200, await route(req.method === 'GET' ? url : req, url))
+      const began=performance.now(),data=await route(req.method === 'GET' ? url : req, url)
+      res.setHeader('Server-Timing','handler;dur='+(performance.now()-began).toFixed(1))
+      json(res, 200, data)
     } catch (error) { json(res, 400, { error: error.message }) }
   })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve) })
