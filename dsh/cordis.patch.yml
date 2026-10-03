@@ -1,0 +1,5 @@
+# 一套 SuperLcm 插件：共享归档与精确召回；压缩引擎按 profile 显式选择。
+# 每个 Agent 只能有一个压缩引擎；勿与 compaction-basic 同时启用。
+- insert:
+    - id: superlcm-archive
+      name: superlcm-mcp/dsh

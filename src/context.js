@@ -13,11 +13,12 @@ export function continuePacket(store, session, { maxChars = 12000 } = {}) {
   ]
   const outlineBudget = Math.floor(maxChars * 0.5), recentBudget = Math.floor(maxChars * 0.4)
   if (roots.length) {
-    lines.push('', `## Outline of records #0–#${stats.summarized_to - 1}`)
+    lines.push('', stats.coverage === 'selected-records' ? '## DSH native summaries (selected original records; ranges are reading envelopes)' : `## Outline of records #0–#${stats.summarized_to - 1}`)
     const each = Math.max(240, Math.floor(outlineBudget / roots.length))
     for (const n of roots) lines.push(`- [#${n.first}–#${n.last}, level ${n.level + 1}, node ${n.id}] ${clip(n.summary.replace(/\s+/g, ' '), each)}`)
   } else lines.push('', '## Outline', 'No summaries yet; rely on the recent messages and lcm_read.')
-  if (stats.summarized_to < stats.records && roots.length) lines.push('', `Records #${stats.summarized_to}–#${stats.records - 1} are not summarized yet; their originals are readable.`)
+  if (stats.coverage === 'selected-records') lines.push('', 'DSH summaries cite selected original records. Use lcm_outline for exact source_records; all originals, including gaps, remain readable.')
+  else if (stats.summarized_to < stats.records && roots.length) lines.push('', `Records #${stats.summarized_to}–#${stats.records - 1} are not summarized yet; their originals are readable.`)
   const recent = store.recent(session, recentBudget)
   if (recent.length) { lines.push('', '## Most recent messages'); for (const e of recent) lines.push(`[#${e.ordinal}] ${e.text}`) }
   lines.push('', '## Checking details',

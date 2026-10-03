@@ -1,5 +1,6 @@
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
+import { dshCoverage, dshNodeSources } from './dsh-summaries.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS, validApiModel } from './api-endpoint.js'
 import { readApiKey, saveApiKey, removeApiKey } from './api-credentials.js'
 import { takeoverDefaults, takeoverLimits } from './compaction.js'
@@ -226,6 +227,9 @@ export class ClaudeStore {
   harnessSettings() {return this.db.prepare(ClaudeStore.SETTING+' ORDER BY h.harness').all()}
   effectiveSetting(session,env=process.env) {
     const harness=this.metadata(session).harness
+    // DSH's native engine is its only summary writer, including when a user
+    // changes the global archive preference. Recall never starts a second AI.
+    if(harness==='dsh')return {mode:'off',model:null,scope:'native',harness}
     const specific=harness!=='legacy'?this.harnessSetting(harness):null
     const choice=specific||this.globalSetting()
     const r=choice ? {...choice,scope:specific?'harness':'global',harness} : {mode:summaryMode(env),model:null,api_provider:null,api_url:null,scope:'environment',harness}
@@ -320,13 +324,14 @@ export class ClaudeStore {
     throw new Error(`"${query}" matches ${matches.length} conversations: `+matches.slice(0,8).map(m=>`#${m.code} ${m.name} (${m.harness})`).join('; ')+'. Retry with a #code.')
   }
   stats(session) {
-    return this.db.prepare('SELECT (SELECT COUNT(*) FROM events WHERE session=?) AS records,(SELECT COALESCE(MAX(last)+1,0) FROM nodes WHERE session=?) AS summarized_to,(SELECT COUNT(*) FROM nodes WHERE session=?) AS summary_count,(SELECT COALESCE(MAX(level)+1,0) FROM nodes WHERE session=?) AS levels,(SELECT updated_ms FROM sources WHERE session=?) AS updated_ms').get(session,session,session,session,session)
+    const stats=this.db.prepare('SELECT (SELECT COUNT(*) FROM events WHERE session=?) AS records,(SELECT COALESCE(MAX(last)+1,0) FROM nodes WHERE session=?) AS summarized_to,(SELECT COUNT(*) FROM nodes WHERE session=?) AS summary_count,(SELECT COALESCE(MAX(level)+1,0) FROM nodes WHERE session=?) AS levels,(SELECT updated_ms FROM sources WHERE session=?) AS updated_ms').get(session,session,session,session,session)
+    return this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness==='dsh'?{...stats,...dshCoverage(this.db,session,stats.records)}:stats
   }
   // Roots of the summary forest in time order: the shortest outline that covers everything summarized.
   roots(session) {
     const nodes=this.db.prepare('SELECT id,level,first,last,children,summary FROM nodes WHERE session=? ORDER BY first,level DESC').all(session)
     const owned=new Set(nodes.flatMap(n=>JSON.parse(n.children)))
-    return nodes.filter(n=>!owned.has(n.id)).map(n=>({...n,children:JSON.parse(n.children)}))
+    return nodes.filter(n=>!owned.has(n.id)).map(n=>dshNodeSources(this.db,session,{...n,children:JSON.parse(n.children)}))
   }
   outline(session, nodeId) {
     const source=this.metadata(session), stats=this.stats(session)
@@ -335,9 +340,11 @@ export class ClaudeStore {
     const node=this.node(session,nodeId)
     if(!node) throw new Error('Unknown summary node')
     const children=JSON.parse(node.children)
-    if(children.length) return {source,node:{...node,children},nodes:children.map(id=>this.node(session,id)).filter(Boolean).map(n=>({...n,children:JSON.parse(n.children)}))}
-    const events=this.db.prepare("SELECT ordinal,substr(preview,1,400) AS preview FROM events WHERE session=? AND ordinal BETWEEN ? AND ? AND preview<>'' ORDER BY ordinal").all(session,node.first,node.last)
-    return {source,node:{...node,children},events}
+    const described=dshNodeSources(this.db,session,{...node,children})
+    if(children.length) return {source,node:described,nodes:children.map(id=>this.node(session,id)).filter(Boolean).map(n=>dshNodeSources(this.db,session,{...n,children:JSON.parse(n.children)}))}
+    const selected=described.source_records?new Set(described.source_records):null
+    const events=this.db.prepare("SELECT ordinal,substr(preview,1,400) AS preview FROM events WHERE session=? AND ordinal BETWEEN ? AND ? AND preview<>'' ORDER BY ordinal").all(session,node.first,node.last).filter(e=>!selected||selected.has(e.ordinal))
+    return {source,node:described,events}
   }
   // Exact raw events by ordinal range, verified against the original file.
   readRange(session, from, to=from, charOffset=0, maxChars=12000) {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- DSH 接入同一套 SuperLcm：原异步压缩引擎作为可选插件迁入，原文和已提交摘要进入共享档案，可与 Claude Code、Codex 双向接续。
+- DSH 只使用原压缩引擎生成摘要，归档不会重复调用模型。旧索引只读迁移，保留原库；补录和事件采集在本机后台完成。
+
 ## 0.4.23
 
 - Fixed: the compaction notice in 0.4.22 used Claude Code's own after-compaction count, which leaves out the system prompt, tools and rule files every request carries (a real 136K compaction showed 42K while the context still held about 136K). The notice now shows SuperLcm's estimate of the whole context again.

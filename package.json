@@ -1,9 +1,17 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.4.23",
+  "version": "0.5.0",
   "description": "Cross-harness conversation summaries and exact-source recall over MCP",
   "type": "module",
   "private": true,
+  "exports": {
+    ".": "./src/mcp.js",
+    "./dsh": "./dsh/archive.js",
+    "./dsh-engine": "./dsh/engine.js"
+  },
+  "dsh": {
+    "bundle": { "patch": "./dsh/cordis.patch.yml" }
+  },
   "license": "MIT",
   "bin": {
     "superlcm": "./src/cli.js",
@@ -14,16 +22,18 @@
   },
   "files": [
     "src/",
+    "dsh/",
     "docs/",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "check": "node scripts/check.mjs",
-    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js",
+    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js",
     "validate": "npm run check && npm test"
   },
   "repository": {
@@ -34,6 +44,24 @@
     "url": "https://github.com/yu381792/superlcm/issues"
   },
   "homepage": "https://github.com/yu381792/superlcm#readme",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-compaction": "*",
+    "@deepseek-ai/dsh-compaction-basic": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-mcp-client": "*",
+    "@deepseek-ai/dsh-session-query": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-compaction": { "optional": true },
+    "@deepseek-ai/dsh-compaction-basic": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/dsh-mcp-client": { "optional": true },
+    "@deepseek-ai/dsh-session-query": { "optional": true },
+    "@deepseek-ai/schemastery": { "optional": true }
+  },
   "keywords": [
     "superlcm",
     "mcp",
