@@ -18,6 +18,10 @@ import { ClaudeStore } from '../src/store.js'
 import { captureDshPacket } from '../src/dsh.js'
 import { projectEvent } from '../dsh/archive.js'
 import { compressionSnapshot } from '../src/compression-status.js'
+import Llm from '@deepseek-ai/dsh-llm'
+import * as PiAdapter from '@deepseek-ai/dsh-llm-pi-ai'
+import Authorization from '@deepseek-ai/dsh-authorization'
+import { summaryContext } from '../dsh/summary-model.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 async function withHost(config, response, run) {
@@ -45,6 +49,39 @@ async function withHost(config, response, run) {
 }
 const append = (session, text) => session.append('user/message', createUserMessage({ content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
 const source = 'original engineering facts and exact numbers. '.repeat(5000)
+
+test('native summary adapters reuse credentials without duplicating settings or sign-in flows',async()=>{
+  const ctx=new Context()
+  try {
+    const credentials={async resolve(){return {value:'fixture-key'}}};ctx.reflect.provide('credentials',credentials)
+    const account={async resolveToken(){return 'fixture-token'}};ctx.reflect.provide('deepseekAccount',account)
+    new Llm(ctx);new Authorization(ctx)
+    const parent=ctx.plugin(PiAdapter,{providers:{}});await parent.await()
+    const mainProviders=ctx.llm.listConfigurableProviders()
+    const flows=ctx.authorization.list();assert.ok(flows.length>0)
+    const summary=summaryContext(ctx,{plugin:'@deepseek-ai/dsh-llm-pi-ai',config:{providers:{}}});await summary.ready
+    assert.equal((await summary.ctx.get('credentials').resolve('fixture')).value,'fixture-key')
+    assert.equal(summary.ctx.get('authorization'),undefined);assert.equal(summary.ctx.get('settings'),undefined)
+    assert.deepEqual(ctx.authorization.list(),flows);assert.deepEqual(ctx.llm.listConfigurableProviders(),mainProviders)
+    const signedIn=summaryContext(ctx,{plugin:'@deepseek-ai/dsh-llm-deepseek-account',config:{}});await signedIn.ready
+    assert.equal(await signedIn.ctx.get('deepseekAccount').resolveToken(),'fixture-token')
+    assert.ok((await signedIn.ctx.llm.listModels('deepseek-account')).length>0)
+  } finally {await ctx.fiber.dispose()}
+})
+
+test('global compaction uses the selected native model scope without changing the conversation registry',async()=>{
+  const spec={plugin:'@deepseek-ai/dsh-llm-pi-ai',config:{providers:{'selected-provider':{api:'openai-responses',baseURL:'http://127.0.0.1:9/v1',models:[{id:'cheap-model',contextWindow:128000}]}}}}
+  await withHost({summaryAdapter:spec,summarizationProvider:'selected-provider',summarizationModel:'cheap-model'},async()=>{throw Error('Main conversation model must not summarize')},async({engine,ctx,session,agent,calls})=>{
+    await engine.summaryModelReady
+    const selected=[]
+    engine.summaryContext.llm.stream=async function*(options){selected.push([options.provider,options.model]);yield{type:'text-delta',index:0,text:'原始工程事实已压缩，主对话模型未参与。'}}
+    const event=append(session,source)
+    const prepared=prepareAsyncRegion(engine,agent,{start:event.seq,end:event.seq})
+    const summary=await summarizeAsyncRegion(engine,agent,prepared,new AbortController().signal)
+    assert.deepEqual(selected,[['selected-provider','cheap-model']]);assert.equal(calls.length,0)
+    assert.notEqual(ctx.llm,engine.summaryContext.llm);assert.ok(commitAsyncRegion(engine,agent,summary))
+  })
+})
 
 test('real DSH condenses four leaf checkpoints and shared recall retains every original', async () => {
   let phase = 'leaf'

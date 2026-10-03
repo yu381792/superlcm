@@ -8,20 +8,20 @@
 用户先安装 Node.js 22.16 或更新版本，然后在安装包所在目录运行：
 
 ```sh
-npm install -g ./superlcm-mcp-0.5.3.tgz
+npm install -g ./superlcm-mcp-0.5.4.tgz
 superlcm web
 ```
 
 浏览器打开命令输出的本机地址，在「接入」中选择载体。dsh harness 用户先按
-[官方说明](https://github.com/deepseek-ai/deepseek-harness) 安装 dsh harness，并启动一次
-要使用的界面，再点击 dsh harness 的「接入」。选择界面、检查压缩模型并点击
-「安装并启用压缩」，随后重新加载 dsh harness。插件自动保留所有原文并收录压缩摘要，
-模型可直接使用 `lcm_find`、`lcm_outline`、`lcm_read`、`lcm_continue` 查档和接续。
+[官方说明](https://github.com/deepseek-ai/deepseek-harness) 安装并启动 dsh harness，
+再点击它的「接入」。供应商和模型从 dsh harness 当前配置读取，直接用下拉列表
+选择压缩模型，点击「安装并启用压缩」完成全局接入，随后重新加载 dsh harness。
+不需要旧的 dsh-superlcm 插件，也不需要区分 web、acp 等内部启动方式。
 
-dsh harness 安装器从当前 SuperLcm 安装位置复制发行文件，并复用该 dsh harness 安装已有的
-运行时依赖；不使用维护者的用户名、目录、模型或账号，不联网下载其他插件。
-每次接入先备份配置，更新本地包依赖和插件列表；压缩模型沿用所选界面原来的
-路线，用户也可在确认前明确修改。生成压缩摘要会使用该模型的调用额度。
+安装器写入 dsh harness 全局配置，现有和之后新增的启动方式共用同一套插件及
+会话档案。原供应商、账号和聊天模型设置保持原样；只给原生压缩引擎提供用户
+选定的模型。压缩会使用该模型的调用额度，读取模型目录本身不调用生成模型。
+原配置先备份，验证失败会恢复；旧插件和旧索引保留，不删除原文。
 
 `package.json` 已移除 `private` 发布限制并设置公开包访问方式。维护者拥有
 `superlcm-mcp` 包名权限并完成 npm 登录后，可以自行执行 `npm publish`。

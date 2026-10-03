@@ -16,11 +16,11 @@ SuperLcm gives **Claude Code, Codex, Hermes, Pi and dsh harness** a shared conve
 | Codex | Supported | No SuperLcm takeover yet | Console: MCP tools and capture hooks |
 | Hermes | Supported | No SuperLcm takeover yet | Console: Hermes configuration and capture hooks |
 | Pi | Supported | No SuperLcm takeover yet | Console: auto-discovered extension |
-| dsh harness | Supported | Native compaction engine, shared originals and summaries | Console: select a profile and install the native plugin |
+| dsh harness | Supported | Native compaction engine, shared originals and summaries | Console: choose a configured model and connect globally |
 
 Archiving and generating summaries are available across all five adapters. Replacing the active model context currently has two integrations: **SuperLcm takeover in Claude Code** and **the native engine in dsh harness**. The console shows configuration and runtime status separately.
 
-Start with the [installation package](docs/RELEASE.md), run `superlcm web`, and choose your tool under **Connect**. Claude Code users can also [install the Claude plugin](#install-as-a-claude-plugin) and open `/superlcm:console`. For dsh harness, choose a profile, review its compaction model, install, then reload that profile; see [dsh harness setup](docs/DSH.md).
+Start with the [installation package](docs/RELEASE.md), run `superlcm web`, and choose your tool under **Connect**. Claude Code users can also [install the Claude plugin](#install-as-a-claude-plugin) and open `/superlcm:console`. For dsh harness, choose its configured provider and model, connect once globally, then reload dsh harness; see [dsh harness setup](docs/DSH.md).
 
 ## Move a whole conversation, summaries and all, into another tool
 
@@ -111,11 +111,11 @@ Plugin updates replace the plugin folder, so tools connected from the plugin's c
 
 Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then:
 
-1. **接入 (Connect)** — pick Claude Code, Codex, Hermes, Pi or dsh harness and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. For dsh harness, select its profile and review the compaction model; reload that profile after installation. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
+1. **接入 (Connect)** — pick Claude Code, Codex, Hermes, Pi or dsh harness and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. For dsh harness, choose its configured provider and model; the integration is global. Reload dsh harness after installation. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
 2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **换个工具继续** to get the one-line handoff for another tool.
 3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (the default: it writes each part from memory right after it happens, which costs almost nothing), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width, and turn on the Claude Code compaction takeover under Compaction.
 
-Terminal equivalents: `superlcm setup dsh --profile web --apply`, `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
+Terminal equivalents: `superlcm setup dsh --provider <provider> --model <model> --apply`, `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
 Hermes keeps its transcripts in a SQLite database and rewrites them on compression, so SuperLcm keeps its own append-only copy of every message row and joins a compression chain into one conversation. Pi session files are append-only and are indexed byte for byte, all branches included.
 

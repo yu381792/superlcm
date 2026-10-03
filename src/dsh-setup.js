@@ -1,140 +1,89 @@
-// Portable offline installation. DSH owns manifest writes; its installed peers
-// are linked into a private, versioned copy of this package, not downloaded.
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
-import { createHash, randomUUID } from 'node:crypto'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import { dshEntries, dshHome, dshHost, inspectDshTree } from './dsh-connection.js'
-import { runCommand as run, commandOptions, validModel } from './runtime.js'
-export const packageRoot = fileURLToPath(new URL('../',import.meta.url))
-const pkg = JSON.parse(readFileSync(join(packageRoot,'package.json'),'utf8'))
-const hash = value => createHash('sha256').update(value).digest('hex')
-const read = file => existsSync(file) ? readFileSync(file,'utf8') : null
-const active = new Set(), engineNames = new Set(['superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'])
-const begin = '# BEGIN SuperLcm managed DSH integration', end = '# END SuperLcm managed DSH integration'
-function packageDirectory(require, name) {
-  let path=dirname(require.resolve(name))
-  while (dirname(path)!==path) {
-    if (existsSync(join(path,'package.json')) && JSON.parse(readFileSync(join(path,'package.json'),'utf8')).name === name) return path
-    path=dirname(path)
-  }
-  throw Error('DSH 缺少运行时依赖：'+name)
-}
-function withoutManaged(text) {
-  const start=text.indexOf(begin), finish=text.indexOf(end)
-  if (start<0 && finish<0) return text
-  if (start<0 || finish<start || text.indexOf(begin,start+begin.length)>=0) throw Error('DSH 的 SuperLcm 配置段不完整，请先核对')
-  return text.slice(0,start)+text.slice(finish+end.length).replace(/^\r?\n/,'')
-}
-export async function dshSetupPreview(store,{env=process.env,runCommand=run,profile='web',provider,model,host:dshRuntime}={}) {
-  if (!/^[\w-][\w.-]{0,80}$/.test(profile)||profile==='node_modules') throw Error('Invalid DSH profile')
-  const host=dshRuntime || dshHost(env), dir=join(dshHome(env),'profiles',profile)
-  const files={mcp:join(dir,'package.json'),hooks:join(dir,'cordis.patch.yml'),lock:join(dir,'pnpm-lock.yaml')}
-  const raw=read(files.mcp), patch=read(files.hooks)||'', lock=read(files.lock), homePatch=read(join(dshHome(env),'cordis.patch.yml'))
-  if (!raw) throw Error('请先启动一次所选 DSH 界面，再接入 SuperLcm')
-  const manifest=JSON.parse(raw)
-  if (!Array.isArray(manifest.dsh?.profile?.bundles)) throw Error('无法识别 DSH 插件列表')
-  const output=await runCommand(host.bin,[...(host.argsPrefix||[]),'--profile',profile,'--dump-config'],{...commandOptions(env),timeout:5000})
-  const tree=host.parse(output.stdout), entries=dshEntries(tree), engines=entries.filter(e=>engineNames.has(e.name))
-  const old=engines.find(e=>e.name!=='@deepseek-ai/dsh-compaction-basic')||engines[0]
-  const route=old?.config || {}, defaults=entries.find(e=>e.id==='agent-default-model')?.config || {}
-  provider=provider??route.summarizationProvider??defaults.provider??''
-  model=model??route.summarizationModel??defaults.model??''
-  const routeValid=typeof provider==='string'&&validModel(provider)&&typeof model==='string'&&validModel(model)
-  const sameFallback=provider===route.fallbackSummarizationProvider&&model===route.fallbackSummarizationModel
-  const foreign=entries.find(e=>!engineNames.has(e.name)&&(/(?:^|\/)compaction(?:-engine)?$/.test(e.name||'')||e.id==='superlcm-native-compaction'))
-  const native=entries.find(e=>e.id==='superlcm-native-compaction'&&e.name==='superlcm-mcp/dsh-engine')
-  const otherArchive=entries.find(e=>e.id==='superlcm-archive'&&e.name!=='superlcm-mcp/dsh')
-  const peers={}
-  for (const peer of Object.keys(pkg.peerDependencies)) peers[peer]=packageDirectory(host.require,peer)
+// One home-level DSH integration, shared by existing and future launch modes.
+import { existsSync,mkdirSync,readFileSync,renameSync,writeFileSync } from 'node:fs'
+import { createHash,randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { dshHome,dshEntries,inspectDshTree,isDshEngine,isDshArchive } from './dsh-connection.js'
+import { dshConfiguration,readDshCatalog,publicCatalog } from './dsh-catalog.js'
+import { packageInfo,installDshPackage,removeManagedBlock } from './dsh-install.js'
+import { runCommand as run,commandOptions } from './runtime.js'
+const read=file=>existsSync(file)?readFileSync(file,'utf8'):null
+const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex')
+export const globalBegin='# BEGIN SuperLcm global DSH integration',globalEnd='# END SuperLcm global DSH integration'
+const legacyBegin='# BEGIN SuperLcm managed DSH integration',legacyEnd='# END SuperLcm managed DSH integration'
+const tuningKeys=['tailCount','minRetainTokens','pressureFoldTokens','foldBatchTokens','softActiveTokens','hardActiveTokens','summaryPrefixTargetTokens','condensedMinFanout','summaryTimeoutMs','summaryRetryCooldownMs','headroomTokens','maxTokens','compactionRetries','maxOverflowRetries']
+const active=new Set()
+export async function dshSetupPreview(store,{env=process.env,runCommand=run,provider_ref,provider,model}={}) {
+  const configuration=await dshConfiguration({env,runCommand}),{host,profiles}=configuration
+  if(!profiles.length)throw Error('请先安装并启动一次 dsh harness，再全局接入 SuperLcm')
+  const catalog=await readDshCatalog(configuration),file=join(dshHome(env),'cordis.patch.yml'),raw=read(file)
+  const engines=profiles.flatMap(p=>dshEntries(p.tree).filter(isDshEngine))
+  const current=engines.find(e=>e.id==='superlcm-global-compaction')?.config
+  provider_ref=provider_ref??current?.summaryAdapter?.ref
+  if(!provider_ref&&provider){const matches=catalog.providers.filter(p=>p.id===provider);if(matches.length===1)provider_ref=matches[0].ref}
+  const choice=catalog.providers.find(p=>p.ref===provider_ref)
+  model=model??(current&&current.summaryAdapter?.ref===provider_ref?current.summarizationModel:undefined)
+  const routeReady=!!choice?.models.some(m=>m.id===model)
+  const foreign=profiles.flatMap(p=>dshEntries(p.tree)).find(e=>
+    !isDshEngine(e)&&(/(?:^|\/)compaction(?:-engine)?$/.test(e.name||'')||['superlcm-global-compaction','SuperLcm-compaction','superlcm-native-compaction','compaction-basic'].includes(e.id))||
+    ['superlcm-archive','superlcm-global-archive'].includes(e.id)&&!isDshArchive(e)||
+    e.id==='mcp-superlcm-archive'&&!['superlcm','superlcm-archive'].includes(e.config?.serverName))
+  const disabledIds=new Set(['compaction-basic','SuperLcm-compaction','superlcm-native-compaction','superlcm-archive','mcp-superlcm-archive'])
+  for(const profile of profiles)for(const entry of dshEntries(profile.tree))if((isDshEngine(entry)||isDshArchive(entry))&&!entry.id.startsWith('superlcm-global-'))disabledIds.add(entry.id)
+  const runtimeTuning={}
+  for(const profile of profiles){const old=dshEntries(profile.tree).find(e=>isDshEngine(e)&&e.name!=='@deepseek-ai/dsh-compaction-basic');if(old)runtimeTuning[profile.name]=Object.fromEntries(tuningKeys.filter(k=>typeof old.config?.[k]==='number').map(k=>[k,old.config[k]]))}
+  if(current?.runtimeTuning)Object.assign(runtimeTuning,current.runtimeTuning)
+  const revision=hash({raw,profiles:profiles.map(p=>[p.name,p.manifest,p.patch]),version:packageInfo.version,index:store.dir,provider_ref:provider_ref||null,model:model||null})
   const operations=await import(pathToFileURL(host.require.resolve('@deepseek-ai/dsh-plugin-manager/operations')).href)
-  if (typeof operations.saveManifest!=='function') throw Error('当前 DSH 未提供安全配置写入接口，请更新 DSH')
-  const engineConfig={...(old?.config||{}),auto:true,archiveHome:store.dir,summarizationProvider:provider,summarizationModel:model}
-  // Preserve the original YAML and !!js expressions. Only our own managed block
-  // is replaced; known older compaction entries are disabled, never deleted.
-  const previousManaged=patch.includes(begin)?host.parse(patch.slice(patch.indexOf(begin)+begin.length,patch.indexOf(end))):[]
-  const disabledIds=new Set(['compaction-basic',...engines.filter(e=>e.id!=='superlcm-native-compaction').map(e=>e.id),
-    ...(previousManaged||[]).filter(e=>e.disabled===true).map(e=>e.id)])
-  const disabled=[...disabledIds].map(id=>({id,disabled:true}))
-  const bridge=entries.filter(e=>e.id==='mcp-superlcm-archive')
-  disabled.push(...bridge.map(e=>({id:e.id,disabled:true})))
-  const engine={id:'superlcm-native-compaction',name:'superlcm-mcp/dsh-engine',config:engineConfig}
-  const basePatch=withoutManaged(patch)
-  const externalNative=native && !patch.includes(begin)
-  const patches=[...disabled,externalNative?engine:{insert:[engine]}, {id:'superlcm-archive',name:'superlcm-mcp/dsh',config:{archiveHome:store.dir}}]
-  const next=basePatch.trimEnd()+'\n\n'+begin+'\n'+host.yaml.dump(patches,{lineWidth:-1,noRefs:true,schema:host.schema})+end+'\n'
-  const revision=hash(JSON.stringify({raw,patch,lock,homePatch,version:pkg.version,profile,provider,model,index:store.dir}))
-  return {harness:'dsh',profile,provider:typeof provider==='string'?provider:'',model:typeof model==='string'?model:'',revision,can_apply:routeValid&&!foreign&&!otherArchive&&!sameFallback,
-    blocker:foreign?'检测到其他压缩引擎，请先在 DSH 中选择唯一引擎':otherArchive?'同名归档条目属于其他插件，不能覆盖':sameFallback?'压缩模型不能与备用模型相同':!routeValid?'请选择用于压缩的 DSH 模型及提供方':null,
-    existing:inspectDshTree(tree).configured,files,index_home:store.dir,hook_events_added:[],mcp_action:'native-plugin',requires_review:false,
-    version:pkg.version,notes:['安装当前 SuperLcm 的本地副本，不联网下载。','仅修改所选界面，原配置和插件入口先备份。','启用 DSH 原生自动压缩，沿用所选模型，会使用该模型的调用额度。','安装后重新加载 DSH；本工具不会自动重启它。'],
-    _next:{manifest,patch:next,raw,originalPatch:read(files.hooks),lock,peers,host,operations,dir}}
+  return {harness:'dsh',scope:'global',revision,provider_ref:choice?.ref||null,provider:choice?.id||null,model:model||null,
+    can_apply:routeReady&&!foreign,blocker:foreign?'检测到其他压缩引擎，需先在 dsh harness 中确认唯一引擎':!routeReady?'请从 dsh harness 已配置的模型中选择压缩供应商和模型':null,
+    existing:!!current,files:{settings:file},index_home:store.dir,hook_events_added:[],mcp_action:'global-native-plugin',requires_review:false,version:packageInfo.version,
+    catalog:publicCatalog(catalog),notes:['全局接入一次，所有启动方式共用。','模型来自 dsh harness 当前配置，无需先安装旧压缩插件。','生成压缩摘要会使用所选模型的调用额度。'],
+    _next:{configuration,choice,operations,file,raw,disabledIds:[...disabledIds],runtimeTuning}}
 }
 export async function applyDshSetup(store,revision,options={}) {
-  const key=dshHome(options.env)+'/'+(options.profile||'web')
-  if(active.has(key)) throw Error('该 DSH 界面的接入正在运行')
-  active.add(key)
+  const home=dshHome(options.env)
+  if(active.has(home))throw Error('dsh harness 全局接入正在运行')
+  active.add(home)
   try {
     const plan=await dshSetupPreview(store,options)
-    if(plan.revision!==revision) throw Error('配置已变化，请重新预览')
-    if(!plan.can_apply) throw Error(plan.blocker)
-    const saved=plan._next, backup=join(store.dir,'config-backups','dsh-'+plan.profile+'-'+randomUUID())
-    mkdirSync(backup,{recursive:true,mode:0o700})
-    for(const [name,file] of Object.entries(plan.files)) if(existsSync(file)) writeFileSync(join(backup,name+'.before'),readFileSync(file),{flag:'wx',mode:0o600})
-    const stage=join(store.dir,'dsh-packages',pkg.version+'-'+randomUUID())
-    mkdirSync(stage,{recursive:true,mode:0o700})
-    for(const file of ['package.json',...pkg.files]) if(existsSync(join(packageRoot,file))) cpSync(join(packageRoot,file),join(stage,file),{recursive:true})
-    for(const [peer,path] of Object.entries(saved.peers)) {
-      const target=join(stage,'node_modules',peer);mkdirSync(dirname(target),{recursive:true});symlinkSync(path,target,process.platform==='win32'?'junction':'dir')
-    }
-    const entry=join(saved.dir,'node_modules','superlcm-mcp'), previous=join(backup,'previous-plugin-entry')
-    let hadEntry=false
-    try { lstatSync(entry);hadEntry=true } catch {}
-    if(hadEntry) {
-      const current=JSON.parse(readFileSync(join(entry,'package.json'),'utf8'))
-      if(current.name!=='superlcm-mcp') throw Error('插件路径属于其他包，不能覆盖')
-    }
-    if(read(plan.files.mcp)!==saved.raw||read(plan.files.hooks)!==saved.originalPatch||read(plan.files.lock)!==saved.lock) throw Error('配置已变化，请重新预览')
-    const manifest=structuredClone(saved.manifest)
-    manifest.dependencies??={};manifest.dependencies['superlcm-mcp']='link:'+stage
-    const bundles=manifest.dsh.profile.bundles.filter(name=>name!=='superlcm-mcp'&&name!=='SuperLcm')
-    const base=bundles.indexOf('@deepseek-ai/dsh-base');bundles.splice(base>=0?base+1:0,0,'superlcm-mcp')
-    manifest.dsh.profile.bundles=bundles
-    const nextLock=saved.lock?saved.host.yaml.load(saved.lock):null
-    if(nextLock) {
-      if(!nextLock.importers?.['.']) throw Error('无法识别 DSH 锁文件')
-      nextLock.importers['.'].dependencies??={}
-      nextLock.importers['.'].dependencies['superlcm-mcp']={specifier:'link:'+stage,version:'link:'+stage}
-    }
-    mkdirSync(dirname(entry),{recursive:true})
-    let moved=false,linked=false
+    if(plan.revision!==revision)throw Error('配置已变化，请重新预览')
+    if(!plan.can_apply)throw Error(plan.blocker)
+    const saved=plan._next,{host,profiles}=saved.configuration
+    const backup=join(store.dir,'config-backups','dsh-global-'+randomUUID());mkdirSync(backup,{recursive:true,mode:0o700})
+    if(saved.raw!==null)writeFileSync(join(backup,'global.before'),saved.raw,{mode:0o600})
+    for(const profile of profiles){writeFileSync(join(backup,profile.name+'-manifest.before'),profile.manifest,{mode:0o600});if(profile.patch!==null)writeFileSync(join(backup,profile.name+'-patch.before'),profile.patch,{mode:0o600})}
+    const stage=installDshPackage(store,host),mutations=[]
+    const spec={ref:plan.provider_ref,plugin:saved.choice._plugin,config:saved.choice._plugin.endsWith('dsh-llm-pi-ai')?{providers:{[plan.provider]:saved.choice._config}}:saved.choice._config}
+    const engine={id:'superlcm-global-compaction',name:join(stage,'dsh/engine.js'),config:{auto:true,archiveHome:store.dir,summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:spec,runtimeTuning:saved.runtimeTuning}}
+    const archive={id:'superlcm-global-archive',name:join(stage,'dsh/archive.js'),config:{archiveHome:store.dir}}
+    const base=removeManagedBlock(saved.raw||'',globalBegin,globalEnd).trimEnd()
+    const patches=[...saved.disabledIds.map(id=>({id,disabled:true})),{insert:[engine,archive]}]
+    const next=base+'\n\n'+globalBegin+'\n'+host.yaml.dump(patches,{schema:host.schema,noRefs:true,lineWidth:-1})+globalEnd+'\n'
+    const record=(file,before,after)=>mutations.push({file,before,after})
+    if(read(saved.file)!==saved.raw)throw Error('全局配置已变化，请重新预览')
+    for(const profile of profiles)if(read(join(profile.dir,'package.json'))!==profile.manifest||read(join(profile.dir,'cordis.patch.yml'))!==profile.patch)throw Error('配置已变化，请重新预览')
     try {
-      if(hadEntry) {renameSync(entry,previous);moved=true}
-      symlinkSync(stage,entry,process.platform==='win32'?'junction':'dir');linked=true
-      await saved.operations.saveManifest(saved.dir,manifest)
-      const temp=plan.files.hooks+'.superlcm-'+randomUUID();writeFileSync(temp,saved.patch,{flag:'wx',mode:0o600});renameSync(temp,plan.files.hooks)
-      if(nextLock) writeFileSync(plan.files.lock,saved.host.yaml.dump(nextLock,{lineWidth:-1,noRefs:true}),{mode:0o600})
-      const dump=await (options.runCommand||run)(saved.host.bin,[...(saved.host.argsPrefix||[]),'--profile',plan.profile,'--dump-config'],{...commandOptions(options.env||process.env),timeout:5000})
-      const verified=inspectDshTree(saved.host.parse(dump.stdout))
-      if(!verified.configured||!verified.enabled||!verified.route_ready) throw Error('安装后的 DSH 压缩配置未通过验证')
-      const receipt={harness:'dsh',profile:plan.profile,version:pkg.version,saved:true,configuration_verified:true,
-        restart_required:true,state:'awaiting_client_reload',backup,package:stage,serviceRestarted:false}
-      writeFileSync(join(backup,'receipt.json'),JSON.stringify(receipt,null,2),{mode:0o600});return receipt
-    } catch(error) {
-      // Keep the failed package and every backup for recovery. No user file is deleted.
-      if(linked) renameSync(entry,join(backup,'failed-plugin-entry'))
-      if(moved) renameSync(previous,entry)
-      const expectedManifest=JSON.stringify(manifest,null,2)+'\n'
-      const expectedLock=nextLock?saved.host.yaml.dump(nextLock,{lineWidth:-1,noRefs:true}):null
-      const changedByOthers=read(plan.files.mcp)!==saved.raw&&read(plan.files.mcp)!==expectedManifest ||
-        read(plan.files.hooks)!==saved.originalPatch&&read(plan.files.hooks)!==saved.patch ||
-        read(plan.files.lock)!==saved.lock&&read(plan.files.lock)!==expectedLock
-      if(changedByOthers) throw Error('DSH 接入失败且配置被其他程序修改，未覆盖并发更改；备份位于 '+backup)
-      writeFileSync(plan.files.mcp,saved.raw,{mode:0o600})
-      if(saved.originalPatch!==null) writeFileSync(plan.files.hooks,saved.originalPatch,{mode:0o600})
-      else if(existsSync(plan.files.hooks)) renameSync(plan.files.hooks,join(backup,'failed-patch'))
-      if(saved.lock!==null) writeFileSync(plan.files.lock,saved.lock,{mode:0o600})
-      throw Error('DSH 接入失败，已恢复原配置；备份位于 '+backup)
+      // Retire only the old SuperLcm activation. Provider/model settings and
+      // unrelated bundles remain untouched; old dependencies remain installed.
+      for(const profile of profiles){
+        const manifest=JSON.parse(profile.manifest),beforeBundles=manifest.dsh.profile.bundles
+        manifest.dsh.profile.bundles=beforeBundles.filter(name=>name!=='superlcm-mcp'&&name!=='SuperLcm')
+        if(manifest.dsh.profile.bundles.length!==beforeBundles.length){const after=JSON.stringify(manifest,null,2)+'\n';record(join(profile.dir,'package.json'),profile.manifest,after);await saved.operations.saveManifest(profile.dir,manifest)}
+        if(profile.patch?.includes(legacyBegin)){const after=removeManagedBlock(profile.patch,legacyBegin,legacyEnd);record(join(profile.dir,'cordis.patch.yml'),profile.patch,after);writeFileSync(join(profile.dir,'cordis.patch.yml'),after,{mode:0o600})}
+      }
+      record(saved.file,saved.raw,next);const temp=saved.file+'.superlcm-'+randomUUID();writeFileSync(temp,next,{flag:'wx',mode:0o600});renameSync(temp,saved.file)
+      for(const profile of profiles){const result=await (options.runCommand||run)(host.bin,[...host.argsPrefix,'--profile',profile.name,'--dump-config'],{...commandOptions(options.env||process.env),timeout:5000});const status=inspectDshTree(host.parse(result.stdout));if(!status.configured||!status.enabled||!status.route_ready)throw Error('Global integration did not validate')}
+      const result={harness:'dsh',scope:'global',version:packageInfo.version,saved:true,configuration_verified:true,restart_required:true,state:'awaiting_client_reload',backup,package:stage,serviceRestarted:false}
+      writeFileSync(join(backup,'receipt.json'),JSON.stringify(result,null,2),{mode:0o600});return result
+    } catch {
+      let conflict=false
+      for(const change of [...mutations].reverse()){
+        const current=read(change.file);if(current!==change.after&&current!==change.before){conflict=true;continue}
+        if(change.before===null){if(existsSync(change.file))renameSync(change.file,join(backup,'failed-global-patch'))}
+        else writeFileSync(change.file,change.before,{mode:0o600})
+      }
+      throw Error((conflict?'接入失败且存在并发修改，未覆盖这些更改':'全局接入失败，已恢复原配置')+'；备份位于 '+backup)
     }
-  } finally { active.delete(key) }
+  } finally {active.delete(home)}
 }

@@ -16,11 +16,11 @@ SuperLcm 让 **Claude Code、Codex、Hermes、Pi 和 dsh harness** 共用一座�
 | Codex | 支持 | 暂未接管压缩 | 控制台：查档工具和记录钩子 |
 | Hermes | 支持 | 暂未接管压缩 | 控制台：通过 Hermes 自身配置接入 |
 | Pi | 支持 | 暂未接管压缩 | 控制台：自动加载的扩展 |
-| dsh harness | 支持 | 原生引擎压缩，原文和摘要共享归档 | 控制台：选择界面并安装原生插件 |
+| dsh harness | 支持 | 原生引擎压缩，原文和摘要共享归档 | 控制台：选择已有模型，全局接入一次 |
 
 五种载体都能存档、整理摘要和接续任务。真正替换模型当前上下文的压缩接入，目前有两种：**Claude Code 由 SuperLcm 接管，dsh harness 由原生引擎执行**。控制台会区分已保存的配置和实际运行状态。
 
-先从 [安装包说明](docs/RELEASE.md) 安装，运行 `superlcm web`，在「接入」页选择工具即可。Claude Code 用户也可 [安装 Claude 插件](#安装成-claude-插件)，用 `/superlcm:console` 打开控制台。dsh harness 用户选择使用界面、核对压缩模型，点击「安装并启用压缩」后重新加载该界面；见 [接入说明](docs/DSH.md)。
+先从 [安装包说明](docs/RELEASE.md) 安装，运行 `superlcm web`，在「接入」页选择工具即可。Claude Code 用户也可 [安装 Claude 插件](#安装成-claude-插件)，用 `/superlcm:console` 打开控制台。dsh harness 用户从现有供应商及模型列表中选择压缩模型，点击「安装并启用压缩」完成全局接入，再重新加载 dsh harness；见 [接入说明](docs/DSH.md)。
 
 ## 把整段对话连同摘要，整个搬进另一个工具
 

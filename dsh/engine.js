@@ -10,6 +10,7 @@ import { selectSummaryCondensation } from './summary-prefix.js'
 import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
 import { SuperLcmStore, resolveDatabasePath } from './store.js'
 import { join } from 'node:path'
+import { summaryContext } from './summary-model.js'
 import {
   AsyncSurfaceChangedError,
   commitAsyncRegion,
@@ -37,6 +38,8 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     modelPolicies: z.array(z.object({})),
     auto: z.boolean(),
     archiveHome: z.string().default(''),
+    summaryAdapter: z.any(),
+    runtimeTuning: z.any(),
     // —— SuperLcm 自有字段，全部 volatile，可运行中热更 ——
     summarizationProvider: z.string().default('').volatile(),
     summarizationModel: z.string().default('').volatile(),
@@ -57,8 +60,13 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   })
 
   constructor(ctx, config = {}) {
+    config={...config,...(config.runtimeTuning?.[ctx.get?.('profileContext')?.name]||{})}
     const { base, rolling, fallbackRoute } = splitConfig(config)
     super(ctx, base)
+    const summary=summaryContext(ctx,config.summaryAdapter)
+    this.summaryContext=summary?.ctx
+    this.summaryModelReady=summary?.ready
+    this.summaryModelReady?.catch(()=>ctx.logger?.warn?.('SuperLcm 压缩模型配置无法加载'))
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
     this.superLcmStore = new SuperLcmStore(config.archiveHome ? join(config.archiveHome,'lcm.sqlite') : resolveDatabasePath())
@@ -148,6 +156,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   }
 
   async summarize(...args) {
+    await this.summaryModelReady
     const metadata = args[3]
     const children = Array.isArray(metadata?.trustedChildNodeIds)
       ? [...new Set(metadata.trustedChildNodeIds)]
@@ -176,6 +185,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         },
       })
       let result
+      if (this.summaryContext && route?.provider===this.config.summarizationProvider) Object.defineProperty(receiver,'ctx',{value:this.summaryContext})
       try {
         result = await super.summarize.call(receiver, ...summarizeArgs)
         if (route) this.summaryGuards.succeededRoute(route)

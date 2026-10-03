@@ -6,12 +6,14 @@ const WRITERS = [
   ['off', t('关闭（摘要方式）'), t('不生成摘要，原文照常保存')]
 ]
 const writerLabel = mode => WRITERS.find(w => w[0] === mode)?.[1] || mode
+const kfmt=n=>Math.round(n/1000)+'K'
 const admin = { settings: null, catalog: {}, modelEdit: null, compression: { runtimes: [], jobs: [] }, outdated: false }
 const DSH_STATES = { enabled: '已启用 · dsh harness 原生压缩', disabled: '自动压缩已关闭', 'missing-route': '未配置压缩模型', 'awaiting-runtime': '已配置 · 待加载或重启', 'runtime-mismatch': '运行设置与保存配置不同', misconfigured: '压缩配置不完整或有冲突', 'not-connected':'尚未接入' }
 function dshCompressionLabel(h) {
-  const profiles = (h.dsh?.profiles || []).filter(p=>p.connected||p.configured||p.running)
-  if (!profiles.length) return t('尚未接入原生压缩插件')
-  return profiles.map(p => p.profile + '：' + t(DSH_STATES[p.state] || '未核实运行状态')).join('；')
+  const global=h.dsh?.global
+  if(global?.configured)return t(DSH_STATES[global.state]||'未核实运行状态')+' · '+t('全局接入')
+  if(h.configured)return t('旧接入方式，请更新为全局接入')
+  return t('尚未全局接入')
 }
 
 // Short badge plus a plain-language detail line, both from real evidence.
@@ -43,7 +45,7 @@ function connState(h) {
 /* ---------- connect view ---------- */
 async function loadHarnesses() {
   const data = await api('/api/harnesses')
-  admin.outdated = data.features?.dsh_setup !== true
+  admin.outdated = data.features?.dsh_global_setup !== true
   state.harnesses = data.harnesses
   if (admin.outdated) showError(t('页面已更新，后台仍是旧版；重新启动 SuperLcm 后才能检测和接入 dsh harness'))
   renderTools(); renderStatus(); renderTakeover(admin.settings?.takeover); renderCompression()
@@ -77,7 +79,7 @@ function renderTools() {
   for (const b of $('#tools').querySelectorAll('[data-dsh-check]')) b.onclick = () => act(async () => {
     await loadHarnesses(); await loadCompression()
     const h = state.harnesses.find(h => h.harness === 'dsh')
-    overlay('<div class="modal" role="dialog" aria-labelledby="dshTitle"><div class="card"><div class="card-h"><h3 id="dshTitle">dsh harness · ' + t('原生压缩接入') + '</h3><button type="button" class="x" data-close>×</button></div><div class="card-b"><p>' + t('dsh harness 自己压缩，SuperLcm 共用原文和摘要档案。自动压缩、门槛和模型在 dsh harness 插件设置中管理。') + '</p><ul class="checks">' + (h?.dsh?.profiles || []).map(p => '<li class="' + (p.state === 'enabled' ? 'ok' : 'wait') + '">' + esc(p.profile + '：' + t(DSH_STATES[p.state] || '未核实运行状态')) + '</li>').join('') + '</ul><p>' + t('只有运行中的压缩引擎和归档插件都回报状态，才会显示已接管。更新插件后需要重新加载 dsh harness。') + '</p><div class="actions"><button type="button" class="btn" data-close>' + t('关闭') + '</button></div></div></div></div>')
+    overlay('<div class="modal" role="dialog" aria-labelledby="dshTitle"><div class="card"><div class="card-h"><h3 id="dshTitle">dsh harness · '+t('全局接入')+'</h3><button type="button" class="x" data-close>×</button></div><div class="card-b"><p>'+esc(dshCompressionLabel(h))+'</p><p>'+t('只有运行中的压缩引擎和归档插件都回报状态，才会显示已接管。更新插件后需要重新加载 dsh harness。')+'</p><div class="actions"><button type="button" class="btn" data-close>'+t('关闭')+'</button></div></div></div></div>')
   }, b)
   for (const b of $('#tools').querySelectorAll('[data-goto-compact]')) b.onclick = () => { show('settings'); settingsSection('compact') }
   for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => {
@@ -358,6 +360,7 @@ async function loadCompression() {
       p.running = !!p.installed_version && !!engine && !!archive && engine.version === p.installed_version && archive.version === p.installed_version
       p.state = !p.enabled ? 'disabled' : !p.route_ready ? 'missing-route' : !p.running ? 'awaiting-runtime' : !engine.enabled || !engine.route_ready ? 'runtime-mismatch' : 'enabled'
     }
+    if(dsh.dsh.global?.configured)dsh.dsh.global.state=dsh.dsh.profiles.some(p=>p.state==='enabled')?'enabled':dsh.dsh.profiles.some(p=>p.state==='disabled')?'disabled':'awaiting-runtime'
     if (before !== JSON.stringify(dsh.dsh.profiles)) { renderTools(); renderStatus() }
   }
   renderCompression()
@@ -370,7 +373,7 @@ function renderCompression() {
     return '<div><dt>' + esc(toolName(h.harness)) + '</dt><dd>' + esc(label) + '</dd></div>'
   }).join('')
   const jobs = admin.compression.jobs || []
-  $('#compressionJobs').innerHTML = jobs.length ? jobs.map(j => '<li class="' + (j.live && j.phase === 'committed' ? 'ok' : 'info') + '"><span><b>dsh harness · ' + esc(j.profile || t('未知界面')) + ' · ' + esc(j.session) + '</b><br>' + esc(t(!j.live && ['summarizing','ready','cancelling'].includes(j.phase) ? '载体已停止或状态已过期' : JOB_PHASES[j.phase] || j.phase)) + ' · ' + esc(ago(j.updated_ms)) + '</span></li>').join('') : '<li class="info">' + t('尚无压缩运行记录。dsh harness 加载新版插件后，后台压缩状态会在这里显示。') + '</li>'
+  $('#compressionJobs').innerHTML = jobs.length ? jobs.map(j => '<li class="' + (j.live && j.phase === 'committed' ? 'ok' : 'info') + '"><span><b>dsh harness · ' + esc(j.session) + '</b><br>' + esc(t(!j.live && ['summarizing','ready','cancelling'].includes(j.phase) ? '载体已停止或状态已过期' : JOB_PHASES[j.phase] || j.phase)) + ' · ' + esc(ago(j.updated_ms)) + '</span></li>').join('') : '<li class="info">' + t('尚无压缩运行记录。dsh harness 加载新版插件后，后台压缩状态会在这里显示。') + '</li>'
 }
 const saveTakeover = (change, control) => act(async () => {
   const cur = admin.settings.takeover, r = await api('/api/takeover', { enabled: cur.enabled, window: cur.window, keep: cur.keep, ...change })

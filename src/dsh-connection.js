@@ -2,7 +2,8 @@
 // inert; --dump-config does not mount plugins, evaluate expressions or boot DSH.
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname,join, resolve } from 'node:path'
+import {fileURLToPath} from 'node:url'
 import { paths, findCli, runCommand as run, commandOptions } from './runtime.js'
 import { compressionSnapshot } from './compression-status.js'
 export function dshHome(env = process.env) { return resolve(env.DSH_HOME || join(paths(env).home, '.dsh')) }
@@ -28,11 +29,17 @@ export function dshEntries(tree) {
   } }
   walk(tree); return entries
 }
+function ownDshFile(name,file){
+  if(!new RegExp('/dsh/'+file+'\\.js$').test(String(name).replaceAll('\\','/')))return false
+  try{const path=String(name).startsWith('file:')?fileURLToPath(name):name;return JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).name==='superlcm-mcp'}catch{return false}
+}
+export const isDshEngine=e=>['superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(e.name)||ownDshFile(e.name,'engine')
+export const isDshArchive=e=>e.name==='superlcm-mcp/dsh'||ownDshFile(e.name,'archive')
 export function inspectDshTree(tree) {
   const entries = dshEntries(tree)
-  const engines = entries.filter(x => ['superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(x.name))
-  const archives = entries.filter(x => x.name === 'superlcm-mcp/dsh')
-  const engine = engines.find(x => x.name === 'superlcm-mcp/dsh-engine')
+  const engines = entries.filter(isDshEngine)
+  const archives = entries.filter(isDshArchive)
+  const engine = engines.find(x => x.name!=='@deepseek-ai/dsh-compaction-basic')
   return { configured: engines.length === 1 && !!engine && archives.length === 1,
     engines: engines.length, archives: archives.length, enabled: engine?.config?.auto === true,
     route_ready: typeof engine?.config?.summarizationProvider === 'string' && !!engine.config.summarizationProvider.trim() && typeof engine?.config?.summarizationModel === 'string' && !!engine.config.summarizationModel.trim(),
@@ -56,14 +63,18 @@ export async function inspectDsh(store, { env = process.env, runCommand = run, p
       if (!bin || !parse) { profiles.push({ profile: name, configured: false, error: '缺少 DSH 命令或配置解析器，无法核实压缩配置' }); return }
       const output = await runCommand(command, [...argsPrefix,'--profile', name, '--dump-config'], { ...commandOptions(env), timeout: 5000 })
       const config = inspectDshTree(parse(output.stdout))
+      const globalEngine=dshEntries(parse(output.stdout)).find(e=>e.id==='superlcm-global-compaction'&&isDshEngine(e))
+      if(globalEngine)try{const path=globalEngine.name.startsWith('file:')?fileURLToPath(globalEngine.name):globalEngine.name;installed=JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).version}catch{}
       const live = snapshot.runtimes.filter(r => r.profile === name && r.live)
       const engine = live.find(r => r.kind === 'engine'), archive = live.find(r => r.kind === 'archive' && r.pid === engine?.pid)
       const running = !!installed && config.configured && !!engine && !!archive && engine.version === installed && archive.version === installed
       const state = !config.configured ? 'misconfigured' : !config.enabled ? 'disabled' : !config.route_ready ? 'missing-route' : !running ? 'awaiting-runtime' : !engine.enabled || !engine.route_ready ? 'runtime-mismatch' : 'enabled'
-      profiles.push({ profile: name, connected, ...config, installed_version: installed, running, state:connected?state:'not-connected', runtime_version: engine?.version || null })
+      profiles.push({ profile: name, connected:connected||!!globalEngine, global:!!globalEngine, ...config, installed_version: installed, running, state:connected||globalEngine?state:'not-connected', runtime_version: engine?.version || null })
     } catch { profiles.push({ profile: name, configured: false, state: 'misconfigured', error: 'DSH 配置读取失败；请在该界面检查插件配置' }) }
   }))
   profiles.sort((a,b) => a.profile.localeCompare(b.profile))
-  return { root, files, detected: !!bin || names.length > 0, configured: profiles.some(p => p.configured),
+  const globalConfigured=profiles.length>0&&profiles.every(p=>p.global&&p.configured)
+  const global={configured:globalConfigured,state:!globalConfigured?'not-connected':profiles.some(p=>p.state==='enabled')?'enabled':profiles.some(p=>p.state==='disabled')?'disabled':'awaiting-runtime'}
+  return { root, files, global,detected: !!bin || names.length > 0, configured: profiles.some(p => p.configured),
     configuration_matches: profiles.some(p=>p.connected) && profiles.filter(p=>p.connected).every(p => p.configured), profiles, ...snapshot }
 }
