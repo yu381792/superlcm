@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-04",
+  "scope": "分批后台准备、达到门槛后一次提交；未验证在线供应商缓存",
+  "runtime": "本机已安装的真实 DSH 会话、投影、词元估算和压缩基类",
+  "model_response": "本机确定性摘要，仅验证流程与选区",
+  "upstream_model_calls": 0,
+  "production_session_writes": 0,
+  "history_replay": {
+    "conversation": "V9 顾问",
+    "session": "08a4a410-0436-4f4a-9bbc-6d26f3535e96",
+    "boundary_seq": 878,
+    "original_fold_heuristic_tokens": 74576,
+    "prepared_batches": 2,
+    "assembled_fold_heuristic_tokens": 123921,
+    "remaining_raw_tail_heuristic_tokens": 41157,
+    "surface_unchanged_during_preparation": true,
+    "live_replacements": 1,
+    "note": "词元数字是 DSH 本地估算，不是线上模型输入计数；摘要为本机短固定响应，不能用于宣称真实摘要质量、最终压缩比或缓存费用。"
+  },
+  "limitations": [
+    "后台草稿保存在当前进程内，重启后需要重新准备。",
+    "达到门槛时若摘要尚未就绪，保留主对话原文，后续安全步骤才提交。",
+    "线上实际缓存命中和费用需要部署后从真实请求回执验证。"
+  ]
+}

@@ -174,6 +174,7 @@ export function commitAsyncRegion(engine, agent, summarized) {
       shadowedTokenCount: summarized.shadowedTokenCount,
       provider: summarized.provider,
       model: summarized.model,
+      ...(summarized.preparedBatchCount === undefined ? {} : { preparedBatchCount: summarized.preparedBatchCount }),
       ...(summarized.maxTokens === undefined ? {} : { maxTokens: summarized.maxTokens }),
       ...(summarized.usage === undefined ? {} : { usage: summarized.usage }),
     })

@@ -51,6 +51,45 @@ async function withHost(config, response, run) {
 const append = (session, text) => session.append('user/message', createUserMessage({ content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
 const source = 'original engineering facts and exact numbers. '.repeat(5000)
 
+test('background drafts accumulate across turns and replace once at the threshold', async () => {
+  await withHost({ tailCount: 64, minRetainTokens: 1000, foldBatchTokens: 2000,
+    pressureFoldTokens: 1000, softActiveTokens: 100000, hardActiveTokens: 120000 },
+  async () => 'Facts preserved in this batch.', async ({ engine, session, agent, calls }) => {
+    const originals = []
+    for (let i = 0; i < 6; i++) originals.push(append(session, source.slice(0, 16000) + i).seq)
+    const initialSurface = [...session.surface.nodes]
+    const chosen = engine.planRolling(agent)
+    assert.ok(chosen, 'long messages must not be held back by the 64-node setting')
+    engine.startBackgroundFold(agent, chosen)
+    await engine.settleBackgroundFold(agent)
+    assert.ok(calls.length > 1, 'several disjoint batches are prepared')
+    assert.deepEqual(session.surface.nodes, initialSurface, 'preparation preserves the live request')
+    assert.equal(engine.tryCommitBackgroundFold(agent, { allowPressure: true }), null)
+    const events = () => Array.from({ length: session.seq }, (_, seq) => session.eventAt(seq))
+    assert.equal(events().some(e => e.type === 'compaction/start'), false)
+    const purchased = calls.length
+    originals.push(append(session, source.slice(0, 16000) + 'new turn').seq)
+    const next = engine.planRolling(agent)
+    assert.ok(next)
+    assert.ok(next.start > chosen.end)
+    engine.startBackgroundFold(agent, next)
+    await engine.settleBackgroundFold(agent)
+    assert.ok(calls.length > purchased)
+    const staged = engine.backgroundFolds.get(agent)
+    assert.equal(new Set(staged.summarized.shadowedSeqs).size, staged.summarized.shadowedSeqs.length)
+    engine.rollingConfig.softActiveTokens = 1
+    const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true })
+    assert.ok(result)
+    await tick()
+    assert.equal(events().filter(e => e.type === 'compaction/start').length, 1)
+    assert.equal(session.surface.nodes.length, 2, 'one assembled checkpoint plus the recent raw message')
+    assert.equal(result.shadowedSeqs.length, originals.length - 1)
+    const node = engine.superLcmStore.getNode(session.id, markerFromSummary(result.summary).id)
+    assert.deepEqual(node.sourceSeqs, originals.slice(0, -1))
+    for (const seq of originals) assert.equal(session.eventAt(seq).type, 'user/message')
+  })
+})
+
 test('console document hot-applies model, switch and retention and cancels old pending compaction',async()=>{
   const file=join(mkdtempSync(join(tmpdir(),'superlcm-controls-runtime-')),'controls.json')
   const spec=id=>({plugin:'@deepseek-ai/dsh-llm-pi-ai',config:{providers:{[id]:{api:'openai-responses',baseURL:'http://127.0.0.1:9/v1',models:[{id:'cheap-model',contextWindow:128000}]}}}})
@@ -141,7 +180,7 @@ test('real DSH condenses four leaf checkpoints and shared recall retains every o
       assert.equal(compressionSnapshot(status).jobs[0].phase, 'summarizing')
       await engine.settleBackgroundFold(agent)
       assert.equal(compressionSnapshot(status).jobs[0].phase, 'ready')
-      const result = engine.tryCommitBackgroundFold(agent)
+      const result = engine.tryCommitBackgroundFold(agent, { force: true })
       assert.equal(compressionSnapshot(status).jobs[0].phase, 'committed'); status.close()
       assert.ok(result); await tick()
       assert.equal(calls.length, 5)

@@ -6,6 +6,7 @@ import { toolPairingBalancedBefore, toolPairingBalancedAfter } from '@deepseek-a
 import { committedCompactionSummary, indexCompactionEvent, nodeLevel } from './core.js'
 import { appendRecallEnvelope, markerFromSummary } from './marker.js'
 import { selectRollingRange } from './rolling.js'
+import { assembleRegions } from './assembled-region.js'
 import { selectSummaryCondensation } from './summary-prefix.js'
 import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
 import { SuperLcmStore, resolveDatabasePath } from './store.js'
@@ -191,11 +192,18 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
 
   canPrepareBackground(agent) {
     if(this.controlFile&&!this.config.auto)return false
-    return !this.backgroundFolds.has(agent) && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint())
+    const state = this.backgroundFolds.get(agent)
+    return (!state || state.status === 'ready') && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint())
   }
 
   startBackgroundFold(agent, selection) {
     if (!this.canPrepareBackground(agent)) return false
+    const previous = this.backgroundFolds.get(agent)
+    const parts = previous?.parts ?? []
+    if (parts.length) {
+      const nodes = agent.session.surface.nodes
+      if (nodes.indexOf(selection.start) !== nodes.indexOf(parts.at(-1).end) + 1) return false
+    }
     const fingerprint = this.summaryRouteFingerprint()
     let prepared
     try {
@@ -207,10 +215,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     }
 
     const controller = new AbortController()
-    const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null,revision:this.controlRevision }
+    const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null, parts,revision:this.controlRevision }
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)
-    this.compressionReporter.report(agent.session.id, 'summarizing', selection)
+    this.compressionReporter.report(agent.session.id, 'summarizing', { ...selection, start: parts[0]?.start ?? selection.start })
     const timer = setTimeout(() => {
       state.status = 'cancelling'
       this.compressionReporter.report(agent.session.id, 'cancelling', selection)
@@ -222,14 +230,21 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       .then((summarized) => {
         controller.signal.throwIfAborted()
         if (this.backgroundFolds.get(agent) !== state) return
-        state.summarized = summarized
+        state.parts = [...parts, summarized]
+        state.summarized = assembleRegions(this, state.parts)
         state.status = 'ready'
-        this.compressionReporter.report(agent.session.id, 'ready', selection)
+        this.compressionReporter.report(agent.session.id, 'ready', state.summarized)
         this.summaryGuards.succeededSession(agent)
+        // Continue preparing new old content; never publish a partial batch.
+        const next = this.planRolling(agent)
+        if (next !== null) this.startBackgroundFold(agent, next)
       })
       .catch((error) => {
         this.compressionReporter.report(agent.session.id, controller.signal.aborted ? 'cancelled' : 'failed', selection)
-        if (this.backgroundFolds.get(agent) === state) this.backgroundFolds.delete(agent)
+        if (this.backgroundFolds.get(agent) === state) {
+          if (previous?.status === 'ready') this.backgroundFolds.set(agent, previous)
+          else this.backgroundFolds.delete(agent)
+        }
         this.summaryGuards.failedSession(agent, fingerprint, this.rollingConfig.summaryRetryCooldownMs)
         const message = error instanceof Error ? error.message : String(error)
         this.ctx.logger?.warn?.(`rolling compaction background summary failed: ${message}; continuing`)
@@ -242,17 +257,19 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const state = this.backgroundFolds.get(agent)
     if (state?.status !== 'ready') return null
     if(this.controlFile&&(!this.config.auto||state.revision!==this.controlRevision)){this.backgroundFolds.delete(agent);this.compressionReporter.report(agent.session.id,'discarded',state.selection);return null}
-    if (options.force !== true && state.selection.reason === 'background-batch') {
+    if (options.force !== true) {
       const activeTokens = options.allowPressure === true
         ? this.ctx.tokenMeter.measure(agent.session).totalTokens
         : 0
       if (activeTokens < this.rollingConfig.softActiveTokens) return null
     }
+    // Catch up the last eligible span before the single live replacement.
+    if (this.planRolling(agent) !== null) return null
     try {
       const result = this.commitBackgroundSelection(agent, state.summarized)
       if (result === null) return null
       this.backgroundFolds.delete(agent)
-      this.compressionReporter.report(agent.session.id, 'committed', state.selection)
+      this.compressionReporter.report(agent.session.id, 'committed', state.summarized)
       this.logFoldResult(this.ctx, result)
       return result
     } catch (error) {
@@ -269,8 +286,8 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   }
 
   async settleBackgroundFold(agent) {
-    const state = this.backgroundFolds.get(agent)
-    if (state?.promise !== null && state?.promise !== undefined) await state.promise
+    let state
+    while (['summarizing', 'cancelling'].includes((state = this.backgroundFolds.get(agent))?.status)) await state.promise
   }
 
   logFoldResult(ctx, result) {
@@ -324,9 +341,11 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
 
   planRolling(agent, forceHard = false) {
     const session = agent.session
+    const staged = this.backgroundFolds.get(agent)
+    if (staged && staged.status !== 'ready') return null
     const measurement = this.ctx.tokenMeter.measure(session)
     const options = {
-      tailCount: this.rollingConfig.tailCount,
+      tailCount: this.rollingConfig.minRetainTokens > 0 ? 1 : this.rollingConfig.tailCount,
       minRetainTokens: this.rollingConfig.minRetainTokens,
       pressureFoldTokens: this.rollingConfig.pressureFoldTokens,
       foldBatchTokens: this.rollingConfig.foldBatchTokens,
@@ -335,10 +354,22 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       activeTokens: measurement.totalTokens,
       firstFoldableIndex: firstFoldableSurfaceIndex(session),
       isBalancedBefore: (seq) => toolPairingBalancedBefore(session, seq),
+      isBalancedAfter: (seq) => toolPairingBalancedAfter(session, seq),
       forceHard,
     }
+    // Once drafts exist, fill small gaps ahead of the switch rather than
+    // waiting for another whole batch while the live request is already full.
+    if (staged?.parts?.length) options.prepareMinimumTokens = this.rollingConfig.pressureFoldTokens
     const systemEnd = systemPrefixEndIndex(session), prefixEnd = options.firstFoldableIndex
-    if (prefixEnd > systemEnd) {
+    if (staged?.parts?.length) {
+      const endIndex = session.surface.nodes.indexOf(staged.parts.at(-1).end)
+      if (endIndex < 0) {
+        this.backgroundFolds.delete(agent)
+        return this.planRolling(agent, forceHard)
+      }
+      options.firstFoldableIndex = endIndex + 1
+    }
+    if (!staged?.parts?.length && prefixEnd > systemEnd) {
       const depths = index => {
         if (index < systemEnd || index >= prefixEnd) return null
         const seq = session.surface.nodes[index]

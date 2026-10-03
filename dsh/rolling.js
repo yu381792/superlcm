@@ -101,15 +101,28 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     reason = 'hard-cap'
   } else if (activeTokens >= softActiveTokens && foldTokens >= pressureFoldTokens) {
     reason = 'soft-cap'
-  } else if (foldTokens >= foldBatchTokens) {
+  } else if (foldTokens >= positiveInteger(options.prepareMinimumTokens, foldBatchTokens)) {
     reason = 'background-batch'
   } else {
     return null
   }
 
+  // Prepare bounded, contiguous batches without changing the live surface.
+  // The engine accumulates them until the configured switch threshold.
+  let batchTokens = 0
+  let endIndex = boundary.keepFromIdx - 1
+  for (let index = firstFoldableIndex; index < boundary.keepFromIdx; index += 1) {
+    batchTokens += tokenCountOf(pricedNodes[index])
+    if (batchTokens >= foldBatchTokens && (options.isBalancedAfter?.(surfaceSeqs[index]) ?? true)) {
+      endIndex = index
+      foldTokens = batchTokens
+      break
+    }
+  }
+
   return {
     start: surfaceSeqs[firstFoldableIndex],
-    end: surfaceSeqs[boundary.keepFromIdx - 1],
+    end: surfaceSeqs[endIndex],
     foldTokens,
     tailNodes: pricedNodes.length - boundary.keepFromIdx,
     tailTokens: boundary.keptTokens,
