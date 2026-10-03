@@ -6,7 +6,9 @@
 
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
 
-Everything you and your agent say is kept, word for word, on your own computer. Summaries are filed in layers like the chapters of a book, and any detail can be pulled back out and quoted exactly, even long after the context window has been compacted. It works across Claude Code, Codex, Hermes and Pi, and a conversation started in one can be continued in another.
+Everything you and your agent say is kept, word for word, on your own computer. Summaries are filed in layers like the chapters of a book, and any detail can be pulled back out and quoted exactly, even long after the context window has been compacted. It works across Claude Code, Codex, Hermes, Pi and DSH, and a conversation started in one can be continued in another.
+
+The console distinguishes compaction from archive summaries: Claude Code supports SuperLcm compaction takeover, DSH uses its native engine, and the current Codex, Hermes and Pi adapters provide capture, summaries and continuation only. DSH reports background compaction phases every five seconds; configuration alone is never reported as a running integration. See [DSH integration](docs/DSH.md).
 
 ## For Claude Code: compaction you never wait for
 

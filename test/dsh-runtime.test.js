@@ -17,6 +17,7 @@ import { nodeLevel } from '../dsh/core.js'
 import { ClaudeStore } from '../src/store.js'
 import { captureDshPacket } from '../src/dsh.js'
 import { projectEvent } from '../dsh/archive.js'
+import { compressionSnapshot } from '../src/compression-status.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 async function withHost(config, response, run) {
@@ -63,8 +64,12 @@ test('real DSH condenses four leaf checkpoints and shared recall retains every o
       assert.equal(selection.reason, 'summary-prefix'); assert.equal(selection.sourceCount, 4)
       phase = 'condensed'
       assert.equal(engine.startBackgroundFold(agent, selection), true)
+      const status = new ClaudeStore(dir)
+      assert.equal(compressionSnapshot(status).jobs[0].phase, 'summarizing')
       await engine.settleBackgroundFold(agent)
+      assert.equal(compressionSnapshot(status).jobs[0].phase, 'ready')
       const result = engine.tryCommitBackgroundFold(agent)
+      assert.equal(compressionSnapshot(status).jobs[0].phase, 'committed'); status.close()
       assert.ok(result); await tick()
       assert.equal(calls.length, 5)
       const parentId = markerFromSummary(result.summary).id

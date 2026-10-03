@@ -60,6 +60,12 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
     this.superLcmStore = new SuperLcmStore(resolveDatabasePath())
+    this.compressionReporter = this.superLcmStore.compressionReporter({
+      kind: 'engine', profile: ctx.get?.('profileContext')?.name || null,
+      enabled: this.config.auto === true,
+      routeReady: !!this.config.summarizationProvider && !!this.config.summarizationModel,
+      onError: () => ctx.logger?.warn?.('SuperLcm 压缩状态写入失败'),
+    })
     this.backgroundFolds = new SessionFoldRegistry()
     this.summaryGuards = new SummaryGuards()
     this.backgroundControllers = new Set()
@@ -68,6 +74,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     // 兼容 dsh-lossless-context <= 0.2.x 的旧属性 / Compatibility property for dsh-lossless-context <= 0.2.x.
     this.losslessStore = this.superLcmStore
     ctx.effect(() => () => {
+      this.compressionReporter.close()
       for (const controller of this.backgroundControllers) controller.abort(new Error('SuperLcm disposed'))
       this.backgroundControllers.clear()
       this.superLcmStore.close()
@@ -130,6 +137,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
     this.summaryGuards.clear()
+    this.compressionReporter.configure({ enabled: this.config.auto === true, routeReady: !!route.provider && !!route.model })
     this.config = {
       ...this.config,
       summarizationProvider: route.provider,
@@ -283,8 +291,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null }
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)
+    this.compressionReporter.report(agent.session.id, 'summarizing', selection)
     const timer = setTimeout(() => {
       state.status = 'cancelling'
+      this.compressionReporter.report(agent.session.id, 'cancelling', selection)
       controller.abort(new Error('SuperLcm 后台摘要超时'))
     }, this.rollingConfig.summaryTimeoutMs)
     timer.unref()
@@ -295,9 +305,11 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         if (this.backgroundFolds.get(agent) !== state) return
         state.summarized = summarized
         state.status = 'ready'
+        this.compressionReporter.report(agent.session.id, 'ready', selection)
         this.summaryGuards.succeededSession(agent)
       })
       .catch((error) => {
+        this.compressionReporter.report(agent.session.id, controller.signal.aborted ? 'cancelled' : 'failed', selection)
         if (this.backgroundFolds.get(agent) === state) this.backgroundFolds.delete(agent)
         this.summaryGuards.failedSession(agent, fingerprint, this.rollingConfig.summaryRetryCooldownMs)
         const message = error instanceof Error ? error.message : String(error)
@@ -320,10 +332,12 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       const result = this.commitBackgroundSelection(agent, state.summarized)
       if (result === null) return null
       this.backgroundFolds.delete(agent)
+      this.compressionReporter.report(agent.session.id, 'committed', state.selection)
       this.logFoldResult(this.ctx, result)
       return result
     } catch (error) {
       this.backgroundFolds.delete(agent)
+      this.compressionReporter.report(agent.session.id, error instanceof AsyncSurfaceChangedError ? 'discarded' : 'failed', state.selection)
       const message = error instanceof Error ? error.message : String(error)
       if (error instanceof AsyncSurfaceChangedError) {
         this.ctx.logger?.info?.(`rolling compaction prepared span changed; restaging later: ${message}`)

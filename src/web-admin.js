@@ -6,13 +6,24 @@ const WRITERS = [
   ['off', t('关闭（摘要方式）'), t('不生成摘要，原文照常保存')]
 ]
 const writerLabel = mode => WRITERS.find(w => w[0] === mode)?.[1] || mode
-const admin = { settings: null, catalog: {}, modelEdit: null }
+const admin = { settings: null, catalog: {}, modelEdit: null, compression: { runtimes: [], jobs: [] } }
+const DSH_STATES = { enabled: '已启用 · DSH 原生压缩', disabled: '自动压缩已关闭', 'missing-route': '未配置压缩模型', 'awaiting-runtime': '已配置 · 待加载或重启', 'runtime-mismatch': '运行设置与保存配置不同', misconfigured: '压缩配置不完整或有冲突' }
+function dshCompressionLabel(h) {
+  const profiles = h.dsh?.profiles || []
+  if (!profiles.length) return t('尚未接入原生压缩插件')
+  return profiles.map(p => p.profile + '：' + t(DSH_STATES[p.state] || '未核实运行状态')).join('；')
+}
 
 // Short badge plus a plain-language detail line, both from real evidence.
 function connState(h) {
   const e = h.connection_evidence, tool = toolName(h.harness)
   if (!h.supported) return { cls: 'off', badge: t('仅导入'), text: h.local_conversations ? t('暂不支持自动接入，可导入本机对话') : t('暂不支持自动接入') }
   if (!h.bin) return { cls: 'off', badge: t('未安装'), text: t('未找到 {tool} 命令行', { tool }) }
+  if (h.harness === 'dsh') {
+    if (!h.configuration_matches) return { cls: 'warn', badge: t('未就绪'), text: dshCompressionLabel(h) }
+    return h.dsh.profiles.some(p => p.running) ? { cls: 'on', badge: t('已接入'), text: dshCompressionLabel(h) }
+      : { cls: 'warn', badge: t('待加载'), text: dshCompressionLabel(h) }
+  }
   const c = h.claude
   if (c?.plugin && !c.plugin.enabled) return { cls: 'warn', badge: t('已停用'), text: t('SuperLcm 插件装了，但在 Claude Code 里被停用') }
   if (c?.plugin?.outdated) return { cls: 'warn', badge: t('需更新'), text: t('插件是 v{a}，有新版 v{b}', { a: c.plugin.version, b: c.plugin.latest }) }
@@ -31,10 +42,10 @@ function connState(h) {
 /* ---------- connect view ---------- */
 async function loadHarnesses() {
   state.harnesses = (await api('/api/harnesses')).harnesses
-  renderTools(); renderStatus(); renderTakeover(admin.settings?.takeover)
+  renderTools(); renderStatus(); renderTakeover(admin.settings?.takeover); renderCompression()
 }
 function renderStatus() {
-  const ready = state.harnesses.filter(h => h.configuration_matches)
+  const ready = state.harnesses.filter(h => h.configuration_matches && (h.harness !== 'dsh' || h.dsh?.profiles.some(p => p.running)))
   $('#statusDot').className = 'dot ' + (ready.length ? 'on' : 'warn')
   $('#statusText').textContent = ready.length ? t('已接入 {tools}', { tools: ready.map(h => toolName(h.harness)).join(LANG === 'zh' ? '、' : ', ') }) : t('尚未接入工具')
 }
@@ -42,12 +53,14 @@ function renderTools() {
   $('#tools').innerHTML = state.harnesses.map(h => {
     const s = connState(h), count = state.groups?.find(g => g.harness === h.harness)?.n || 0
     const plugin = h.claude?.plugin
-    const buttons = (h.claude ? (!plugin ? '<button type="button" class="btn primary" data-plugin="install">' + t('安装插件') + '</button>' : plugin.outdated ? '<button type="button" class="btn primary" data-plugin="update">' + t('更新插件') + '</button>' : '<button type="button" class="btn" data-recheck>' + t('检查接入') + '</button>')
+    const buttons = (h.harness === 'dsh' ? '<button type="button" class="btn" data-dsh-check>' + t('检查接入') + '</button>' : h.claude ? (!plugin ? '<button type="button" class="btn primary" data-plugin="install">' + t('安装插件') + '</button>' : plugin.outdated ? '<button type="button" class="btn primary" data-plugin="update">' + t('更新插件') + '</button>' : '<button type="button" class="btn" data-recheck>' + t('检查接入') + '</button>')
       : h.supported ? '<button type="button" class="btn' + (h.configuration_matches ? '' : ' primary') + '" data-setup="' + esc(h.harness) + '"' + (h.bin ? '' : ' disabled') + '>' + (h.configuration_matches ? t('检查接入') : t('接入')) + '</button>' : '') +
       (h.local_conversations && h.detected ? '<button type="button" class="btn" data-import="' + esc(h.harness) + '">' + t('导入历史对话') + '</button>' : '')
     const rows = [[t('状态'), esc(s.text)], [t('已存对话'), count ? t('{n} 个', { n: fmt(count) }) : '<span class="muted">' + t('暂无') + '</span>']]
     rows.push(...writerRows(h))
     if (h.claude) rows.push(...claudeRows(h))
+    else if (h.harness === 'dsh') rows.push([t('压缩接管'), '<button type="button" class="link" data-goto-compact>' + esc(dshCompressionLabel(h)) + '</button>'])
+    else rows.push([t('压缩接管'), '<span class="muted">' + (h.compression?.mode === 'summary-only' ? t('当前仅摘要和接续，尚未接管压缩') : t('尚未实现接管')) + '</span>'])
     return '<article class="tcard' + (h.detected ? '' : ' dim') + '"><header class="tc-h">' + mark(h.harness, 'lg') + '<div class="tc-name"><div class="tn">' + esc(toolName(h.harness)) + '</div>' + (h.detected ? '' : '<div class="tv">' + t('本机未检测到') + '</div>') + '</div><span class="state ' + s.cls + '">' + esc(s.badge) + '</span></header>' +
       '<dl class="tc-kv">' + rows.map(([k, v]) => '<div><dt>' + k + '</dt><dd>' + v + '</dd></div>').join('') + '</dl>' +
       (buttons ? '<footer class="tc-f">' + buttons + '</footer>' : '') + '</article>'
@@ -56,6 +69,11 @@ function renderTools() {
   for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
   for (const b of $('#tools').querySelectorAll('[data-plugin]')) b.onclick = () => pluginAct(b.dataset.plugin, b)
   for (const b of $('#tools').querySelectorAll('[data-recheck]')) b.onclick = () => act(async () => { await loadHarnesses(); toast(t('已重新检查')) }, b)
+  for (const b of $('#tools').querySelectorAll('[data-dsh-check]')) b.onclick = () => act(async () => {
+    await loadHarnesses(); await loadCompression()
+    const h = state.harnesses.find(h => h.harness === 'dsh')
+    overlay('<div class="modal" role="dialog" aria-labelledby="dshTitle"><div class="card"><div class="card-h"><h3 id="dshTitle">DSH · ' + t('原生压缩接入') + '</h3><button type="button" class="x" data-close>×</button></div><div class="card-b"><p>' + t('DSH 自己压缩，SuperLcm 共用原文和摘要档案。自动压缩、门槛和模型在 DSH 插件设置中管理。') + '</p><ul class="checks">' + (h?.dsh?.profiles || []).map(p => '<li class="' + (p.state === 'enabled' ? 'ok' : 'wait') + '">' + esc(p.profile + '：' + t(DSH_STATES[p.state] || '未核实运行状态')) + '</li>').join('') + '</ul><p>' + t('只有运行中的压缩引擎和归档插件都回报状态，才会显示已接管。更新插件后需要重新加载 DSH。') + '</p><div class="actions"><button type="button" class="btn" data-close>' + t('关闭') + '</button></div></div></div></div>')
+  }, b)
   for (const b of $('#tools').querySelectorAll('[data-goto-compact]')) b.onclick = () => { show('settings'); settingsSection('compact') }
   for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => {
     const harness = select.dataset.tool, x = admin.settings.settings.find(y => y.harness === harness), models = admin.settings.api_models
@@ -271,6 +289,7 @@ $('#saveWriter').onclick = () => act(async () => {
 }, $('#saveWriter'))
 // Each tool picks its own summary writer on its card; a second row picks the model where there is a choice.
 function writerRows(h) {
+  if (h.harness === 'dsh') return [[t('摘要生成'), t('DSH 原生引擎生成，SuperLcm 同步收录')]]
   const s = admin.settings
   if (!s) return []
   const x = s.settings.find(y => y.harness === h.harness)
@@ -321,6 +340,34 @@ function renderTakeover(x) {
   items.push(['info', x.enabled ? t('Claude Code 到 {t} 开始压缩，SuperLcm 当场换上摘要（摘要没跟上时由 Claude Code 自己总结）；它显示的窗口为 {w}，关闭后恢复原来的设置', { t: kfmt(x.window), w: kfmt(x.claude_window || x.window) }) : t('关闭中，Claude Code 的压缩窗口保持 {w}', { w: x.claude_window ? kfmt(x.claude_window) : t('默认') })])
   $('#takeoverChecks').innerHTML = items.map(([cls, text]) => '<li class="' + cls + '">' + text + '</li>').join('')
   $('#takeoverChecks').querySelector('[data-goto-connect]')?.addEventListener('click', () => show('connect'))
+  renderCompression()
+}
+const JOB_PHASES = { summarizing: '正在压缩', ready: '摘要就绪，等待替换上下文', cancelling: '超时，正在取消', cancelled: '已取消', committed: '已替换上下文', failed: '压缩失败，稍后重试', discarded: '原文发生变化，已放弃本次替换' }
+async function loadCompression() {
+  admin.compression = await api('/api/compression')
+  const dsh = state.harnesses.find(h => h.harness === 'dsh')
+  if (dsh?.dsh?.profiles) {
+    const before = JSON.stringify(dsh.dsh.profiles)
+    for (const p of dsh.dsh.profiles) {
+      if (!p.configured) continue
+      const live = admin.compression.runtimes.filter(r => r.live && r.profile === p.profile)
+      const engine = live.find(r => r.kind === 'engine'), archive = live.find(r => r.kind === 'archive' && r.pid === engine?.pid)
+      p.running = !!p.installed_version && !!engine && !!archive && engine.version === p.installed_version && archive.version === p.installed_version
+      p.state = !p.enabled ? 'disabled' : !p.route_ready ? 'missing-route' : !p.running ? 'awaiting-runtime' : !engine.enabled || !engine.route_ready ? 'runtime-mismatch' : 'enabled'
+    }
+    if (before !== JSON.stringify(dsh.dsh.profiles)) { renderTools(); renderStatus() }
+  }
+  renderCompression()
+}
+function renderCompression() {
+  $('#compressionAdapters').innerHTML = state.harnesses.filter(h => h.supported).map(h => {
+    const label = h.harness === 'dsh' ? dshCompressionLabel(h) : h.harness === 'claude-code'
+      ? (admin.settings?.takeover?.enabled ? (h.claude?.plugin?.enabled ? t('SuperLcm 接管已打开') : t('接管已打开，插件尚未就绪')) : t('支持 SuperLcm 压缩接管，目前关闭'))
+      : t('当前仅摘要和接续，尚未接管压缩')
+    return '<div><dt>' + esc(toolName(h.harness)) + '</dt><dd>' + esc(label) + '</dd></div>'
+  }).join('')
+  const jobs = admin.compression.jobs || []
+  $('#compressionJobs').innerHTML = jobs.length ? jobs.map(j => '<li class="' + (j.live && j.phase === 'committed' ? 'ok' : 'info') + '"><span><b>DSH · ' + esc(j.profile || t('未知界面')) + ' · ' + esc(j.session) + '</b><br>' + esc(t(!j.live && ['summarizing','ready','cancelling'].includes(j.phase) ? '载体已停止或状态已过期' : JOB_PHASES[j.phase] || j.phase)) + ' · ' + esc(ago(j.updated_ms)) + '</span></li>').join('') : '<li class="info">' + t('尚无压缩运行记录。DSH 加载新版插件后，后台压缩状态会在这里显示。') + '</li>'
 }
 const saveTakeover = (change, control) => act(async () => {
   const cur = admin.settings.takeover, r = await api('/api/takeover', { enabled: cur.enabled, window: cur.window, keep: cur.keep, ...change })
@@ -404,4 +451,11 @@ function boot() {
   act(loadConversations)
   act(loadHarnesses)
   act(loadSettings)
+  act(loadCompression)
 }
+let compressionPolling = false
+setInterval(async () => {
+  if (document.hidden || compressionPolling || (state.view !== 'connect' && state.view !== 'settings')) return
+  compressionPolling = true
+  try { await loadCompression() } catch {} finally { compressionPolling = false }
+}, 5000)

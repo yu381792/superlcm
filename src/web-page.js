@@ -94,7 +94,13 @@ export function page(nonce) {
         <div class="actions"><button type="button" class="btn primary" id="saveWriter">保存</button><span class="saved" id="writerSaved" aria-live="polite"></span></div>
       </div>
       <div class="panel" data-sec="compact" hidden>
-        <h2>压缩</h2>
+        <h3>各载体压缩能力</h3>
+        <p class="muted">保存对话和生成摘要不等于替换模型的上下文。这里分别显示当前的压缩接管能力。</p>
+        <dl class="tc-kv" id="compressionAdapters"></dl>
+        <h3>DSH 后台压缩</h3>
+        <p class="muted">由 DSH 原生引擎执行，SuperLcm 收录原文和摘要；每 5 秒更新实际运行状态。</p>
+        <ul class="checks" id="compressionJobs"></ul>
+        <h2>Claude Code 压缩</h2>
         <p class="desc">Claude Code 的对话太长时会压缩。交给 SuperLcm 后，旧的部分换成后台写好的摘要，最近几轮原样留下，原文随时能用 lcm_read 调回。</p>
         <label class="toggle-row"><span><b>由 SuperLcm 接管压缩</b><span>到门槛时直接换上现成的摘要，不调用模型，几乎不用等</span></span><span class="switch"><input type="checkbox" id="takeoverOn" role="switch"><i></i></span></label>
         <h3>压缩门槛</h3>

@@ -4,15 +4,18 @@ import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findCli, paths, runCommand as run, commandOptions, preferredNode } from './runtime.js'
 import { refreshPluginEntry } from './plugin-entry.js'
+import { compressionCapabilities } from './compression-status.js'
+import { inspectDsh, dshHome } from './dsh-connection.js'
 // The file other tools are connected to: this cli.js, or the stable entry when running from the Claude plugin.
 export const script = refreshPluginEntry() || fileURLToPath(new URL('./cli.js',import.meta.url))
-export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:true,local:true},{id:'pi',label:'Pi',bin:'pi',supported:true,local:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
+export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:true,local:true},{id:'pi',label:'Pi',bin:'pi',supported:true,local:true},{id:'dsh',label:'DSH',bin:'dsh',supported:true,nativeCompression:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
 export function configFiles(harness,env=process.env) {
   const p=paths(env)
   if(harness==='codex')return {mcp:join(p.codex,'config.toml'),hooks:join(p.codex,'hooks.json'),transcripts:join(p.codex,'sessions')}
   if(harness==='claude-code')return {mcp:env.CLAUDE_CONFIG_DIR?join(p.claude,'.claude.json'):join(p.home,'.claude.json'),hooks:join(p.claude,'settings.json'),transcripts:join(p.claude,'projects')}
   if(harness==='hermes'){const home=env.HERMES_HOME||join(p.home,'.hermes');return {mcp:join(home,'config.yaml'),hooks:join(home,'config.yaml'),transcripts:join(home,'state.db')}}
   if(harness==='pi'){const home=env.PI_CODING_AGENT_DIR||join(p.home,'.pi','agent');return {mcp:join(home,'settings.json'),hooks:join(home,'extensions'),transcripts:join(home,'sessions')}}
+  if(harness==='dsh')return {profiles:join(dshHome(env),'profiles'),transcripts:join(dshHome(env),'sessions')}
   throw Error('Unsupported local harness adapter')
 }
 export function readJson(file) {if(!existsSync(file))return {};const value=JSON.parse(readFileSync(file,'utf8'));if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Expected configuration object: '+file);return value}
@@ -71,6 +74,12 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     if(!detected&&!def.supported)return null
     let version=null
     if(bin)try{version=(await runCommand(bin,['--version'],{...commandOptions(env),timeout:3000})).stdout.trim().split('\n')[0].slice(0,100)}catch{}
+    if(def.id==='dsh') {
+      const dsh = await inspectDsh(store,{env,runCommand})
+      return {harness:'dsh',label:def.label,supported:true,local_conversations:false,detected:dsh.detected,bin,version,
+        configured:dsh.configured,configuration_matches:dsh.configuration_matches,hook:{status:dsh.configured?'configured':'missing'},
+        connection_evidence:connectionEvidence(store,'dsh'),index_home:store.dir,compression:compressionCapabilities.dsh,dsh}
+    }
     const native=['codex','claude-code'].includes(def.id)
     let reg={found:false},hook={status:'unsupported',events:[]},plan=null
     if(native){reg=await mcpRegistration(def.id,{env,runCommand});hook=hookInspection(def.id,env)}
@@ -82,7 +91,7 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     const mcpSeen=seen.find(c=>c.kind==='mcp-self-reported'&&(def.id==='claude-code'?/claude/i:/codex/i).test(c.client)&&!c.client.includes('self-test'))?.seen_at||null
     const viaPlugin=!!claude?.plugin?.enabled
     const capture_stale=native&&(!!reg.found||viaPlugin)&&captureStale(newestTranscript(def.id,env),hookSeen)
-    return {capture_stale,node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found||viaPlugin,configuration_matches:viaPlugin?!claude.plugin.outdated:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir,...(claude?{claude}:{})}
+    return {compression:compressionCapabilities[def.id]||{supported:false,owner:null,mode:'unsupported'},capture_stale,node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found||viaPlugin,configuration_matches:viaPlugin?!claude.plugin.outdated:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir,...(claude?{claude}:{})}
   }))
   for(const x of store.harnessSettings())if(!rows.some(r=>r?.harness===x.harness))rows.push({harness:x.harness,label:x.harness,supported:false,detected:false,configured:false,hook:{status:'unsupported'},connection:'unverified'})
   return rows.filter(Boolean)

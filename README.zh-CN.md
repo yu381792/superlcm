@@ -10,6 +10,8 @@
 
 DSH 通过同一个 SuperLcm 包中的原生插件接管压缩，原 DSH 压缩引擎迁入，原文和已生成摘要共享归档，不重复调用模型。见 [DSH 接入说明](docs/DSH.md)。
 
+控制台的「接入」和「设置 › 压缩」会分别说明各载体的能力：Claude Code 支持 SuperLcm 接管压缩，DSH 使用原生引擎压缩；目前 Codex、Hermes、Pi 的适配只提供记录、摘要和接续。DSH 的自动压缩开关及模型在其插件设置中管理，后台每 5 秒显示实际压缩进度；已保存但未加载的配置不会显示已接管。
+
 ## 给 Claude Code 用：压缩不用等
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/takeover-zh-dark.gif"><img src="docs/images/takeover-zh-light.gif" alt="动画：两段对话都涨到 Claude Code 的 300K 压缩门槛。左边 Claude Code 停下来压缩 46 秒，原文丢失；右边 Haiku 早已在后台写好 L0、L1 摘要，到门槛时 SuperLcm 用 0.07 秒把旧的部分换成摘要，最近 40K 原样保留，对话接着往下走。"></picture>

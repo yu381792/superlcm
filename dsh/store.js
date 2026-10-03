@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { home as archiveHome } from '../src/store.js'
+import { CompressionReporter } from '../src/compression-status.js'
 
 const SCHEMA_VERSION = 3
 
@@ -66,7 +67,7 @@ export class SuperLcmStore {
     this.path = path === ':memory:' ? path : resolve(path)
     if (this.path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true })
     this.#db = new DatabaseSync(this.path)
-    this.#db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
+    this.#db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;')
     this.#migrate()
   }
 
@@ -138,6 +139,8 @@ export class SuperLcmStore {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(String(SCHEMA_VERSION))
   }
+
+  compressionReporter(options) { return new CompressionReporter(this.#db, options) }
 
   upsertNode(node) {
     this.#assertOpen()

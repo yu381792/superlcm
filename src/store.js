@@ -61,7 +61,7 @@ export class ClaudeStore {
     this.dir = resolve(dir)
     ensurePrivate(this.dir)
     this.db = new DatabaseSync(join(this.dir, 'lcm.sqlite'))
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;')
+    this.db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;')
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sources(session TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL, offset INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ok');
       CREATE TABLE IF NOT EXISTS events(session TEXT NOT NULL, ordinal INTEGER NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, digest TEXT NOT NULL, preview TEXT NOT NULL, PRIMARY KEY(session, ordinal));

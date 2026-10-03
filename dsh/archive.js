@@ -25,6 +25,8 @@ export function apply(ctx) {
   const expected = join(home(), 'lcm.sqlite')
   if (resolve(resolveDatabasePath()) !== expected) throw Error('DSH_SUPERLCM_DB must point to the shared SuperLcm archive; remove the old override')
   const native = new SuperLcmStore(expected)
+  const reporter = native.compressionReporter({ kind: 'archive', profile: ctx.get?.('profileContext')?.name || null,
+    enabled: true, routeReady: true, onError: () => ctx.logger?.warn?.('SuperLcm 归档状态写入失败') })
   const migrated = migrateLegacyIndex(native)
   if (migrated.added) ctx.logger?.info?.(`SuperLcm 已迁入 ${migrated.added} 条旧 DSH 摘要`)
   const warn = error => ctx.logger?.warn?.('SuperLcm 归档：' + (error?.message || error))
@@ -96,5 +98,5 @@ export function apply(ctx) {
       },
     }))
   }
-  ctx.effect(() => async () => { stopped = true; await running; await worker.close(); native.close() })
+  ctx.effect(() => async () => { stopped = true; reporter.close(); await running; await worker.close(); native.close() })
 }

@@ -1,6 +1,6 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Cross-harness conversation summaries and exact-source recall over MCP",
   "type": "module",
   "private": true,
@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "check": "node scripts/check.mjs",
-    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js test/dsh-policy.test.js",
+    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js test/dsh-policy.test.js test/dsh-console.test.js",
     "test:dsh-runtime": "node --experimental-loader ./scripts/dsh-runtime-loader.mjs --test test/dsh-runtime.test.js",
     "validate": "npm run check && npm test"
   },
