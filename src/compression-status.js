@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+export const runtimeVersion = version
 export const compressionCapabilities = {
   'claude-code': { supported: true, owner: 'superlcm', mode: 'takeover' },
   dsh: { supported: true, owner: 'dsh', mode: 'native' },

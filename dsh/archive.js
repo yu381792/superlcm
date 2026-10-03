@@ -10,9 +10,11 @@ import { apply as mountNativeTools } from './tool.js'
 import { ArchiveWorker } from './worker-client.js'
 import { readRawDshSession } from './raw-session.js'
 import { join, resolve } from 'node:path'
+import z from '@deepseek-ai/schemastery'
 
 export const name = 'superlcm-archive'
 export const inject = ['tools','sessionQuery','sessions']
+export const Config = z.object({archiveHome:z.string().default('')})
 
 export function projectEvent(id, event) {
   const role = event.type === 'user/message' ? 'user' : event.type.startsWith('tool/') || ['assistant/message','compaction/summary'].includes(event.type) ? 'assistant' : 'metadata'
@@ -21,16 +23,16 @@ export function projectEvent(id, event) {
   return { role, content, dsh_session: id, event }
 }
 
-export function apply(ctx) {
-  const expected = join(home(), 'lcm.sqlite')
-  if (resolve(resolveDatabasePath()) !== expected) throw Error('DSH_SUPERLCM_DB must point to the shared SuperLcm archive; remove the old override')
+export function apply(ctx,config={}) {
+  const archiveHome=resolve(config.archiveHome || home()), expected = join(archiveHome, 'lcm.sqlite')
+  if ((process.env.DSH_SUPERLCM_DB||process.env.DSH_LOSSLESS_DB) && resolve(resolveDatabasePath()) !== expected) throw Error('DSH_SUPERLCM_DB must point to the shared SuperLcm archive; remove the old override')
   const native = new SuperLcmStore(expected)
   const reporter = native.compressionReporter({ kind: 'archive', profile: ctx.get?.('profileContext')?.name || null,
     enabled: true, routeReady: true, onError: () => ctx.logger?.warn?.('SuperLcm 归档状态写入失败') })
   const migrated = migrateLegacyIndex(native)
   if (migrated.added) ctx.logger?.info?.(`SuperLcm 已迁入 ${migrated.added} 条旧 DSH 摘要`)
   const warn = error => ctx.logger?.warn?.('SuperLcm 归档：' + (error?.message || error))
-  const worker = new ArchiveWorker(process.env, warn)
+  const worker = new ArchiveWorker({...process.env,SUPERLCM_HOME:archiveHome}, warn)
   const dirty = new Set(), cursors = new Map()
   let stopped = false, running = null
 

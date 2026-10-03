@@ -22,6 +22,28 @@ DSH 的压缩引擎迁入这个包，仍然独占 DSH 的压缩；归档只保�
 
 ## 安装与选择
 
+普通用户从 [安装包](RELEASE.md) 安装 SuperLcm，运行 `superlcm web`。
+打开「接入」中的 DSH 卡片，点击「接入」，选择 web、acp、headless 或自己的
+界面名称，核对自动填入的压缩模型，然后点击「安装并启用压缩」。
+完成后重新加载所选 DSH 界面；其他界面不会被自动修改。更新插件时点击「更新接入」。
+
+安装器调用 DSH 自己的配置写入接口，将当前 SuperLcm 的发行文件复制到私有
+版本目录并连接 DSH 已有运行时依赖，启用唯一的原生压缩引擎。原配置和旧插件
+入口先备份，验证失败时恢复；保留原 YAML 注释及 `!!js` 表达式。
+所有界面明确连接到当前控制台的会话库，即使使用了自定义存储目录也不会另开一个库。
+
+命令行也可先预览、再明确安装：
+
+```sh
+superlcm setup dsh --profile web
+superlcm setup dsh --profile web --apply
+```
+
+如果该界面没有明确的模型路线，可加 `--provider <已配置提供方>` 和
+`--model <已配置模型>`，与控制台中的两项输入相同。不会创建账号或修改对话主模型。
+
+以下是手动配置说明，适用于自行管理插件列表的用户。
+
 在 DSH profile 中安装本包，把 bundle 列表中的 `SuperLcm` 替换为
 `superlcm-mcp`。组合包挂载 `superlcm-mcp/dsh`，提供跨载体检索及后台归档。
 把原来唯一的 `SuperLcm-compaction` 条目中的 `name` 改成

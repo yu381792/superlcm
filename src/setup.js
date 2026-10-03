@@ -34,7 +34,8 @@ function piPreview(store,env){
   const ours=current===null||current.startsWith('// SuperLcm for Pi'),same=current===content
   return {existing:current!==null&&ours,harness:'pi',revision:hash(JSON.stringify({harness:'pi',current,content})),can_apply:!!bin&&ours,blocker:!bin?'未找到 CLI，请先安装对应宿主':!ours?'同名扩展文件不是 SuperLcm 生成的；不覆盖，请先核对 '+file:null,files,index_home:store.dir,hook_events_added:same?[]:['session_start','turn_end','session_compact','session_shutdown'],hook_command:null,mcp_action:same?'preserve':'register',requires_review:false,notes:['只新增一个扩展文件，不改 Pi 的设置。','新开的 Pi 对话会自动加载。'],_next:{content}}
 }
-export async function setupPreview(store,harness,{env=process.env,runCommand=run}={}) {
+export async function setupPreview(store,harness,{env=process.env,runCommand=run,...dshOptions}={}) {
+  if(harness==='dsh')return (await import('./dsh-setup.js')).dshSetupPreview(store,{env,runCommand,...dshOptions})
   if(harness==='hermes')return hermesPreview(store,env)
   if(harness==='pi')return piPreview(store,env)
   if(!['codex','claude-code'].includes(harness))throw Error('此 harness 暂未实现自动接入；不会写入猜测的配置')
@@ -66,6 +67,7 @@ export async function setupPreview(store,harness,{env=process.env,runCommand=run
 const approve=async run=>{try{return {granted:await run()}}catch(error){return {granted:false,error:error.message}}}
 export const publicPreview=x=>{const {_next,...publicValue}=x;return publicValue}
 export async function applySetup(store,harness,revision,options={}) {
+  if(harness==='dsh')return (await import('./dsh-setup.js')).applyDshSetup(store,revision,options)
   if(active.has(harness))throw Error('同一 harness 的安装正在运行')
   active.add(harness)
   try {

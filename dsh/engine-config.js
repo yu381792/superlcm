@@ -6,6 +6,7 @@ const DEPRECATED_CONFIG_KEYS = new Set(['cacheTtlSeconds', 'thresholdRatio', 're
 const FALLBACK_CONFIG_KEYS = new Set(['fallbackSummarizationProvider', 'fallbackSummarizationModel'])
 
 const ROLLING_CONFIG_KEYS = new Set([
+  'archiveHome',
   'mode',
   'tailCount',
   'minRetainTokens',

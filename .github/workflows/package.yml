@@ -1,0 +1,18 @@
+name: Build distributable package
+on:
+  workflow_dispatch:
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run validate
+      - run: npm pack --ignore-scripts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: superlcm-install-package
+          path: superlcm-mcp-*.tgz
+          if-no-files-found: error

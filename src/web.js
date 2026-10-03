@@ -22,7 +22,7 @@ import { findCli } from './runtime.js'
 import { summaryEstimate, summarizeWithModel } from './summarize.js'
 import { writerTool } from './cli-writers.js'
 import { openInTerminal } from './open-terminal.js'
-import { compressionSnapshot, compressionCapabilities } from './compression-status.js'
+import { compressionSnapshot, compressionCapabilities, runtimeVersion } from './compression-status.js'
 export { probeMcp } from './mcp-probe.js'
 
 const nonce = () => randomBytes(18).toString('hex')
@@ -69,7 +69,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'GET /api/tuning': () => store.tuning(),
     'POST /api/tuning': async req => store.setTuning(await body(req)),
     'GET /api/connections': () => ({ connections: definitions.map(h => ({ harness: h.id, evidence: connectionEvidence(store, h.id) })) }),
-    'GET /api/harnesses': async () => ({ harnesses: await discovery(store, { env }) }),
+    'GET /api/harnesses': async () => ({ version:runtimeVersion,features:{dsh_setup:true},harnesses: await discovery(store, { env }) }),
     'GET /api/compression': () => ({ capabilities: compressionCapabilities, ...compressionSnapshot(store) }),
     // Claude card: install / update the SuperLcm plugin, or clean up the older MCP + hooks connection.
     'POST /api/claude-plugin': async req => { const x = await body(req); const { pluginAction } = await import('./claude-plugin.js'); return pluginAction(store, x.action, { env }) },
@@ -83,8 +83,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'POST /api/delete-bulk': async req => { const x = await body(req); const rows = store.staleSessions(x.before_ms, x.harness || undefined); if (rows.length !== x.expect_count) throw new Error('The matching conversations changed; preview again'); for (const r of rows) store.deleteSession(r.session); return { deleted: rows.length } },
     'GET /api/storage': () => store.storageStats(),
     'POST /api/connection-check': async req => { const x = await body(req); return x.harness === 'claude-code' ? claudeProbe(store, { env }) : testHarness(store, x.harness, { env }) },
-    'POST /api/setup-preview': async req => { const x = await body(req); return publicPreview(await setupPreview(store, x.harness, { env })) },
-    'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env, approveHooks: x.approve_hooks === true }) },
+    'POST /api/setup-preview': async req => { const x = await body(req); return publicPreview(await setupPreview(store, x.harness, { env,profile:x.profile,provider:x.provider,model:x.model })) },
+    'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env,profile:x.profile,provider:x.provider,model:x.model, approveHooks: x.approve_hooks === true }) },
     'GET /api/models': url => catalog(url.searchParams.get('backend'), { env }),
     // Kept fast: no tool detection here, so saving a choice on a card answers at once.
     'GET /api/settings': async () => {

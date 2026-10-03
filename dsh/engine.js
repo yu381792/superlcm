@@ -9,6 +9,7 @@ import { selectRollingRange } from './rolling.js'
 import { selectSummaryCondensation } from './summary-prefix.js'
 import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
 import { SuperLcmStore, resolveDatabasePath } from './store.js'
+import { join } from 'node:path'
 import {
   AsyncSurfaceChangedError,
   commitAsyncRegion,
@@ -35,6 +36,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     maxOverflowRetries: z.number().step(1).min(0),
     modelPolicies: z.array(z.object({})),
     auto: z.boolean(),
+    archiveHome: z.string().default(''),
     // —— SuperLcm 自有字段，全部 volatile，可运行中热更 ——
     summarizationProvider: z.string().default('').volatile(),
     summarizationModel: z.string().default('').volatile(),
@@ -59,7 +61,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     super(ctx, base)
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
-    this.superLcmStore = new SuperLcmStore(resolveDatabasePath())
+    this.superLcmStore = new SuperLcmStore(config.archiveHome ? join(config.archiveHome,'lcm.sqlite') : resolveDatabasePath())
     this.compressionReporter = this.superLcmStore.compressionReporter({
       kind: 'engine', profile: ctx.get?.('profileContext')?.name || null,
       enabled: this.config.auto === true,

@@ -10,6 +10,8 @@ Everything you and your agent say is kept, word for word, on your own computer. 
 
 The console distinguishes compaction from archive summaries: Claude Code supports SuperLcm compaction takeover, DSH uses its native engine, and the current Codex, Hermes and Pi adapters provide capture, summaries and continuation only. DSH reports background compaction phases every five seconds; configuration alone is never reported as a running integration. See [DSH integration](docs/DSH.md).
 
+DSH users connect from the console: choose Connect → DSH → Connect, select a profile, review its compaction model, and install. Reload that DSH profile afterwards. See [downloadable installation packages](docs/RELEASE.md); no maintainer-specific paths are needed.
+
 ## For Claude Code: compaction you never wait for
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/takeover-en-dark.gif"><img src="docs/images/takeover-en-light.gif" alt="Animation: two conversations grow to Claude Code's 300K compaction threshold. On the left Claude Code stops for 46 seconds to summarize and the originals are lost. On the right Haiku has written L0 and L1 summaries in the background; at the threshold SuperLcm swaps the older part for them in 0.07 seconds, keeps the newest 40K word for word, and the conversation goes on."></picture>

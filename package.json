@@ -1,9 +1,9 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Cross-harness conversation summaries and exact-source recall over MCP",
   "type": "module",
-  "private": true,
+  "publishConfig": {"access":"public"},
   "exports": {
     ".": "./src/mcp.js",
     "./dsh": "./dsh/archive.js",
@@ -25,6 +25,7 @@
     "dsh/",
     "docs/",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "CHANGELOG.md",
     "CONTRIBUTING.md",

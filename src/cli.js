@@ -62,7 +62,20 @@ function compactNotice({own,run,records,code}) {
   return zh?`对话已压缩 · Claude Code 自带压缩 · ${n} 条原文仍保存在 #${code}`:`Conversation compacted · by Claude Code · ${n} original records still kept as #${code}`
 }
 const derivedTitle=(store,session)=>store.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview.replace(/^user:\s*/,'').replace(/\s+/g,' ').trim().slice(0,90)
-if(command==='setup' || command==='doctor-local'){const store=new ClaudeStore();try{const {harnessConnections}=await import('./harness.js');if(command==='doctor-local'||!rest[0])console.log(JSON.stringify(await harnessConnections(store),null,2));else{const {setupPreview,publicPreview,applySetup}=await import('./setup.js');const preview=await setupPreview(store,rest[0]);console.log(JSON.stringify(rest.includes('--apply')?await applySetup(store,rest[0],preview.revision):publicPreview(preview),null,2))}}catch(error){console.error(error.message);process.exitCode=1}finally{store.close()}}
+if (command==='setup' || command==='doctor-local') {
+  const store=new ClaudeStore()
+  try {
+    const {harnessConnections}=await import('./harness.js')
+    if(command==='doctor-local'||!rest[0]) console.log(JSON.stringify(await harnessConnections(store),null,2))
+    else {
+      const {setupPreview,publicPreview,applySetup}=await import('./setup.js')
+      const option = flag => { const i=rest.indexOf(flag); if(i<0)return undefined; if(!rest[i+1]||rest[i+1].startsWith('--'))throw Error('Missing '+flag+' value');return rest[i+1] }
+      const options={profile:option('--profile'),provider:option('--provider'),model:option('--model')}
+      const preview=await setupPreview(store,rest[0],options)
+      console.log(JSON.stringify(rest.includes('--apply')?await applySetup(store,rest[0],preview.revision,options):publicPreview(preview),null,2))
+    }
+  } catch(error) { console.error(error.message);process.exitCode=1 } finally {store.close()}
+}
 else if (command==='mcp') startServer()
 else if (command==='web') {
   const port=rest[0]?Number(rest[0]):defaultPort
@@ -243,4 +256,4 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
   const store=new ClaudeStore()
   try { const results=store.archiveAll(); for(const r of results)if(!r.archived||r.copied||r.found_at)process.stdout.write(JSON.stringify(r)+'\n'); process.stdout.write(`archived ${results.filter(r=>r.archived).length}/${results.length} conversations\n`); if(results.some(r=>!r.archived))process.exitCode=1 }
   finally { store.close() }
-} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|archive|compact-packet <session>|doctor-local|setup <codex|claude-code|hermes|pi> [--apply]|hook|codex-hook|hermes-hook|pi-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }
+} else { process.stderr.write('Usage: node src/cli.js mcp|web [port]|archive|compact-packet <session>|doctor-local|setup <codex|claude-code|hermes|pi|dsh> [--profile name] [--apply]|hook|codex-hook|hermes-hook|pi-hook|index|index-codex|import <path> [session] [harness] [name]|name <session> <title>|overview|summarize\n'); process.exitCode=2 }

@@ -9,3 +9,29 @@ DSH 运行时由用户的 DSH 安装提供，不打包到 SuperLcm 中。
 （Martian Engineering，MIT 许可）。这里按 DSH 的原生事件与压缩接口重新实现，
 没有打包它的 OpenClaw 宿主代码。对照版本为
 `e05d8d34b2a44fdef556ce95dd90115b46630200`。
+
+DSH 图标来自 DeepSeek Harness 的 `@deepseek-ai/dsh-web-frontend` 0.2.1-alpha.1
+中的 `dist/favicon.svg`，仅用于标识兼容载体；颜色改为随界面变化。
+来源：https://github.com/deepseek-ai/deepseek-harness 。许可原文如下：
+
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

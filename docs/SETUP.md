@@ -1,6 +1,6 @@
 # SuperLcm setup and reference (preview)
 
-This is an **independent cross-harness MCP package (not a DSH plugin)**, installed into Claude Code as a Claude plugin. It replaces no harness's native compaction unless you turn on the Claude Code compaction takeover (below). It builds an external layered summary DAG and retrieves the original conversation on demand. Summary modes are exclusive: the default is the conversation's own AI (`agent` mode, nudged by a short per-turn hook note), or a background writer (Claude or Codex subscription CLI, or a custom API), or `off`. Claude Code, Codex, Hermes and Pi each have an opt-in automatic hook adapter. No harness configuration is modified on startup. The explicit reviewed Web installer or setup --apply command can register MCP and merge hooks for supported harnesses.
+SuperLcm is a shared local archive with adapters for Claude Code, Codex, Hermes, Pi and DSH. Claude Code supports plugin compaction takeover; DSH uses its native compaction plugin with the same archive. The current Codex, Hermes and Pi adapters provide summaries and recall only. Configuration changes require the reviewed Web installer or explicit `setup --apply`; startup does not install integrations. For DSH's portable installer and downloadable package, see [DSH setup](DSH.md) and [distribution](RELEASE.md).
 
 ## Requirements and data ownership
 
