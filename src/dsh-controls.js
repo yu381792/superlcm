@@ -54,6 +54,10 @@ export async function saveDshCompression(store,input,options={}) {
   const backup=join(store.dir,'config-backups','dsh-controls-'+randomUUID());mkdirSync(backup,{recursive:true,mode:0o700})
   if(current._raw!==null)writeFileSync(join(backup,'settings.before.json'),current._raw,{mode:0o600})
   const document={format:1,revision:randomUUID(),config},file=controlsPath(store),temp=file+'.'+randomUUID()
-  writeFileSync(temp,JSON.stringify(document,null,2)+'\n',{flag:'wx',mode:0o600});renameSync(temp,file)
+  store.db.exec('BEGIN IMMEDIATE')
+  try {
+    if(rawControls(store)!==current._raw)throw Error('压缩设置已变化，请重新读取后保存')
+    writeFileSync(temp,JSON.stringify(document,null,2)+'\n',{flag:'wx',mode:0o600});renameSync(temp,file);store.db.exec('COMMIT')
+  }catch(error){store.db.exec('ROLLBACK');throw error}
   return {...publicCompressionSettings(await dshCompressionSettings(store,options)),saved:true,backup}
 }

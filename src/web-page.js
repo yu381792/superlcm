@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { icons } from './web-icons.js'
 const asset = name => readFileSync(new URL(name, import.meta.url), 'utf8')
-const logo = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="3" rx="1.5" fill="var(--l3)"/><rect x="2" y="8.5" width="11" height="3" rx="1.5" fill="var(--l2)"/><rect x="2" y="14" width="6" height="3" rx="1.5" fill="var(--l1)"/></svg>'
+const logo = asset('../dsh/ui/icon.svg').trim().replace('<svg ', '<svg width="20" height="20" aria-hidden="true" ').replace('#B5532F', 'var(--l3)').replace('#CF7A56', 'var(--l2)').replace('#E6AE93', 'var(--l1)')
 const swatches = [['orange', '陶橙', '#C96442'], ['teal', '松石', '#1E6B57'], ['indigo', '靛青', '#3A4FB0'], ['graphite', '石墨', '#2E2E2C']]
 
 export function page(nonce) {

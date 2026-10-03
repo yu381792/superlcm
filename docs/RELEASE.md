@@ -8,14 +8,14 @@
 用户先安装 Node.js 22.16 或更新版本，然后在安装包所在目录运行：
 
 ```sh
-npm install -g ./superlcm-mcp-0.5.5.tgz
+npm install -g ./superlcm-mcp-0.5.6.tgz
 superlcm web
 ```
 
 浏览器打开命令输出的本机地址，在「接入」中选择载体。dsh harness 用户先按
 [官方说明](https://github.com/deepseek-ai/deepseek-harness) 安装并启动 dsh harness，
 再点击它的「接入」。供应商和模型从 dsh harness 当前配置读取，直接用下拉列表
-选择压缩模型，点击「安装并启用压缩」完成全局接入，首次接入或升级插件后重新加载 dsh harness。「设置 → 压缩」仅包含 Claude Code 的设置；DSH 接入和模型选择仍在「接入」页。
+选择压缩模型，点击「安装并启用压缩」完成全局接入，首次接入或升级插件后重新加载 dsh harness。「设置 → 压缩」仅包含 Claude Code 的设置；DSH 接入在「接入」页，日常压缩设置在 DSH 的「插件 → SuperLcm」。
 不需要旧的 dsh-superlcm 插件，也不需要区分 web、acp 等内部启动方式。
 
 安装器写入 dsh harness 全局配置，现有和之后新增的启动方式共用同一套插件及

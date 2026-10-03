@@ -1,0 +1,23 @@
+{
+  "name": "superlcm",
+  "version": "0.5.6",
+  "private": true,
+  "superlcmBridge": true,
+  "type": "module",
+  "description": "SuperLcm compaction and shared conversation archive settings",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*": "./locale/*"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-client-connection"],
+      "external": ["@deepseek-ai/dsh-client-connection/client"]
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# The globally mounted settings bridge owns the UI. Selecting this bundle
+# records its real DSH activation; no second engine or archive is inserted.
+[]

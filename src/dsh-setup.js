@@ -8,6 +8,7 @@ import { dshConfiguration,readDshCatalog,publicCatalog } from './dsh-catalog.js'
 import { packageInfo,installDshPackage,removeManagedBlock } from './dsh-install.js'
 import { controlsPath,rawControls,controlDocument } from './dsh-controls.js'
 import { readControls } from '../dsh/controls-config.js'
+import { uiManifest,linkUi } from './dsh-ui-install.js'
 import { runCommand as run,commandOptions } from './runtime.js'
 const read=file=>existsSync(file)?readFileSync(file,'utf8'):null
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -58,13 +59,14 @@ export async function applyDshSetup(store,revision,options={}) {
     const backup=join(store.dir,'config-backups','dsh-global-'+randomUUID());mkdirSync(backup,{recursive:true,mode:0o700})
     if(saved.raw!==null)writeFileSync(join(backup,'global.before'),saved.raw,{mode:0o600})
     for(const profile of profiles){writeFileSync(join(backup,profile.name+'-manifest.before'),profile.manifest,{mode:0o600});if(profile.patch!==null)writeFileSync(join(backup,profile.name+'-patch.before'),profile.patch,{mode:0o600})}
-    const stage=installDshPackage(store,host),mutations=[]
+    const stage=installDshPackage(store,host),mutations=[],uiLinks=[]
     const document=controlDocument(store,plan),controlFile=controlsPath(store)
     if(saved.controlsRaw!==null)writeFileSync(join(backup,'controls.before'),saved.controlsRaw,{mode:0o600})
     const engine={id:'superlcm-global-compaction',name:join(stage,'dsh/engine.js'),config:{...document.config,archiveHome:store.dir,controlFile}}
     const archive={id:'superlcm-global-archive',name:join(stage,'dsh/archive.js'),config:{archiveHome:store.dir}}
     const base=removeManagedBlock(saved.raw||'',globalBegin,globalEnd).trimEnd()
-    const patches=[...saved.disabledIds.map(id=>({id,disabled:true})),{insert:[engine,archive]}]
+    const settings={id:'superlcm-global-settings',name:join(stage,'dsh/ui/index.js'),config:{archiveHome:store.dir}}
+    const patches=[...saved.disabledIds.map(id=>({id,disabled:true})),{insert:[engine,archive,settings]}]
     const next=base+'\n\n'+globalBegin+'\n'+host.yaml.dump(patches,{schema:host.schema,noRefs:true,lineWidth:-1})+globalEnd+'\n'
     const record=(file,before,after)=>mutations.push({file,before,after})
     if(read(saved.file)!==saved.raw)throw Error('全局配置已变化，请重新预览')
@@ -74,9 +76,9 @@ export async function applyDshSetup(store,revision,options={}) {
       // Retire only the old SuperLcm activation. Provider/model settings and
       // unrelated bundles remain untouched; old dependencies remain installed.
       for(const profile of profiles){
-        const manifest=JSON.parse(profile.manifest),beforeBundles=manifest.dsh.profile.bundles
-        manifest.dsh.profile.bundles=beforeBundles.filter(name=>name!=='superlcm-mcp'&&name!=='SuperLcm')
-        if(manifest.dsh.profile.bundles.length!==beforeBundles.length){const after=JSON.stringify(manifest,null,2)+'\n';record(join(profile.dir,'package.json'),profile.manifest,after);await saved.operations.saveManifest(profile.dir,manifest)}
+        const manifest=uiManifest(profile,stage)
+        uiLinks.push(linkUi(profile,stage,backup))
+        const after=JSON.stringify(manifest,null,2)+'\n';record(join(profile.dir,'package.json'),profile.manifest,after);await saved.operations.saveManifest(profile.dir,manifest)
         if(profile.patch?.includes(legacyBegin)){const after=removeManagedBlock(profile.patch,legacyBegin,legacyEnd);record(join(profile.dir,'cordis.patch.yml'),profile.patch,after);writeFileSync(join(profile.dir,'cordis.patch.yml'),after,{mode:0o600})}
       }
       const controlAfter=JSON.stringify(document,null,2)+'\n';record(controlFile,saved.controlsRaw,controlAfter);const controlTemp=controlFile+'.'+randomUUID();writeFileSync(controlTemp,controlAfter,{flag:'wx',mode:0o600});renameSync(controlTemp,controlFile)
@@ -86,6 +88,7 @@ export async function applyDshSetup(store,revision,options={}) {
       writeFileSync(join(backup,'receipt.json'),JSON.stringify(result,null,2),{mode:0o600});return result
     } catch {
       let conflict=false
+      for(const link of uiLinks.reverse())try{link.restore()}catch{conflict=true}
       for(const change of [...mutations].reverse()){
         const current=read(change.file);if(current!==change.after&&current!==change.before){conflict=true;continue}
         if(change.before===null){if(existsSync(change.file))renameSync(change.file,join(backup,'failed-'+(change.file===controlFile?'controls':'global-patch')))}
