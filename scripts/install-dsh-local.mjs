@@ -2,7 +2,7 @@
 // installed peer from its offline cache. Does not upgrade DSH or restart it.
 import { createRequire } from 'node:module'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, symlinkSync, realpathSync, renameSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
@@ -15,18 +15,24 @@ const host = createRequire(process.env.SUPERLCM_DSH_RUNTIME || join(homedir(), '
 const yaml = host('js-yaml'), sha = data => createHash('sha256').update(data).digest('hex')
 const integrity = 'sha512-' + createHash('sha512').update(readFileSync(tarball)).digest('base64')
 const target = join(root, 'profiles/node_modules/superlcm-mcp')
-mkdirSync(backup, { recursive: true, mode: 0o700 })
 if (existsSync(target)) {
   if (replaceArg !== '--replace') throw Error('Target already exists; use --replace only for an explicitly authorized update: ' + target)
   const current = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8'))
   if (current.name !== 'superlcm-mcp') throw Error('Refusing to replace a different package')
+}
+mkdirSync(backup, { recursive: true, mode: 0o700 })
+mkdirSync(dirname(target), { recursive: true })
+const stage = join(root, 'profiles/node_modules/superlcm-mcp-stage-' + process.pid)
+if (existsSync(stage)) throw Error('Staging path already exists: ' + stage)
+mkdirSync(stage)
+const extracted = spawnSync('tar', ['-xzf', tarball, '--strip-components=1', '-C', stage], { encoding: 'utf8' })
+if (extracted.status !== 0) { renameSync(stage, join(backup, 'failed-staged-package')); throw Error(extracted.stderr || 'Local package extraction failed') }
+const pkg = JSON.parse(readFileSync(join(stage, 'package.json'), 'utf8'))
+if (pkg.name !== 'superlcm-mcp' || !pkg.dsh?.bundle?.patch) { renameSync(stage, join(backup, 'rejected-staged-package')); throw Error('Not a unified SuperLcm package') }
+if (existsSync(target)) {
   renameSync(target, join(backup, 'previous-installed-package'))
 }
-mkdirSync(target, { recursive: true })
-const extracted = spawnSync('tar', ['-xzf', tarball, '--strip-components=1', '-C', target], { encoding: 'utf8' })
-if (extracted.status !== 0) throw Error(extracted.stderr || 'Local package extraction failed')
-const pkg = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8'))
-if (pkg.name !== 'superlcm-mcp' || !pkg.dsh?.bundle?.patch) throw Error('Not a unified SuperLcm package')
+renameSync(stage, target)
 const reference = 'file:' + tarball, lockKey = 'superlcm-mcp@' + reference, changes = []
 const edit = (profile, name, transform) => {
   const path = join(root, 'profiles', profile, name)

@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-03",
+  "version": "0.5.1",
+  "status": "PASS",
+  "reference": {
+    "project": "Martian-Engineering/lossless-claw",
+    "commit": "e05d8d34b2a44fdef556ce95dd90115b46630200",
+    "package_version": "1.1.1"
+  },
+  "checks": [
+    { "command": "npm run check", "result": "PASS" },
+    { "command": "npm test", "passed": 101, "failed": 0 },
+    { "command": "npm run test:dsh-runtime", "passed": 6, "failed": 0 }
+  ],
+  "runtime": "installed DSH 0.2.1-alpha.1",
+  "model_response": "local deterministic fixture",
+  "paid_model_calls": 0,
+  "production_session_writes": 0,
+  "real_history_replay": {
+    "source_access": "readOnly",
+    "sessions": 52,
+    "persisted_summary_bodies": 1137,
+    "regular_condensation_candidates": 8,
+    "simulated_overflow_condensation_candidates": 25,
+    "original_summary_content_changes": 0,
+    "model_calls": 0,
+    "published_compactions": 0,
+    "production_writes": 0,
+    "scope": "persisted summary-body replay, not a complete live transcript"
+  },
+  "verified": [
+    "Four real native leaf checkpoints condense into one depth-2 checkpoint with four child references",
+    "All original messages remain exact and readable through the shared archive",
+    "Two agent owners of the same native session start one background summarization call",
+    "After primary authentication failure, the next summary skips that route and uses the explicitly configured fallback",
+    "Rewritten selected spans and nonshrinking summaries do not publish successful compaction events",
+    "A timed-out request retains its exclusive session slot until it settles; late results are not published"
+  ],
+  "limitation": "Provider transport and online model summary quality were not tested; no live DSH service was restarted."
+}

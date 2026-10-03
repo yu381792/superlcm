@@ -14,6 +14,10 @@ const ROLLING_CONFIG_KEYS = new Set([
   'softActiveTokens',
   'hardActiveTokens',
   'foldTiming',
+  'summaryPrefixTargetTokens',
+  'condensedMinFanout',
+  'summaryTimeoutMs',
+  'summaryRetryCooldownMs',
 ])
 
 const ROLLING_DEFAULTS = Object.freeze({
@@ -25,6 +29,10 @@ const ROLLING_DEFAULTS = Object.freeze({
   softActiveTokens: 160000,
   hardActiveTokens: 220000,
   foldTiming: 'background',
+  summaryPrefixTargetTokens: 0,
+  condensedMinFanout: 4,
+  summaryTimeoutMs: 180000,
+  summaryRetryCooldownMs: 30000,
 })
 
 function positiveInteger(value, fallback) {
@@ -64,6 +72,10 @@ function normalizeRolling(config) {
     softActiveTokens,
     hardActiveTokens,
     foldTiming: ROLLING_DEFAULTS.foldTiming,
+    summaryPrefixTargetTokens: nonNegativeInteger(raw.summaryPrefixTargetTokens, ROLLING_DEFAULTS.summaryPrefixTargetTokens),
+    condensedMinFanout: Math.max(2, positiveInteger(raw.condensedMinFanout, ROLLING_DEFAULTS.condensedMinFanout)),
+    summaryTimeoutMs: positiveInteger(raw.summaryTimeoutMs, ROLLING_DEFAULTS.summaryTimeoutMs),
+    summaryRetryCooldownMs: positiveInteger(raw.summaryRetryCooldownMs, ROLLING_DEFAULTS.summaryRetryCooldownMs),
   }
 }
 

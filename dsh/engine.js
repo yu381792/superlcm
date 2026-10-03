@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
-import { isCompactCheckpointSource, toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
-import { committedCompactionSummary, indexCompactionEvent } from './core.js'
-import { appendRecallEnvelope, extractChildNodeIds } from './marker.js'
+import { toolPairingBalancedBefore, toolPairingBalancedAfter } from '@deepseek-ai/dsh-compaction'
+import { committedCompactionSummary, indexCompactionEvent, nodeLevel } from './core.js'
+import { appendRecallEnvelope, markerFromSummary } from './marker.js'
 import { selectRollingRange } from './rolling.js'
+import { selectSummaryCondensation } from './summary-prefix.js'
+import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
 import { SuperLcmStore, resolveDatabasePath } from './store.js'
 import {
   AsyncSurfaceChangedError,
@@ -46,6 +48,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     softActiveTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.softActiveTokens).volatile(),
     hardActiveTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.hardActiveTokens).volatile(),
     foldTiming: z.const('background').default(ROLLING_DEFAULTS.foldTiming).volatile(),
+    summaryPrefixTargetTokens: z.number().step(1).min(0).default(ROLLING_DEFAULTS.summaryPrefixTargetTokens).volatile(),
+    condensedMinFanout: z.number().step(1).min(2).default(ROLLING_DEFAULTS.condensedMinFanout).volatile(),
+    summaryTimeoutMs: z.number().step(1).min(1000).default(ROLLING_DEFAULTS.summaryTimeoutMs).volatile(),
+    summaryRetryCooldownMs: z.number().step(1).min(1000).default(ROLLING_DEFAULTS.summaryRetryCooldownMs).volatile(),
   })
 
   constructor(ctx, config = {}) {
@@ -54,7 +60,8 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
     this.superLcmStore = new SuperLcmStore(resolveDatabasePath())
-    this.backgroundFolds = new WeakMap()
+    this.backgroundFolds = new SessionFoldRegistry()
+    this.summaryGuards = new SummaryGuards()
     this.backgroundControllers = new Set()
     this.warnedMissingBackgroundRoute = false
     this.superlcmStore = this.superLcmStore
@@ -122,6 +129,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     }
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
+    this.summaryGuards.clear()
     this.config = {
       ...this.config,
       summarizationProvider: route.provider,
@@ -142,6 +150,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const fallbackRoute = cleanRoute(this.fallbackSummarizationRoute)
 
     const attempt = async (route) => {
+      if (route) this.summaryGuards.assertRoute(route)
       const receiver = route === null ? this : Object.assign(Object.create(this), {
         config: {
           ...this.config,
@@ -156,7 +165,14 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
             : [],
         },
       })
-      const result = await super.summarize.call(receiver, ...summarizeArgs)
+      let result
+      try {
+        result = await super.summarize.call(receiver, ...summarizeArgs)
+        if (route) this.summaryGuards.succeededRoute(route)
+      } catch (error) {
+        if (route && !summarizeArgs[2]?.aborted) this.summaryGuards.failedRoute(route, error, this.rollingConfig.summaryRetryCooldownMs)
+        throw error
+      }
       if (result === null || typeof result !== 'object' || !Array.isArray(result.summary)) {
         throw new TypeError('BasicCompactionEngine.summarize() returned an invalid summary result')
       }
@@ -205,7 +221,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     ctx.on('agent/pre-step', ({ agent, signal }, next) => {
       if (signal.aborted) return next()
       this.tryCommitBackgroundFold(agent, { allowPressure: true })
-      if (this.backgroundFolds.has(agent)) return next()
+      if (!this.canPrepareBackground(agent)) return next()
 
       try {
         const selection = this.planRolling(agent)
@@ -224,7 +240,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   backgroundRouteConfigured() {
     const provider = cleanRouteValue(this.config?.summarizationProvider)
     const model = cleanRouteValue(this.config?.summarizationModel)
-    if (provider.length > 0 && model.length > 0) return true
+    if (provider.length > 0 && model.length > 0) return [{ provider, model }, this.fallbackSummarizationRoute].some(route => routeIsConfigured(route) && this.summaryGuards.canTry(route))
     if (!this.warnedMissingBackgroundRoute) {
       this.warnedMissingBackgroundRoute = true
       this.ctx.logger?.warn?.('SuperLcm background compaction requires an explicit summarizationRoute; refusing to fall back to the conversation model')
@@ -245,8 +261,15 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     return result === null ? null : { ...result, rollingPolicy: summarized }
   }
 
+  summaryRouteFingerprint() { return JSON.stringify([this.config.summarizationProvider, this.config.summarizationModel, this.fallbackSummarizationRoute]) }
+
+  canPrepareBackground(agent) {
+    return !this.backgroundFolds.has(agent) && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint())
+  }
+
   startBackgroundFold(agent, selection) {
-    if (this.backgroundFolds.has(agent) || !this.backgroundRouteConfigured()) return false
+    if (!this.canPrepareBackground(agent)) return false
+    const fingerprint = this.summaryRouteFingerprint()
     let prepared
     try {
       prepared = this.prepareBackgroundSelection(agent, selection)
@@ -260,19 +283,27 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null }
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)
+    const timer = setTimeout(() => {
+      state.status = 'cancelling'
+      controller.abort(new Error('SuperLcm 后台摘要超时'))
+    }, this.rollingConfig.summaryTimeoutMs)
+    timer.unref()
+    controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
     state.promise = this.summarizeBackgroundSelection(agent, prepared, controller.signal)
       .then((summarized) => {
+        controller.signal.throwIfAborted()
         if (this.backgroundFolds.get(agent) !== state) return
         state.summarized = summarized
         state.status = 'ready'
+        this.summaryGuards.succeededSession(agent)
       })
       .catch((error) => {
         if (this.backgroundFolds.get(agent) === state) this.backgroundFolds.delete(agent)
-        if (controller.signal.aborted) return
+        this.summaryGuards.failedSession(agent, fingerprint, this.rollingConfig.summaryRetryCooldownMs)
         const message = error instanceof Error ? error.message : String(error)
         this.ctx.logger?.warn?.(`rolling compaction background summary failed: ${message}; continuing`)
       })
-      .finally(() => this.backgroundControllers.delete(controller))
+      .finally(() => { clearTimeout(timer); this.backgroundControllers.delete(controller) })
     return true
   }
 
@@ -343,9 +374,9 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         this.overflowRetries.set(agent, retries + 1)
         return { kind: 'retry' }
       }
-      if (!this.backgroundFolds.has(agent)) {
+      if (this.canPrepareBackground(agent)) {
         try {
-          const selection = this.planRolling(agent, false)
+          const selection = this.planRolling(agent, true)
           if (selection !== null) this.startBackgroundFold(agent, selection)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
@@ -357,7 +388,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     })
   }
 
-  planRolling(agent) {
+  planRolling(agent, forceHard = false) {
     const session = agent.session
     const measurement = this.ctx.tokenMeter.measure(session)
     const options = {
@@ -370,10 +401,25 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       activeTokens: measurement.totalTokens,
       firstFoldableIndex: firstFoldableSurfaceIndex(session),
       isBalancedBefore: (seq) => toolPairingBalancedBefore(session, seq),
+      forceHard,
+    }
+    const systemEnd = systemPrefixEndIndex(session), prefixEnd = options.firstFoldableIndex
+    if (prefixEnd > systemEnd) {
+      const depths = index => {
+        if (index < systemEnd || index >= prefixEnd) return null
+        const seq = session.surface.nodes[index]
+        const marker = markerFromSummary(session.eventAt(seq).data.content)
+        const node = marker && typeof session.id === 'string' && this.superLcmStore.getNode(session.id, marker.id)
+        return node?.status === 'ready' ? nodeLevel(this.superLcmStore, session.id, marker.id) : null
+      }
+      const condensed = selectSummaryCondensation(measurement.nodes, session.surface.nodes, depths, {
+        ...this.rollingConfig, ...options, systemEnd, prefixEnd,
+        isBalancedAfter: seq => toolPairingBalancedAfter(session, seq),
+      })
+      if (condensed) return condensed
     }
     const selection = selectRollingRange(measurement.nodes, session.surface.nodes, options)
-    if (selection !== null || measurement.totalTokens < this.rollingConfig.hardActiveTokens) return selection
-    const systemEnd = systemPrefixEndIndex(session)
+    if (selection !== null || (!forceHard && measurement.totalTokens < this.rollingConfig.hardActiveTokens)) return selection
     if (options.firstFoldableIndex <= systemEnd) return null
     return selectRollingRange(measurement.nodes, session.surface.nodes, { ...options, firstFoldableIndex: systemEnd })
   }
@@ -384,6 +430,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   }
 
   async rollingMaintain(agent, _signal) {
+    if (!this.canPrepareBackground(agent)) return null
     const selection = this.planRolling(agent)
     if (selection === null) return null
     this.startBackgroundFold(agent, selection)

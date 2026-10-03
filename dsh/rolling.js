@@ -64,7 +64,7 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     softActiveTokens + 1,
   )
   const activeTokens = nonNegativeInteger(options.activeTokens, totalTokenCount(pricedNodes))
-  const hardPressure = activeTokens >= hardActiveTokens
+  const hardPressure = options.forceHard === true || activeTokens >= hardActiveTokens
   const firstFoldableIndex = Math.min(
     nonNegativeInteger(options.firstFoldableIndex, 0),
     pricedNodes.length,
