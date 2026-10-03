@@ -27,7 +27,7 @@ test('DSH reports config only when exactly one engine and archive are composed',
   assert.equal(inspectDshTree([{ name: 'agent-preset', config: { plugins: tree() } }]).configured, false)
 })
 test('one portable SuperLcm runtime owns compaction and archive without exposing module paths', () => {
-  const status = inspectDshTree([{ id: 'superlcm-global', name: 'superlcm/runtime',
+  const status = inspectDshTree([{ id: 'superlcm-global', name: 'superlcm',
     config: { auto: true, summarizationProvider: 'local', summarizationModel: 'fixture' } }])
   assert.equal(status.configured, true)
   assert.equal(status.engines, 1)
@@ -83,7 +83,7 @@ test('preset compaction must inherit the host; hidden native pruning prevents a 
     {id:'tool-result-pruner',name:'@deepseek-ai/dsh-compaction-tool-result-pruner'}]}]
   const preset={id:'preset-pi-both',name:'@deepseek-ai/dsh-agent-preset',config:{id:'pi-both',plugins:rows}}
   assert.equal(presetCompactionLeaks([preset]).length,3)
-  const runtime={id:'superlcm-global',name:'superlcm/runtime',config:{auto:true,summarizationProvider:'local',summarizationModel:'fixture'}}
+  const runtime={id:'superlcm-global',name:'superlcm',config:{auto:true,summarizationProvider:'local',summarizationModel:'fixture'}}
   assert.equal(inspectDshTree([runtime,preset]).configured,false)
   const patched={...preset,config:{...preset.config,plugins:inheritGlobalCompaction(rows)}}
   assert.equal(inspectDshTree([runtime,patched]).configured,true)

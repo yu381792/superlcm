@@ -7,7 +7,7 @@
   "description": "SuperLcm compaction and shared conversation archive settings",
   "icon": "./icon.svg",
   "exports": {
-    ".": "./index.js",
+    ".": "./runtime.js",
     "./client": "./client.js",
     "./runtime": "./runtime.js",
     "./package.json": "./package.json",

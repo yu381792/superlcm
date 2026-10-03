@@ -35,8 +35,8 @@ function ownDshFile(name,file){
   if(!new RegExp('/dsh/'+file+'\\.js$').test(String(name).replaceAll('\\','/')))return false
   try{const path=String(name).startsWith('file:')?fileURLToPath(name):name;return JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).name==='superlcm-mcp'}catch{return false}
 }
-export const isDshEngine=e=>['superlcm/runtime','superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(e.name)||ownDshFile(e.name,'engine')
-export const isDshArchive=e=>['superlcm/runtime','superlcm-mcp/dsh'].includes(e.name)||ownDshFile(e.name,'archive')
+export const isDshEngine=e=>['superlcm','superlcm/runtime','superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(e.name)||ownDshFile(e.name,'engine')
+export const isDshArchive=e=>['superlcm','superlcm/runtime','superlcm-mcp/dsh'].includes(e.name)||ownDshFile(e.name,'archive')
 export function inspectDshTree(tree) {
   const entries = dshEntries(tree)
   const engines = entries.filter(isDshEngine)
@@ -70,7 +70,7 @@ export async function inspectDsh(store, { env = process.env, runCommand = run, p
       const config = inspectDshTree(parse(output.stdout))
       const globalEngine=dshEntries(parse(output.stdout)).find(e=>['superlcm-global','superlcm-global-compaction'].includes(e.id)&&isDshEngine(e))
       if(globalEngine)try{
-        if(globalEngine.name==='superlcm/runtime')installed=JSON.parse(readFileSync(join(root,'node_modules/superlcm/package.json'),'utf8')).version
+        if(['superlcm','superlcm/runtime'].includes(globalEngine.name))installed=JSON.parse(readFileSync(join(root,'node_modules/superlcm/package.json'),'utf8')).version
         else {const path=globalEngine.name.startsWith('file:')?fileURLToPath(globalEngine.name):globalEngine.name;installed=JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).version}
       }catch{}
       const live = snapshot.runtimes.filter(r => r.profile === name && r.live)

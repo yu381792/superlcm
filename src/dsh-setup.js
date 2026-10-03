@@ -65,7 +65,7 @@ export async function applyDshSetup(store,revision,options={}) {
     const stage=installDshPackage(store,host),mutations=[],uiLinks=[]
     const document=controlDocument(store,plan),controlFile=controlsPath(store)
     if(saved.controlsRaw!==null)writeFileSync(join(backup,'controls.before'),saved.controlsRaw,{mode:0o600})
-    const runtime={id:'superlcm-global',name:'superlcm/runtime',config:{...document.config,archiveHome:store.dir,controlFile}}
+    const runtime={id:'superlcm-global',name:'superlcm',config:{...document.config,archiveHome:store.dir,controlFile}}
     const base=removeManagedBlock(saved.raw||'',globalBegin,globalEnd).trimEnd()
     const patches=[...saved.disabledIds.map(id=>({id,disabled:true})),{insert:[runtime]}]
     const next=base+'\n\n'+globalBegin+'\n'+host.yaml.dump(patches,{schema:host.schema,noRefs:true,lineWidth:-1})+globalEnd+'\n'

@@ -16,4 +16,7 @@ test('public package has executable CLI, DSH icon and portable installer',()=>{
   assert.ok(pkg.files.includes('README.zh-CN.md'))
   assert.match(readFileSync(join(root,'src/web-icons.js'),'utf8'),/"dsh":/)
   assert.doesNotMatch(readFileSync(join(root,'src/dsh-setup.js'),'utf8'),/\/Users\/yu|\.npm-global/)
+  const ui=JSON.parse(readFileSync(join(root,'dsh/ui/package.json'),'utf8'))
+  assert.equal(ui.exports['.'],'./runtime.js')
+  assert.match(readFileSync(join(root,'src/dsh-setup.js'),'utf8'),/name:'superlcm'/)
 })
