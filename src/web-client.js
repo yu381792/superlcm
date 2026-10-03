@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector)
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const fmt = n => Number(n || 0).toLocaleString(LOCALE)
 const q = encodeURIComponent
-const NAMES = { codex: 'Codex', 'claude-code': 'Claude Code', hermes: 'Hermes', pi: 'Pi', dsh: 'DSH', opencode: 'OpenCode', gemini: 'Gemini CLI', import: t('导入'), legacy: t('早期记录') }
+const NAMES = { codex: 'Codex', 'claude-code': 'Claude Code', hermes: 'Hermes', pi: 'Pi', dsh: 'dsh harness', opencode: 'OpenCode', gemini: 'Gemini CLI', import: t('导入'), legacy: t('早期记录') }
 const toolName = h => NAMES[h] || h
 const state = { view: 'conversations', harnesses: [], rows: [], total: 0, offset: 0, groups: [], h: '', sel: null, query: '', detail: null, open: new Set(), children: new Map(), target: null }
 

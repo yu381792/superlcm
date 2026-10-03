@@ -97,8 +97,8 @@ export function page(nonce) {
         <h3>各载体压缩能力</h3>
         <p class="muted">保存对话和生成摘要不等于替换模型的上下文。这里分别显示当前的压缩接管能力。</p>
         <dl class="tc-kv" id="compressionAdapters"></dl>
-        <h3>DSH 后台压缩</h3>
-        <p class="muted">由 DSH 原生引擎执行，SuperLcm 收录原文和摘要；每 5 秒更新实际运行状态。</p>
+        <h3>dsh harness 后台压缩</h3>
+        <p class="muted">由 dsh harness 原生引擎执行，SuperLcm 收录原文和摘要；每 5 秒更新实际运行状态。</p>
         <ul class="checks" id="compressionJobs"></ul>
         <h2>Claude Code 压缩</h2>
         <p class="desc">Claude Code 的对话太长时会压缩。交给 SuperLcm 后，旧的部分换成后台写好的摘要，最近几轮原样留下，原文随时能用 lcm_read 调回。</p>

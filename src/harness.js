@@ -8,7 +8,7 @@ import { compressionCapabilities } from './compression-status.js'
 import { inspectDsh, dshHome } from './dsh-connection.js'
 // The file other tools are connected to: this cli.js, or the stable entry when running from the Claude plugin.
 export const script = refreshPluginEntry() || fileURLToPath(new URL('./cli.js',import.meta.url))
-export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:true,local:true},{id:'pi',label:'Pi',bin:'pi',supported:true,local:true},{id:'dsh',label:'DSH',bin:'dsh',supported:true,nativeCompression:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
+export const definitions=[{id:'codex',label:'Codex',bin:'codex',supported:true},{id:'claude-code',label:'Claude Code / Desktop Code',bin:'claude',supported:true},{id:'hermes',label:'Hermes',bin:'hermes',supported:true,local:true},{id:'pi',label:'Pi',bin:'pi',supported:true,local:true},{id:'dsh',label:'dsh harness',bin:'dsh',supported:true,nativeCompression:true},{id:'opencode',label:'OpenCode',bin:'opencode',supported:false},{id:'gemini',label:'Gemini CLI',bin:'gemini',supported:false}]
 export function configFiles(harness,env=process.env) {
   const p=paths(env)
   if(harness==='codex')return {mcp:join(p.codex,'config.toml'),hooks:join(p.codex,'hooks.json'),transcripts:join(p.codex,'sessions')}

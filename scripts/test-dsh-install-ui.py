@@ -12,7 +12,7 @@ try:
         page=browser.new_page(viewport={'width':1280,'height':1050},locale='zh-CN');errors=[]
         page.on('pageerror',lambda error:errors.append(str(error)))
         page.goto(info['url']+'#connect');page.wait_for_selector('[data-dsh-connect]')
-        card=page.locator('#tools .tcard',has_text='DSH')
+        card=page.locator('#tools .tcard',has_text='dsh harness')
         assert card.locator('.hmark svg').count()==1
         assert '仅导入' not in card.inner_text()
         assert card.locator('[data-dsh-connect]').inner_text()=='接入'

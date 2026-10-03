@@ -13,8 +13,8 @@ try:
         page.on('pageerror',lambda error:errors.append(str(error)))
         page.goto(info['url']+'#connect')
         page.wait_for_selector('#tools [data-dsh-check]')
-        card = page.locator('#tools .tcard',has_text='DSH')
-        assert 'DSH 原生压缩' in card.inner_text()
+        card = page.locator('#tools .tcard',has_text='dsh harness')
+        assert 'dsh harness 原生压缩' in card.inner_text()
         assert card.locator('select[data-tool]').count() == 0
         assert page.locator('#tools .tcard',has_text='Codex').get_by_text('当前仅摘要和接续，尚未接管压缩').count() == 1
         page.locator('[data-dsh-check]').click()

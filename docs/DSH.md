@@ -1,34 +1,34 @@
-# DSH 接入
+# dsh harness 接入
 
-DSH、Claude Code、Codex 等载体现在使用同一个 SuperLcm 项目和共享档案。
-DSH 的压缩引擎迁入这个包，仍然独占 DSH 的压缩；归档只保存原始事件和复制
-已提交的摘要，不运行第二个模型。DSH 会话禁止 SuperLcm 的通用摘要任务，
+dsh harness、Claude Code、Codex 等载体现在使用同一个 SuperLcm 项目和共享档案。
+dsh harness 的压缩引擎迁入这个包，仍然独占 dsh harness 的压缩；归档只保存原始事件和复制
+已提交的摘要，不运行第二个模型。dsh harness 会话禁止 SuperLcm 的通用摘要任务，
 即使全局摘要设置改变也不会重复生成。
 
 0.5.1 增加旧摘要分层合并、按会话独占后台任务及失败后的等待重试。
 设计对照、参数含义和验证范围见 [压缩优化说明](DSH-OPTIMIZATION.md)。
 
-0.5.2 将 DSH 加入统一控制台。「接入」卡片列出本机各界面的压缩状态；
-「设置 › 压缩」显示各载体能力及 DSH 后台任务。DSH 引擎和归档插件各自
+0.5.2 将 dsh harness 加入统一控制台。「接入」卡片列出本机各界面的压缩状态；
+「设置 › 压缩」显示各载体能力及 dsh harness 后台任务。dsh harness 引擎和归档插件各自
 向共享库回报存活状态及已加载版本，界面每 5 秒刷新。只有两者在同一进程
 回报、版本与安装包一致、自动压缩与模型路线均启用，才显示已启用。
 缺少回报时显示「已配置 · 待加载或重启」，停止或过期的任务不会显示仍在运行。
 记录仅含界面、进程、版本、阶段和原文序号，不保存密钥、提示词或模型错误正文。
 
 后台摘要就绪与上下文已替换分开显示：提前做好的摘要可能要等到实际压缩门槛
-才提交。DSH 的自动压缩开关、门槛和模型仍在 DSH 插件设置中修改，控制台
-不为 DSH 再配置另一个摘要模型。安装时需明确设置 `auto: true` 及该界面
+才提交。dsh harness 的自动压缩开关、门槛和模型仍在 dsh harness 插件设置中修改，控制台
+不为 dsh harness 再配置另一个摘要模型。安装时需明确设置 `auto: true` 及该界面
 原先选定的摘要模型路线，不能只挂载归档插件。
 
 ## 安装与选择
 
 普通用户从 [安装包](RELEASE.md) 安装 SuperLcm，运行 `superlcm web`。
-打开「接入」中的 DSH 卡片，点击「接入」，选择 web、acp、headless 或自己的
+打开「接入」中的 dsh harness 卡片，点击「接入」，选择 web、acp、headless 或自己的
 界面名称，核对自动填入的压缩模型，然后点击「安装并启用压缩」。
-完成后重新加载所选 DSH 界面；其他界面不会被自动修改。更新插件时点击「更新接入」。
+完成后重新加载所选 dsh harness 界面；其他界面不会被自动修改。更新插件时点击「更新接入」。
 
-安装器调用 DSH 自己的配置写入接口，将当前 SuperLcm 的发行文件复制到私有
-版本目录并连接 DSH 已有运行时依赖，启用唯一的原生压缩引擎。原配置和旧插件
+安装器调用 dsh harness 自己的配置写入接口，将当前 SuperLcm 的发行文件复制到私有
+版本目录并连接 dsh harness 已有运行时依赖，启用唯一的原生压缩引擎。原配置和旧插件
 入口先备份，验证失败时恢复；保留原 YAML 注释及 `!!js` 表达式。
 所有界面明确连接到当前控制台的会话库，即使使用了自定义存储目录也不会另开一个库。
 
@@ -44,7 +44,7 @@ superlcm setup dsh --profile web --apply
 
 以下是手动配置说明，适用于自行管理插件列表的用户。
 
-在 DSH profile 中安装本包，把 bundle 列表中的 `SuperLcm` 替换为
+在 dsh harness profile 中安装本包，把 bundle 列表中的 `SuperLcm` 替换为
 `superlcm-mcp`。组合包挂载 `superlcm-mcp/dsh`，提供跨载体检索及后台归档。
 把原来唯一的 `SuperLcm-compaction` 条目中的 `name` 改成
 `superlcm-mcp/dsh-engine`，保留该 profile 的原压缩设置和模型路线。
@@ -57,13 +57,13 @@ superlcm setup dsh --profile web --apply
 
 ## 双向接续
 
-DSH 中说“通过 SuperLcm 接续 #df671”，使用 `lcm_continue` 读取 Claude、
-Codex 等工具的摘要和最近原文。其他工具中也用相同命令接续 DSH 对话。
+dsh harness 中说“通过 SuperLcm 接续 #df671”，使用 `lcm_continue` 读取 Claude、
+Codex 等工具的摘要和最近原文。其他工具中也用相同命令接续 dsh harness 对话。
 `lcm_find` 支持 `harness: "dsh"`，`lcm_outline` 查摘要，`lcm_read` 查完整原文。
-原 DSH 摘要标记使用的 `lcm_grep`、`lcm_describe`、`lcm_expand` 等工具保留。
+原 dsh harness 摘要标记使用的 `lcm_grep`、`lcm_describe`、`lcm_expand` 等工具保留。
 
-启动后，插件从 DSH 官方会话读取接口补录已有和当前会话；每次事件后增量归档。
-原始 DSH 事件完整保存在可移植记录的 `event` 字段，记录序号等于原事件序号。
+启动后，插件从 dsh harness 官方会话读取接口补录已有和当前会话；每次事件后增量归档。
+原始 dsh harness 事件完整保存在可移植记录的 `event` 字段，记录序号等于原事件序号。
 每个事件只追加一次；重复事件对照摘要值，内容变更或序号断裂会暂停归档并告警。
 索引和文件复制在一个本机后台进程执行，不卡住模型的每次事件提交。
 单条记录最多 4 MiB，与共享档案现有上限一致；超限会明确告警而不会截掉原文。
@@ -71,8 +71,8 @@ Codex 等工具的摘要和最近原文。其他工具中也用相同命令接�
 旧索引 `~/.dsh/SuperLcm/lcm.sqlite` 和
 `~/.dsh/lossless-context/lcm.sqlite` 以只读方式迁入共享库，旧库原地保留。
 仅已成功提交且所有引用事件已归档的摘要进入共享目录；未提交压缩不会冒充成功。
-DSH 摘要选择的原事件可能不连续，目录会给出准确 `source_records`，范围只表示
+dsh harness 摘要选择的原事件可能不连续，目录会给出准确 `source_records`，范围只表示
 查阅边界，不能理解为范围内所有事件都已概括。
 
-代码、包和配置可以预先验证。正在运行的 DSH 需要重启后才加载更换后的插件；
+代码、包和配置可以预先验证。正在运行的 dsh harness 需要重启后才加载更换后的插件；
 本机运行服务的重启依照工作区规则单独取得明确授权。
