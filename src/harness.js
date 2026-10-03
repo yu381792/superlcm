@@ -76,7 +76,7 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     if(bin)try{version=(await runCommand(bin,['--version'],{...commandOptions(env),timeout:3000})).stdout.trim().split('\n')[0].slice(0,100)}catch{}
     if(def.id==='dsh') {
       const dsh = await inspectDsh(store,{env,runCommand})
-      return {harness:'dsh',label:def.label,supported:true,local_conversations:false,detected:dsh.detected,bin,version,
+      return {harness:'dsh',label:def.label,supported:true,local_conversations:true,detected:dsh.detected,bin,version,
         configured:dsh.configured,configuration_matches:dsh.configuration_matches,hook:{status:dsh.configured?'configured':'missing'},
         connection_evidence:connectionEvidence(store,'dsh'),index_home:store.dir,compression:compressionCapabilities.dsh,dsh}
     }

@@ -35,7 +35,7 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js test/dsh-policy.test.js test/dsh-console.test.js",
-    "test:dsh-runtime": "node --experimental-loader ./scripts/dsh-runtime-loader.mjs --test test/dsh-runtime.test.js",
+    "test:dsh-runtime": "node --experimental-loader ./scripts/dsh-runtime-loader.mjs --test test/dsh-runtime.test.js test/dsh-history.test.js",
     "validate": "npm run check && npm test"
   },
   "repository": {

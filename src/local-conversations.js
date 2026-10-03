@@ -1,3 +1,4 @@
+import { dshConversations,importDshConversation } from './dsh-history.js'
 import { hermesConversations } from './native-snapshots.js'
 import { captureHermes } from './hermes.js'
 import { capturePi } from './pi.js'
@@ -13,6 +14,7 @@ function peek(file){const fd=openSync(file,'r');try{const bytes=Buffer.alloc(Mat
 // Enumerate only the known local transcript root. Never follow directory symlinks.
 export function localConversations(store,harness,{env=process.env,offset=0,limit=30}={}) {
   if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>50)throw Error('Invalid local conversation page')
+  if(harness==='dsh')return dshConversations(store,{env,offset,limit})
   if(harness==='hermes')return hermesConversations(store,{env,offset,limit})
   const root=configFiles(harness,env).transcripts
   if(!existsSync(root))return {harness,root,conversations:[],total:0,next_offset:null,scan_limited:false}
@@ -37,6 +39,7 @@ export function localConversations(store,harness,{env=process.env,offset=0,limit
 }
 export function indexLocalConversation(store,harness,key,{env=process.env}={}) {
   if(typeof key!=='string'||!/^[a-f0-9]{64}$/.test(key))throw Error('Invalid local conversation selection')
+  if(harness==='dsh')return importDshConversation(store,key,{env})
   if(harness==='hermes'){
     const {conversations}=hermesByKey(store,key,env)
     const result=captureHermes(store,conversations.conversation_id,{env})

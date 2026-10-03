@@ -11,6 +11,11 @@ export function dshSessionKey(id) {
   if (typeof id !== 'string' || !/^[\w.-]{1,190}$/.test(id)) throw Error('Invalid DSH session ID')
   return 'dsh-' + id
 }
+export function projectDshEvent(id,event,text) {
+  const role=event.type==='user/message'?'user':event.type.startsWith('tool/')||['assistant/message','compaction/summary'].includes(event.type)?'assistant':'metadata'
+  const content=text.length>16000?text.slice(0,16000)+' …[projection preview; the complete original is in event]':text
+  return {role,content,dsh_session:id,event}
+}
 function checkRecord(record, id) {
   if (record?.dsh_session !== id || !Number.isSafeInteger(record?.event?.seq) || record.event.seq < 0 || typeof record.event.type !== 'string') throw Error('Invalid DSH event')
   if (!['user', 'assistant', 'metadata'].includes(record.role) || typeof record.content !== 'string') throw Error('Invalid DSH event projection')
@@ -22,9 +27,9 @@ function initialize(store) {
     CREATE TABLE IF NOT EXISTS dsh_event_digests(session TEXT NOT NULL,seq INTEGER NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(session,seq));
   `)
 }
-export function captureDshPacket(store, packet) {
+export function captureDshPacket(store, packet, {clientKind='hook'}={}) {
   const id = packet?.header?.id, session = dshSessionKey(id)
-  if (store.isDeleted(session)) return { session, skipped: 'deleted' }
+  if (store.isDeleted(session) && clientKind !== 'import') return { session, skipped: 'deleted' }
   if (!Array.isArray(packet.records) || packet.records.length > 1000) throw Error('DSH capture requires at most 1000 events per batch')
   initialize(store)
   const folder = join(store.dir, 'dsh'); mkdirSync(folder, { recursive: true, mode: 0o700 })
@@ -34,6 +39,9 @@ export function captureDshPacket(store, packet) {
   let added = 0
   store.db.exec('BEGIN IMMEDIATE')
   try {
+    if(store.isDeleted(session)) {
+      for(const table of ['deleted_sessions','dsh_mirrors','dsh_event_digests'])store.db.prepare('DELETE FROM '+table+' WHERE session=?').run(session)
+    }
     const saved = store.db.prepare('SELECT * FROM dsh_mirrors WHERE session=?').get(session)
     if (saved && saved.header !== header) throw Error('DSH session identity changed; refusing to mix histories')
     let next = saved?.next_seq ?? 0, bytes = saved?.bytes ?? 0
@@ -84,6 +92,6 @@ export function captureDshPacket(store, packet) {
     store.db.prepare("INSERT INTO harness_summary_settings(harness,mode,model) VALUES('dsh','off',NULL) ON CONFLICT(harness) DO UPDATE SET mode='off'").run()
     syncDshSummaries(store, session, id)
   }
-  store.markClient('dsh', 'hook')
+  store.markClient('dsh', clientKind)
   return { session, code: store.source(session) ? store.metadata(session).code : null, added, records: store.source(session) ? store.stats(session).records : 0 }
 }

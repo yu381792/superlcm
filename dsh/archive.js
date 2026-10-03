@@ -2,7 +2,7 @@ import { createMcpToolDefinition } from '@deepseek-ai/dsh-mcp-client'
 import { extractSessionEventText } from '@deepseek-ai/dsh-session-query'
 import { home } from '../src/store.js'
 import { tools } from '../src/mcp.js'
-import { dshSessionKey } from '../src/dsh.js'
+import { dshSessionKey,projectDshEvent } from '../src/dsh.js'
 import { SuperLcmStore, resolveDatabasePath } from './store.js'
 import { migrateLegacyIndex } from './migration.js'
 import { reindexSession } from './core.js'
@@ -17,10 +17,7 @@ export const inject = ['tools','sessionQuery','sessions']
 export const Config = z.object({archiveHome:z.string().default('')})
 
 export function projectEvent(id, event) {
-  const role = event.type === 'user/message' ? 'user' : event.type.startsWith('tool/') || ['assistant/message','compaction/summary'].includes(event.type) ? 'assistant' : 'metadata'
-  const text = extractSessionEventText(event)
-  const content = text.length > 16000 ? text.slice(0, 16000) + ' …[projection preview; the complete original is in event]' : text
-  return { role, content, dsh_session: id, event }
+  return projectDshEvent(id,event,extractSessionEventText(event))
 }
 
 export function apply(ctx,config={}) {

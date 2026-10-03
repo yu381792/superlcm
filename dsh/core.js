@@ -1,4 +1,9 @@
-import { isCompactCheckpointSource } from '@deepseek-ai/dsh-compaction'
+import { dshHost } from '../src/dsh-connection.js'
+import { pathToFileURL } from 'node:url'
+const {isCompactCheckpointSource}=await import('@deepseek-ai/dsh-compaction').catch(error=>{
+  if(error.code!=='ERR_MODULE_NOT_FOUND')throw error
+  return import(pathToFileURL(dshHost().require.resolve('@deepseek-ai/dsh-compaction')).href)
+})
 import { contentBlocksToText, extractMarkers, markerFromSummary, stripRecallMetadata } from './marker.js'
 
 function clampInteger(value, fallback, min, max) {

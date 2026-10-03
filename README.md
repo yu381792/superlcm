@@ -81,6 +81,8 @@ Both sides start with the same 18 messages and a context window that holds six. 
 
 **The SuperLcm plugin takes over dsh harness compaction.** After connecting, configure the model, switch, thresholds and retention under Plugins → SuperLcm in DSH. The SuperLcm console’s Settings → Compaction contains Claude Code controls only. The plugin generates layered summaries, replaces older context and archives originals and summaries, without starting a second summary writer. The choices below apply to Claude Code, Codex, Hermes and Pi.
 
+Import existing DSH sessions under Connect → dsh harness → Import past conversations. Complete tool records are retained, no model is called, and repeated imports are deduplicated.
+
 Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use (for Claude Code 2.1.286+ with the plugin, the model is called from inside the conversation instead; Haiku is a good choice), **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
 
 ## Compaction vs. an archive
