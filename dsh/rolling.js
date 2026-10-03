@@ -25,6 +25,22 @@ function totalTokenCount(nodes) {
 
 function tailBoundary(pricedNodes, surfaceSeqs, options) {
   const firstFoldableIndex = options.firstFoldableIndex ?? 0
+  if (options.retainTokenBudget && options.minRetainTokens > 0) {
+    let keepFromIdx = pricedNodes.length, keptNodes = 0, keptTokens = 0, groupTokens = 0
+    for (let index = pricedNodes.length - 1; index >= firstFoldableIndex; index -= 1) {
+      groupTokens += tokenCountOf(pricedNodes[index])
+      if (!(options.isBalancedBefore?.(surfaceSeqs[index]) ?? true)) continue
+      // Keep the latest complete group, but do not drag another oversized
+      // older tool group into the tail merely to fill the final few tokens.
+      if (keptNodes > 0 && keptTokens + groupTokens > options.minRetainTokens) break
+      keepFromIdx = index
+      keptNodes = pricedNodes.length - index
+      keptTokens += groupTokens
+      groupTokens = 0
+      if (keptTokens >= options.minRetainTokens) break
+    }
+    return { keepFromIdx, keptNodes, keptTokens }
+  }
   let keepFromIdx = pricedNodes.length
   let keptNodes = 0
   let keptTokens = 0
@@ -75,6 +91,7 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     minRetainTokens,
     firstFoldableIndex,
     isBalancedBefore: options.isBalancedBefore,
+    retainTokenBudget: options.retainTokenBudget,
   })
 
   let tailCountRelaxed = false

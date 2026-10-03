@@ -5,7 +5,12 @@
   "model_response": "本机确定性摘要，仅验证流程与选区",
   "upstream_model_calls": 0,
   "production_session_writes": 0,
-  "history_replay": {
+  "limitations": [
+    "后台草稿保存在当前进程内，重启后需要重新准备。",
+    "达到门槛时若摘要尚未就绪，保留主对话原文，后续安全步骤才提交。",
+    "线上实际缓存命中和费用需要部署后从真实请求回执验证。"
+  ],
+  "history_replay_before_calibration": {
     "conversation": "V9 顾问",
     "session": "08a4a410-0436-4f4a-9bbc-6d26f3535e96",
     "boundary_seq": 878,
@@ -17,9 +22,30 @@
     "live_replacements": 1,
     "note": "词元数字是 DSH 本地估算，不是线上模型输入计数；摘要为本机短固定响应，不能用于宣称真实摘要质量、最终压缩比或缓存费用。"
   },
-  "limitations": [
-    "后台草稿保存在当前进程内，重启后需要重新准备。",
-    "达到门槛时若摘要尚未就绪，保留主对话原文，后续安全步骤才提交。",
-    "线上实际缓存命中和费用需要部署后从真实请求回执验证。"
+  "calibrated_history_replay": {
+    "conversation": "V9 顾问",
+    "session": "08a4a410-0436-4f4a-9bbc-6d26f3535e96",
+    "boundary_seq": 1071,
+    "prepared_batches": 3,
+    "original_fold_heuristic_tokens": 62884,
+    "assembled_fold_heuristic_tokens": 92187,
+    "remaining_raw_tail_calibrated_tokens": 40740,
+    "remaining_raw_tail_heuristic_tokens": 23842,
+    "calibration_factor": 1.7081458791997703,
+    "surface_unchanged_during_preparation": true,
+    "live_replacements": 1,
+    "note": "使用真实会话和真实 DSH 组件，本机固定摘要。校准估算不等于精确分词，也不能证明线上最终输入或缓存费用。"
+  },
+  "checks": [
+    {
+      "command": "npm run test:dsh-runtime",
+      "passed": 12,
+      "failed": 0
+    },
+    {
+      "command": "node --test test/dsh-policy.test.js",
+      "passed": 10,
+      "failed": 0
+    }
   ]
 }

@@ -3,6 +3,30 @@ import assert from 'node:assert/strict'
 import { selectSummaryCondensation } from '../dsh/summary-prefix.js'
 import { selectRollingRange } from '../dsh/rolling.js'
 import { SessionFoldRegistry, SummaryGuards } from '../dsh/summary-guards.js'
+import { selectionPricing } from '../dsh/selection-pricing.js'
+
+test('tail budgets use observed request density instead of four-character text estimates', () => {
+  const pricing = selectionPricing({ surfaceTokens: 100000, surfaceDeltaTokens: 0,
+    baseline: { kind: 'usage', tokens: 200000 }, nodes: nodes([20000, 20000, 20000, 20000, 20000]) })
+  assert.equal(pricing.factor, 2)
+  const result = selectRollingRange(pricing.nodes, [0, 1, 2, 3, 4], {
+    tailCount: 64, minRetainTokens: 40000, retainTokenBudget: true,
+    foldBatchTokens: 64000, activeTokens: 260000, softActiveTokens: 260000,
+  })
+  assert.equal(result.tailTokens, 40000)
+  assert.equal(result.tailNodes, 1)
+})
+
+test('an oversized older tool group is folded instead of inflating the recent tail', () => {
+  const priced = nodes([60000, 30000, 30000, 10000])
+  const result = selectRollingRange(priced, [0, 1, 2, 3], {
+    tailCount: 1, minRetainTokens: 40000, retainTokenBudget: true,
+    foldBatchTokens: 64000, activeTokens: 260000, softActiveTokens: 260000,
+    isBalancedBefore: seq => seq !== 2, isBalancedAfter: seq => seq !== 1,
+  })
+  assert.equal(result.tailTokens, 10000)
+  assert.equal(result.end, 2)
+})
 
 const policy = { systemEnd: 1, prefixEnd: 6, summaryPrefixTargetTokens: 20000, condensedMinFanout: 4, pressureFoldTokens: 20000, foldBatchTokens: 64000, softActiveTokens: 160000, hardActiveTokens: 220000, activeTokens: 90000 }
 const nodes = prices => prices.map((tokens, seq) => ({ seq, tokens }))

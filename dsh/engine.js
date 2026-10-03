@@ -7,6 +7,7 @@ import { committedCompactionSummary, indexCompactionEvent, nodeLevel } from './c
 import { appendRecallEnvelope, markerFromSummary } from './marker.js'
 import { selectRollingRange } from './rolling.js'
 import { assembleRegions } from './assembled-region.js'
+import { selectionPricing } from './selection-pricing.js'
 import { selectSummaryCondensation } from './summary-prefix.js'
 import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
 import { SuperLcmStore, resolveDatabasePath } from './store.js'
@@ -345,9 +346,11 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const staged = this.backgroundFolds.get(agent)
     if (staged && staged.status !== 'ready') return null
     const measurement = this.ctx.tokenMeter.measure(session)
+    const priced = selectionPricing(measurement, session.requestHeader())
     const options = {
       tailCount: this.rollingConfig.minRetainTokens > 0 ? 1 : this.rollingConfig.tailCount,
       minRetainTokens: this.rollingConfig.minRetainTokens,
+      retainTokenBudget: true,
       pressureFoldTokens: this.rollingConfig.pressureFoldTokens,
       foldBatchTokens: this.rollingConfig.foldBatchTokens,
       softActiveTokens: this.rollingConfig.softActiveTokens,
@@ -378,16 +381,16 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         const node = marker && typeof session.id === 'string' && this.superLcmStore.getNode(session.id, marker.id)
         return node?.status === 'ready' ? nodeLevel(this.superLcmStore, session.id, marker.id) : null
       }
-      const condensed = selectSummaryCondensation(measurement.nodes, session.surface.nodes, depths, {
+      const condensed = selectSummaryCondensation(priced.nodes, session.surface.nodes, depths, {
         ...this.rollingConfig, ...options, systemEnd, prefixEnd,
         isBalancedAfter: seq => toolPairingBalancedAfter(session, seq),
       })
       if (condensed) return condensed
     }
-    const selection = selectRollingRange(measurement.nodes, session.surface.nodes, options)
+    const selection = selectRollingRange(priced.nodes, session.surface.nodes, options)
     if (selection !== null || (!forceHard && measurement.totalTokens < this.rollingConfig.hardActiveTokens)) return selection
     if (options.firstFoldableIndex <= systemEnd) return null
-    return selectRollingRange(measurement.nodes, session.surface.nodes, { ...options, firstFoldableIndex: systemEnd })
+    return selectRollingRange(priced.nodes, session.surface.nodes, { ...options, firstFoldableIndex: systemEnd })
   }
 
   async commitRollingSelection(agent, selection) {
