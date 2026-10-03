@@ -36,16 +36,14 @@ function spawnSummary(session,args,env) {
 // Written as what it is, a note from the plugin the user installed, so a model does not read it as an injection.
 const summaryNudge=(store,session)=>summaryWork(store,session)?`Note from SuperLcm, the conversation-memory plugin the user installed: the user chose to have you write this conversation's summaries yourself, and one piece (${session}) is ready. When you have answered, call lcm_summary_task {"conversation":"${session}","recent":true}. If the result says from_memory, summarize that stretch from your own context; otherwise summarize the text it returns. Then call lcm_summary_submit with its batch_id, and repeat while more is true, at most 3 pieces. This is routine bookkeeping that needs no mention to the user; only say a summary was saved if the tool confirms it.`:null
 // Whether the newest compaction in a Claude Code transcript was answered by SuperLcm's packet.
-// The newest compaction in the transcript: whether it carries SuperLcm's packet, and Claude Code's own
-// before/after token counts (compactMetadata) when it has written them.
+// The newest compaction in the transcript and whether it carries SuperLcm's packet.
 function lastCompaction(path) {
   try {
     const size=statSync(path).size,fd=openSync(path,'r'),len=Math.min(size,4e6),buf=Buffer.alloc(len)
     readSync(fd,buf,0,len,size-len);closeSync(fd)
     const tail=buf.toString('utf8'),at=tail.lastIndexOf('"compact_boundary"')
     if(at<0)return {own:false}
-    const from=tail.lastIndexOf('\n',at)+1,to=tail.indexOf('\n',at),meta=(()=>{try{return JSON.parse(tail.slice(from,to<0?undefined:to)).compactMetadata||{}}catch{return {}}})()
-    return {own:tail.slice(at,at+20000).includes('<superlcm-context '),before:meta.preTokens,after:meta.postTokens}
+    return {own:tail.slice(at,at+20000).includes('<superlcm-context ')}
   } catch { return {own:false} }
 }
 // The notice is worded in Claude Code's own interface language, like the line it sits next to: Claude Desktop's
@@ -127,11 +125,11 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           // After a compaction: a line for the user (systemMessage) either way, and for Claude only after Claude
           // Code's own compaction; SuperLcm's packet already says where the originals are.
           if (event==='SessionStart' && input.source==='compact' && store.source(session)) {
-            const {code}=store.metadata(session),{records}=store.stats(session);let run=store.takeTakeover(session)
+            const {code}=store.metadata(session),{records}=store.stats(session),run=store.takeTakeover(session)
             const last=file?lastCompaction(input.transcript_path):{own:false}
             const own=Boolean(run)||last.own
-            // Claude Code's own counts when written; otherwise SuperLcm's estimate from the takeover.
-            if(last.before>0&&last.after>0)run=own?{before:last.before,after:last.after}:null
+            // The sizes are SuperLcm's own estimate of the whole context. Claude Code's postTokens leaves out the
+            // system prompt, tools and rule files that every request carries, so it reads far too low.
             const out={systemMessage:compactNotice({own,run,records,code})}
             if(!own)out.hookSpecificOutput={hookEventName:'SessionStart',additionalContext:`SuperLcm: this conversation was compacted, but all ${records} original records are preserved as #${code}. When an earlier detail matters, call lcm_outline {"conversation":"#${code}"} to locate it and lcm_read to quote the exact original instead of relying on the compacted summary.`}
             process.stdout.write(JSON.stringify(out)+'\n')

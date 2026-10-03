@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.23
+
+- Fixed: the compaction notice in 0.4.22 used Claude Code's own after-compaction count, which leaves out the system prompt, tools and rule files every request carries (a real 136K compaction showed 42K while the context still held about 136K). The notice now shows SuperLcm's estimate of the whole context again.
+
 ## 0.4.22
 
 - New: after a compaction the conversation shows one line for the user, worded like Claude Code's own: `Conversation compacted · by SuperLcm · 136K → 42K · 19,243 original records kept as #df671` (or `by Claude Code` when SuperLcm handed it back). The sizes are Claude Code's own counts when it has written them, otherwise SuperLcm's estimate. The line follows Claude Desktop's interface language (English in the terminal; `SUPERLCM_UI_LOCALE` overrides).

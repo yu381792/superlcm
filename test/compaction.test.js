@@ -279,8 +279,8 @@ test('after a compaction the user sees who compacted; the retrieval note goes to
   assert.match(c.systemMessage, /^Conversation compacted · by SuperLcm · 301K → 98K · /)
   assert.equal(c.hookSpecificOutput, undefined)
   assert.match(hook('o3', early).systemMessage, /by Claude Code/) // the record is used once
-  hook('o4', counted); const t = new ClaudeStore(home); t.noteTakeover('o4', 135952, 135000); t.close()
-  assert.match(hook('o4', counted).systemMessage, / · 136K → 42K · /) // Claude Code's own counts win over the estimate
+  hook('o4', counted); const t = new ClaudeStore(home); t.noteTakeover('o4', 135952, 135600); t.close()
+  assert.match(hook('o4', counted).systemMessage, / · 136K → 136K · /) // the estimate of the whole context, not Claude Code's postTokens (41790)
   const zh = JSON.parse(spawnSync(process.execPath, ['src/cli.js', 'hook'], { input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact', session_id: 'o1', transcript_path: ours }), env: { ...env, SUPERLCM_UI_LOCALE: 'zh-CN' }, encoding: 'utf8' }).stdout)
   assert.match(zh.systemMessage, /^对话已压缩 · SuperLcm 接管 · 4 条原文保存在 #/)
 })
