@@ -1,7 +1,7 @@
 {
   "name": "superlcm-mcp",
   "version": "0.5.3",
-  "description": "Cross-harness conversation summaries and exact-source recall over MCP",
+  "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness: layered summaries, exact-source recall and cross-harness continuation, with compaction integration for Claude Code and dsh harness.",
   "type": "module",
   "publishConfig": {"access":"public"},
   "exports": {
@@ -71,6 +71,10 @@
     "claude-code",
     "codex",
     "lossless-recall",
-    "layered-summaries"
+    "layered-summaries",
+    "hermes",
+    "pi",
+    "dsh-harness",
+    "conversation-archive"
   ]
 }

@@ -1,8 +1,8 @@
 {
   "name": "superlcm",
-  "displayName": "SuperLcm — Permanent context. Lossless, no-wait compaction.",
+  "displayName": "SuperLcm — Five harnesses. One local conversation archive.",
   "version": "0.5.3",
-  "description": "Lossless compaction that never makes you wait: summaries are assembled quietly in the background (Haiku can write them), and when the context fills up they replace the older part in one step, with no model call and no 'Compacting…' pause, while every original stays one lcm_read away. SuperLcm saves every Claude Code conversation word for word on your computer, files layered summaries like the chapters of a book, and lets Claude find and quote the exact original later. Codex, Hermes and Pi share the same archive, so a conversation can be continued in another tool.",
+  "description": "One local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness. Keep full original records, browse layered summaries, recall exact sources and continue tasks across tools. Claude Code supports opt-in SuperLcm compaction takeover; dsh harness uses its native compaction engine with the same archive. Open /superlcm:console to connect the other harnesses.",
   "author": {
     "name": "ygc381792"
   },
@@ -18,7 +18,8 @@
     "mcp",
     "codex",
     "hermes",
-    "pi"
+    "pi",
+    "dsh-harness"
   ],
   "privacyPolicyUrl": "https://github.com/yu381792/superlcm/blob/main/PRIVACY.md",
   "supportUrl": "https://github.com/yu381792/superlcm/issues",

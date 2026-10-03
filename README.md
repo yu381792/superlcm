@@ -2,15 +2,34 @@
 
 <h1 align="center">SuperLcm</h1>
 
-<p align="center"><b>Permanent context. Turn your context into an archive.</b><br>Lossless background compaction for Claude Code: no waiting, nothing thrown away.</p>
+<p align="center"><b>Five harnesses. One local conversation archive.</b><br>Keep every original. Recall any detail. Continue in another harness.</p>
 
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
 
-Everything you and your agent say is kept, word for word, on your own computer. Summaries are filed in layers like the chapters of a book, and any detail can be pulled back out and quoted exactly, even long after the context window has been compacted. It works across Claude Code, Codex, Hermes, Pi and dsh harness, and a conversation started in one can be continued in another.
+SuperLcm gives **Claude Code, Codex, Hermes, Pi and dsh harness** a shared conversation archive on your own computer. Original records stay available word for word; layered summaries help you find what matters. Switch tools and continue the same task with one short handoff, then read any earlier detail directly from its source.
 
-The console distinguishes compaction from archive summaries: Claude Code supports SuperLcm compaction takeover, dsh harness uses its native engine, and the current Codex, Hermes and Pi adapters provide capture, summaries and continuation only. dsh harness reports background compaction phases every five seconds; configuration alone is never reported as a running integration. See [dsh harness integration](docs/DSH.md).
+## Five harnesses, one archive
 
-dsh harness users connect from the console: choose Connect → dsh harness → Connect, select a profile, review its compaction model, and install. Reload that dsh harness profile afterwards. See [downloadable installation packages](docs/RELEASE.md); no maintainer-specific paths are needed.
+| Harness | Archive, summaries and continuation | Compaction integration | How to connect |
+|---|---|---|---|
+| Claude Code | Supported | SuperLcm takeover, enabled explicitly | Claude plugin or console |
+| Codex | Supported | No SuperLcm takeover yet | Console: MCP tools and capture hooks |
+| Hermes | Supported | No SuperLcm takeover yet | Console: Hermes configuration and capture hooks |
+| Pi | Supported | No SuperLcm takeover yet | Console: auto-discovered extension |
+| dsh harness | Supported | Native compaction engine, shared originals and summaries | Console: select a profile and install the native plugin |
+
+Archiving and generating summaries are available across all five adapters. Replacing the active model context currently has two integrations: **SuperLcm takeover in Claude Code** and **the native engine in dsh harness**. The console shows configuration and runtime status separately.
+
+Start with the [installation package](docs/RELEASE.md), run `superlcm web`, and choose your tool under **Connect**. Claude Code users can also [install the Claude plugin](#install-as-a-claude-plugin) and open `/superlcm:console`. For dsh harness, choose a profile, review its compaction model, install, then reload that profile; see [dsh harness setup](docs/DSH.md).
+
+## Move a whole conversation, summaries and all, into another tool
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-en-dark.gif"><img src="docs/images/handoff-en-light.gif" alt="Animation: Codex hits its usage limit; in Claude Code one sentence continues conversation #6e94e, lcm_continue brings over the outline and the latest messages, and lcm_read fetches an older record from the shared archive."></picture>
+
+- **Pick up exactly where you stopped.** Out of quota, rate-limited, or want a second model's opinion: say `Continue #6e94e via SuperLcm` in the other tool and the task continues.
+- **No retelling, no giant paste.** `lcm_continue` hands over the layered outline and the latest messages, so the new agent starts with a small, focused context instead of the whole transcript.
+- **Every detail still one call away.** The whole conversation stays in the archive. When an early decision matters, the new agent reads that record word for word with `lcm_read`.
+- **Any direction, back and forth.** Claude Code, Codex, Hermes, Pi and dsh harness all read and write the same archive, and the continued work is archived too, so the task can be handed back the same way.
 
 ## For Claude Code: compaction you never wait for
 
@@ -44,22 +63,13 @@ The module runs in the terminal `claude` and in the Claude desktop app's Code ta
 
 Both sides start with the same 18 messages and a context window that holds six. Ordinary compaction squeezes everything into one shorter summary each time, and the originals are gone. SuperLcm saves each group of messages in full, writes a summary card that points back to them, and binds the cards into a higher level. Asked many turns later which port the console uses, the agent follows the path down with `lcm_find`, `lcm_outline` and `lcm_read` and quotes the original.
 
-## Move a whole conversation, summaries and all, into another tool
-
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-en-dark.gif"><img src="docs/images/handoff-en-light.gif" alt="Animation: Codex hits its usage limit; in Claude Code one sentence continues conversation #6e94e, lcm_continue brings over the outline and the latest messages, and lcm_read fetches an older record from the shared archive."></picture>
-
-- **Pick up exactly where you stopped.** Out of quota, rate-limited, or want a second model's opinion: say `Continue #6e94e via SuperLcm` in the other tool and the task continues.
-- **No retelling, no giant paste.** `lcm_continue` hands over the layered outline and the latest messages, so the new agent starts with a small, focused context instead of the whole transcript.
-- **Every detail still one call away.** The whole conversation stays in the archive. When an early decision matters, the new agent reads that record word for word with `lcm_read`.
-- **Any direction, back and forth.** Claude Code, Codex, Hermes and Pi all read and write the same archive, and the continued work is archived too, so the task can be handed back the same way.
-
 ## How it works
 
-**Every turn is saved as it happens.** Your messages, the agent's replies and its tool calls are copied from the tool's own transcript into a local database after each turn, byte for byte and checked with SHA-256. Each record gets a number, so it can be cited later like a page in a ledger. Nothing is uploaded; the archive is one SQLite file in your home folder.
+**Every turn is saved as it happens.** Your messages, the agent's replies and its tool calls are archived from each harness's transcript or native event stream. Original files or complete event records are retained and indexed for source-checked reads. Each record gets a number, so it can be cited later like a page in a ledger. The archive stays on your computer; summary generation uses the writer you select.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig1-en-dark.png"><img src="docs/images/fig1-en-light.png" alt="Example records as they land in the archive, numbered #1841 to #1845" width="560"></picture>
 
-**Summaries in layers, each one pointing at its pages.** A run of messages (about 12,000 characters, adjustable) becomes a short summary; every 4 neighbouring summaries become a higher one. The top reads like a table of contents for the whole conversation, and every entry carries the record numbers it came from. A summary is a signpost, never a replacement.
+**Summaries in layers, each one pointing at its pages.** A run of messages (about 12,000 characters, adjustable) becomes a short summary; neighbouring summaries can be merged into higher layers. The top reads like a table of contents for the whole conversation, and every entry carries the record numbers it came from. A summary is a signpost, never a replacement.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig2-en-dark.png"><img src="docs/images/fig2-en-light.png" alt="Summary tree: one L2 volume over three L1 chapters over the original records" width="560"></picture>
 
@@ -67,16 +77,9 @@ Both sides start with the same 18 messages and a context window that holds six. 
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig3-en-dark.png"><img src="docs/images/fig3-en-light.png" alt="The notice the agent sees after compaction, followed by lcm_find and lcm_read returning record #1842" width="560"></picture>
 
-## Four tools, one archive
-
-| Tool | How it connects |
-|---|---|
-| Claude Code | As a Claude plugin (below), or from the console |
-| Codex | From the console: hooks and MCP tools added to Codex's own config |
-| Hermes | From the console, written through Hermes' own config code |
-| Pi | From the console: one extension file with the same tools and per-turn capture |
-
 ## Who writes the summaries
+
+**dsh harness uses its native compaction model.** SuperLcm mirrors its committed summaries into the shared archive and never runs a second summary model for those sessions. The choices below apply to Claude Code, Codex, Hermes and Pi.
 
 Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use (for Claude Code 2.1.286+ with the plugin, the model is called from inside the conversation instead; Haiku is a good choice), **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
 
@@ -98,7 +101,7 @@ In Claude Code:
     /plugin marketplace add yu381792/superlcm
     /plugin install superlcm@superlcm
 
-The plugin brings everything listed above for Claude Code; to use the compaction takeover, open the console and turn it on under Settings › Compaction. `/superlcm:console` opens the console, where Codex, Hermes and Pi are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
+The plugin brings everything listed above for Claude Code; to use the compaction takeover, open the console and turn it on under Settings › Compaction. `/superlcm:console` opens the console, where Codex, Hermes, Pi and dsh harness are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
 
 Plugin updates replace the plugin folder, so tools connected from the plugin's console are pointed at a fixed entry file in the SuperLcm folder (`~/.superlcm-claude/superlcm.js`) that follows updates. If Claude Code was connected from the console before, the older hooks in Claude's settings stay quiet once the plugin is enabled, and the console's Claude card offers to remove them and the older `superlcm` MCP entry (backed up first). The same card installs and updates the plugin.
 
@@ -108,11 +111,11 @@ Plugin updates replace the plugin folder, so tools connected from the plugin's c
 
 Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then:
 
-1. **接入 (Connect)** — pick Claude Code, Codex, Hermes or Pi and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
+1. **接入 (Connect)** — pick Claude Code, Codex, Hermes, Pi or dsh harness and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. For dsh harness, select its profile and review the compaction model; reload that profile after installation. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
 2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **换个工具继续** to get the one-line handoff for another tool.
 3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (the default: it writes each part from memory right after it happens, which costs almost nothing), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width, and turn on the Claude Code compaction takeover under Compaction.
 
-Terminal equivalents: `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
+Terminal equivalents: `superlcm setup dsh --profile web --apply`, `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
 Hermes keeps its transcripts in a SQLite database and rewrites them on compression, so SuperLcm keeps its own append-only copy of every message row and joins a compression chain into one conversation. Pi session files are append-only and are indexed byte for byte, all branches included.
 

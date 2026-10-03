@@ -1,6 +1,6 @@
 {
   "name": "superlcm",
-  "description": "SuperLcm: lossless local conversation memory and no-wait background compaction for Claude Code, shared with Codex, Hermes and Pi.",
+  "description": "SuperLcm: five harnesses, one local conversation archive. Full originals, layered summaries and cross-harness continuation for Claude Code, Codex, Hermes, Pi and dsh harness.",
   "owner": {
     "name": "ygc381792"
   },
@@ -8,7 +8,7 @@
     {
       "name": "superlcm",
       "source": "./",
-      "description": "Lossless, no-wait compaction for Claude Code (summaries assembled in the background, Haiku-capable) plus exact-source recall of every conversation, shared across Claude Code, Codex, Hermes and Pi."
+      "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness, with exact-source recall and cross-harness continuation. Claude Code supports SuperLcm compaction takeover; dsh harness uses its native compaction engine."
     }
   ]
 }
