@@ -48,7 +48,7 @@ async function loadHarnesses() {
   admin.outdated = data.features?.dsh_global_setup !== true
   state.harnesses = data.harnesses
   if (admin.outdated) showError(t('页面已更新，后台仍是旧版；重新启动 SuperLcm 后才能检测和接入 dsh harness'))
-  renderTools(); renderStatus(); renderTakeover(admin.settings?.takeover); renderCompression()
+  renderTools(); renderStatus(); renderTakeover(admin.settings?.takeover)
 }
 function renderStatus() {
   const ready = state.harnesses.filter(h => h.configuration_matches && (h.harness !== 'dsh' || h.dsh?.profiles.some(p => p.running)))
@@ -65,7 +65,7 @@ function renderTools() {
     const rows = [[t('状态'), esc(s.text)], [t('已存对话'), count ? t('{n} 个', { n: fmt(count) }) : '<span class="muted">' + t('暂无') + '</span>']]
     rows.push(...writerRows(h))
     if (h.claude) rows.push(...claudeRows(h))
-    else if (h.harness === 'dsh') rows.push([t('压缩接管'), '<button type="button" class="link" data-goto-compact>' + esc(dshCompressionLabel(h)) + '</button>'])
+    else if (h.harness === 'dsh') rows.push([t('压缩接管'), '<span>' + esc(dshCompressionLabel(h)) + '</span>'])
     else rows.push([t('压缩接管'), '<span class="muted">' + (h.compression?.mode === 'summary-only' ? t('当前仅摘要和接续，尚未接管压缩') : t('尚未实现接管')) + '</span>'])
     return '<article class="tcard' + (h.detected ? '' : ' dim') + '"><header class="tc-h">' + mark(h.harness, 'lg') + '<div class="tc-name"><div class="tn">' + esc(toolName(h.harness)) + '</div>' + (h.detected ? '' : '<div class="tv">' + t('本机未检测到') + '</div>') + '</div><span class="state ' + s.cls + '">' + esc(s.badge) + '</span></header>' +
       '<dl class="tc-kv">' + rows.map(([k, v]) => '<div><dt>' + k + '</dt><dd>' + v + '</dd></div>').join('') + '</dl>' +
@@ -344,9 +344,7 @@ function renderTakeover(x) {
   items.push(['info', x.enabled ? t('Claude Code 到 {t} 开始压缩，SuperLcm 当场换上摘要（摘要没跟上时由 Claude Code 自己总结）；它显示的窗口为 {w}，关闭后恢复原来的设置', { t: kfmt(x.window), w: kfmt(x.claude_window || x.window) }) : t('关闭中，Claude Code 的压缩窗口保持 {w}', { w: x.claude_window ? kfmt(x.claude_window) : t('默认') })])
   $('#takeoverChecks').innerHTML = items.map(([cls, text]) => '<li class="' + cls + '">' + text + '</li>').join('')
   $('#takeoverChecks').querySelector('[data-goto-connect]')?.addEventListener('click', () => show('connect'))
-  renderCompression()
 }
-const JOB_PHASES = { summarizing: '正在压缩', ready: '摘要就绪，等待替换上下文', cancelling: '超时，正在取消', cancelled: '已取消', committed: '已替换上下文', failed: '压缩失败，稍后重试', discarded: '原文发生变化，已放弃本次替换' }
 async function loadCompression() {
   if(admin.outdated) return
   admin.compression = await api('/api/compression')
@@ -363,17 +361,6 @@ async function loadCompression() {
     if(dsh.dsh.global?.configured)dsh.dsh.global.state=dsh.dsh.profiles.some(p=>p.state==='enabled')?'enabled':dsh.dsh.profiles.some(p=>p.state==='disabled')?'disabled':'awaiting-runtime'
     if (before !== JSON.stringify(dsh.dsh.profiles)) { renderTools(); renderStatus() }
   }
-  renderCompression();dshSettingsStatus()
-}
-function renderCompression() {
-  $('#compressionAdapters').innerHTML = state.harnesses.filter(h => h.supported).map(h => {
-    const label = h.harness === 'dsh' ? dshCompressionLabel(h) : h.harness === 'claude-code'
-      ? (admin.settings?.takeover?.enabled ? (h.claude?.plugin?.enabled ? t('SuperLcm 接管已打开') : t('接管已打开，插件尚未就绪')) : t('支持 SuperLcm 压缩接管，目前关闭'))
-      : t('当前仅摘要和接续，尚未接管压缩')
-    return '<div><dt>' + esc(toolName(h.harness)) + '</dt><dd>' + esc(label) + '</dd></div>'
-  }).join('')
-  const jobs = admin.compression.jobs || []
-  $('#compressionJobs').innerHTML = jobs.length ? jobs.map(j => '<li class="' + (j.live && j.phase === 'committed' ? 'ok' : 'info') + '"><span><b>dsh harness · ' + esc(j.session) + '</b><br>' + esc(t(!j.live && ['summarizing','ready','cancelling'].includes(j.phase) ? '载体已停止或状态已过期' : JOB_PHASES[j.phase] || j.phase)) + ' · ' + esc(ago(j.updated_ms)) + '</span></li>').join('') : '<li class="info">' + t('尚无压缩运行记录。dsh harness 加载新版插件后，后台压缩状态会在这里显示。') + '</li>'
 }
 const saveTakeover = (change, control) => act(async () => {
   const cur = admin.settings.takeover, r = await api('/api/takeover', { enabled: cur.enabled, window: cur.window, keep: cur.keep, ...change })
@@ -455,7 +442,7 @@ function boot() {
   applyLook()
   show(location.hash.slice(1) || 'conversations', false)
   act(loadConversations)
-  act(async()=>{await loadHarnesses();if(!admin.outdated){await loadCompression();await loadDshControls()}})
+  act(async()=>{await loadHarnesses();if(!admin.outdated){await loadCompression()}})
   act(loadSettings)
 }
 let compressionPolling = false

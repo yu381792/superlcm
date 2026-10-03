@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- 将「设置 → 压缩」恢复为仅包含原有 Claude Code 设置，撤回 DSH 控件、载体能力列表和后台任务展示；保留 DSH 接入与已保存的压缩设置。
+
 ## 0.5.5
 
 - 将 dsh harness 明确标为由 SuperLcm 插件接管压缩，统一界面、文档和能力描述。

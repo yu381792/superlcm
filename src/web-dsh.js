@@ -27,7 +27,7 @@ async function openDshSetup() {
     try {
       const result=await api('/api/setup-apply',{harness:'dsh',provider_ref:preview.provider_ref,model:preview.model,revision:preview.revision,confirm:true})
       if(!result.configuration_verified)throw Error(t('接入验证未通过'))
-      done=true;message=t('全局接入完成。重新加载 dsh harness 后即可使用，无需逐个界面安装。');await loadHarnesses();await loadDshControls()
+      done=true;message=t('全局接入完成。重新加载 dsh harness 后即可使用，无需逐个界面安装。');await loadHarnesses()
     }catch(error){message=error.message}
     finally{busy=false;render()}
   }
