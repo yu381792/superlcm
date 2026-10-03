@@ -29,7 +29,7 @@ export async function dshCompressionSettings(store,options={}) {
   const plan=await dshSetupPreview(store,options),raw=rawControls(store)
   const saved=readControls(controlsPath(store)),base=inheritedControls(store,plan._next.configuration)
   const fields=Object.fromEntries(Object.entries(controlFields).map(([key,[,,fallback]])=>[key,base[key]??fallback]))
-  const installed=plan._next.configuration.profiles.every(p=>dshEntries(p.tree).some(e=>e.id==='superlcm-global-compaction'&&e.config?.controlFile===controlsPath(store)))
+  const installed=plan._next.configuration.profiles.every(p=>dshEntries(p.tree).some(e=>['superlcm-global','superlcm-global-compaction'].includes(e.id)&&e.config?.controlFile===controlsPath(store)))
   const live=compressionSnapshot(store).runtimes.filter(r=>r.live&&r.kind==='engine')
   const acknowledged=!!saved&&live.length>0&&live.every(r=>r.settings_revision===saved.revision)
   const revision=digest(JSON.stringify([raw,plan.revision]))

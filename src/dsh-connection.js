@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url'
 import { paths, findCli, runCommand as run, commandOptions } from './runtime.js'
 import { compressionSnapshot } from './compression-status.js'
 import { readControls } from '../dsh/controls-config.js'
+import { presetCompactionLeaks } from './dsh-preset-compaction.js'
 export function dshHome(env = process.env) { return resolve(env.DSH_HOME || join(paths(env).home, '.dsh')) }
 export function dshHost(env = process.env) {
   const bin = findCli('dsh',env)
@@ -34,15 +35,17 @@ function ownDshFile(name,file){
   if(!new RegExp('/dsh/'+file+'\\.js$').test(String(name).replaceAll('\\','/')))return false
   try{const path=String(name).startsWith('file:')?fileURLToPath(name):name;return JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).name==='superlcm-mcp'}catch{return false}
 }
-export const isDshEngine=e=>['superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(e.name)||ownDshFile(e.name,'engine')
-export const isDshArchive=e=>e.name==='superlcm-mcp/dsh'||ownDshFile(e.name,'archive')
+export const isDshEngine=e=>['superlcm/runtime','superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(e.name)||ownDshFile(e.name,'engine')
+export const isDshArchive=e=>['superlcm/runtime','superlcm-mcp/dsh'].includes(e.name)||ownDshFile(e.name,'archive')
 export function inspectDshTree(tree) {
   const entries = dshEntries(tree)
   const engines = entries.filter(isDshEngine)
   const archives = entries.filter(isDshArchive)
   const entry = engines.find(x => x.name!=='@deepseek-ai/dsh-compaction-basic')
   const engine=entry?{...entry,config:{...entry.config,...readControls(entry.config?.controlFile)?.config}}:undefined
-  return { configured: engines.length === 1 && !!engine && archives.length === 1,
+  const presetLeaks=presetCompactionLeaks(tree).length
+  return { configured: engines.length === 1 && !!engine && archives.length === 1 && presetLeaks===0,
+    preset_compaction_leaks:presetLeaks,
     engines: engines.length, archives: archives.length, enabled: engine?.config?.auto === true,
     route_ready: typeof engine?.config?.summarizationProvider === 'string' && !!engine.config.summarizationProvider.trim() && typeof engine?.config?.summarizationModel === 'string' && !!engine.config.summarizationModel.trim(),
     model: engine?.config?.summarizationModel || null }
@@ -65,8 +68,11 @@ export async function inspectDsh(store, { env = process.env, runCommand = run, p
       if (!bin || !parse) { profiles.push({ profile: name, configured: false, error: '缺少 DSH 命令或配置解析器，无法核实压缩配置' }); return }
       const output = await runCommand(command, [...argsPrefix,'--profile', name, '--dump-config'], { ...commandOptions(env), timeout: 5000 })
       const config = inspectDshTree(parse(output.stdout))
-      const globalEngine=dshEntries(parse(output.stdout)).find(e=>e.id==='superlcm-global-compaction'&&isDshEngine(e))
-      if(globalEngine)try{const path=globalEngine.name.startsWith('file:')?fileURLToPath(globalEngine.name):globalEngine.name;installed=JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).version}catch{}
+      const globalEngine=dshEntries(parse(output.stdout)).find(e=>['superlcm-global','superlcm-global-compaction'].includes(e.id)&&isDshEngine(e))
+      if(globalEngine)try{
+        if(globalEngine.name==='superlcm/runtime')installed=JSON.parse(readFileSync(join(root,'node_modules/superlcm/package.json'),'utf8')).version
+        else {const path=globalEngine.name.startsWith('file:')?fileURLToPath(globalEngine.name):globalEngine.name;installed=JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).version}
+      }catch{}
       const live = snapshot.runtimes.filter(r => r.profile === name && r.live)
       const engine = live.find(r => r.kind === 'engine'), archive = live.find(r => r.kind === 'archive' && r.pid === engine?.pid)
       const running = !!installed && config.configured && !!engine && !!archive && engine.version === installed && archive.version === installed

@@ -1,6 +1,6 @@
 {
   "name": "superlcm",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "private": true,
   "superlcmBridge": true,
   "type": "module",
@@ -9,15 +9,23 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./runtime": "./runtime.js",
     "./package.json": "./package.json",
     "./locale/*": "./locale/*"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-client-connection"],
-      "external": ["@deepseek-ai/dsh-client-connection/client"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "external": [
+        "@deepseek-ai/dsh-client-connection/client"
+      ]
     }
   }
 }

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { cleanRoute, routeIsConfigured } from './engine-config.js'
 import { appendRecallEnvelope } from './marker.js'
+import { summaryCallContext } from './summary-session.js'
 export async function summarizeWithRecall(engine,args) {
     const lease=engine.acquireSummary?.()
     try {
@@ -20,7 +21,7 @@ export async function summarizeWithRecall(engine,args) {
 
     const attempt = async (route) => {
       if (route) engine.summaryGuards.assertRoute(route)
-      const receiver = route === null ? engine : Object.assign(Object.create(engine), {
+      const receiver = route === null ? Object.create(engine) : Object.assign(Object.create(engine), {
         config: {
           ...config,
           summarizationProvider: route.provider,
@@ -36,7 +37,8 @@ export async function summarizeWithRecall(engine,args) {
       })
       let result
       const modelContext=lease?.ctx||engine.summaryContext
-      if (modelContext && route?.provider===primaryRoute.provider) Object.defineProperty(receiver,'ctx',{value:modelContext})
+      const ctx = modelContext && route?.provider === primaryRoute.provider ? modelContext : engine.ctx
+      Object.defineProperty(receiver, 'ctx', { value: summaryCallContext(ctx, summarizeArgs[1].session.id, route) })
       try {
         result = await BasicCompactionEngine.prototype.summarize.call(receiver, ...summarizeArgs)
         if (route) engine.summaryGuards.succeededRoute(route)

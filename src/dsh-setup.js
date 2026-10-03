@@ -9,11 +9,14 @@ import { packageInfo,installDshPackage,removeManagedBlock } from './dsh-install.
 import { controlsPath,rawControls,controlDocument } from './dsh-controls.js'
 import { readControls } from '../dsh/controls-config.js'
 import { uiManifest,linkUi } from './dsh-ui-install.js'
+import { retireLegacyDshRows } from './dsh-retire-legacy.js'
+import { dshPresets,inheritGlobalCompaction,presetCompactionLeaks } from './dsh-preset-compaction.js'
 import { runCommand as run,commandOptions } from './runtime.js'
 const read=file=>existsSync(file)?readFileSync(file,'utf8'):null
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export const globalBegin='# BEGIN SuperLcm global DSH integration',globalEnd='# END SuperLcm global DSH integration'
 const legacyBegin='# BEGIN SuperLcm managed DSH integration',legacyEnd='# END SuperLcm managed DSH integration'
+const presetsBegin='# BEGIN SuperLcm preset compaction inheritance',presetsEnd='# END SuperLcm preset compaction inheritance'
 const tuningKeys=['tailCount','minRetainTokens','pressureFoldTokens','foldBatchTokens','softActiveTokens','hardActiveTokens','summaryPrefixTargetTokens','condensedMinFanout','summaryTimeoutMs','summaryRetryCooldownMs','headroomTokens','maxTokens','compactionRetries','maxOverflowRetries']
 const active=new Set()
 export async function dshSetupPreview(store,{env=process.env,runCommand=run,provider_ref,provider,model}={}) {
@@ -21,7 +24,7 @@ export async function dshSetupPreview(store,{env=process.env,runCommand=run,prov
   if(!profiles.length)throw Error('请先安装并启动一次 dsh harness，再全局接入 SuperLcm')
   const catalog=await readDshCatalog(configuration),file=join(dshHome(env),'cordis.patch.yml'),raw=read(file)
   const engines=profiles.flatMap(p=>dshEntries(p.tree).filter(isDshEngine))
-  const installed=engines.find(e=>e.id==='superlcm-global-compaction')?.config
+  const installed=engines.find(e=>['superlcm-global','superlcm-global-compaction'].includes(e.id))?.config
   const controlled=installed?.controlFile?readControls(installed.controlFile):null
   const current=installed?{...installed,...controlled?.config}:undefined
   provider_ref=provider_ref??current?.summaryAdapter?.ref
@@ -62,28 +65,33 @@ export async function applyDshSetup(store,revision,options={}) {
     const stage=installDshPackage(store,host),mutations=[],uiLinks=[]
     const document=controlDocument(store,plan),controlFile=controlsPath(store)
     if(saved.controlsRaw!==null)writeFileSync(join(backup,'controls.before'),saved.controlsRaw,{mode:0o600})
-    const engine={id:'superlcm-global-compaction',name:join(stage,'dsh/engine.js'),config:{...document.config,archiveHome:store.dir,controlFile}}
-    const archive={id:'superlcm-global-archive',name:join(stage,'dsh/archive.js'),config:{archiveHome:store.dir}}
+    const runtime={id:'superlcm-global',name:'superlcm/runtime',config:{...document.config,archiveHome:store.dir,controlFile}}
     const base=removeManagedBlock(saved.raw||'',globalBegin,globalEnd).trimEnd()
-    const settings={id:'superlcm-global-settings',name:join(stage,'dsh/ui/index.js'),config:{archiveHome:store.dir}}
-    const patches=[...saved.disabledIds.map(id=>({id,disabled:true})),{insert:[engine,archive,settings]}]
+    const patches=[...saved.disabledIds.map(id=>({id,disabled:true})),{insert:[runtime]}]
     const next=base+'\n\n'+globalBegin+'\n'+host.yaml.dump(patches,{schema:host.schema,noRefs:true,lineWidth:-1})+globalEnd+'\n'
     const record=(file,before,after)=>mutations.push({file,before,after})
     if(read(saved.file)!==saved.raw)throw Error('全局配置已变化，请重新预览')
     if(rawControls(store)!==saved.controlsRaw)throw Error('压缩设置已变化，请重新预览')
     for(const profile of profiles)if(read(join(profile.dir,'package.json'))!==profile.manifest||read(join(profile.dir,'cordis.patch.yml'))!==profile.patch)throw Error('配置已变化，请重新预览')
     try {
+      // Module resolution starts at DSH_HOME too, so future launch profiles
+      // can load the public package before their settings bridge registers UI.
+      uiLinks.push(linkUi({name:'home-global',dir:home},stage,backup))
       // Retire only the old SuperLcm activation. Provider/model settings and
       // unrelated bundles remain untouched; old dependencies remain installed.
       for(const profile of profiles){
         const manifest=uiManifest(profile,stage)
         uiLinks.push(linkUi(profile,stage,backup))
         const after=JSON.stringify(manifest,null,2)+'\n';record(join(profile.dir,'package.json'),profile.manifest,after);await saved.operations.saveManifest(profile.dir,manifest)
-        if(profile.patch?.includes(legacyBegin)){const after=removeManagedBlock(profile.patch,legacyBegin,legacyEnd);record(join(profile.dir,'cordis.patch.yml'),profile.patch,after);writeFileSync(join(profile.dir,'cordis.patch.yml'),after,{mode:0o600})}
+        const withoutBlock = profile.patch?.includes(legacyBegin) ? removeManagedBlock(profile.patch,legacyBegin,legacyEnd) : profile.patch
+        const clean=retireLegacyDshRows(removeManagedBlock(withoutBlock||'',presetsBegin,presetsEnd),host)
+        const presetPatches=dshPresets(profile.tree).map(preset=>({id:preset.id,config:{...preset.config,plugins:inheritGlobalCompaction(preset.config.plugins)}}))
+        const afterPatch = presetPatches.length?clean.trimEnd()+'\n\n'+presetsBegin+'\n'+host.yaml.dump(presetPatches,{schema:host.schema,noRefs:true,lineWidth:-1})+presetsEnd+'\n':profile.patch===null&&!clean?null:clean
+        if (afterPatch !== profile.patch) { record(join(profile.dir,'cordis.patch.yml'),profile.patch,afterPatch);writeFileSync(join(profile.dir,'cordis.patch.yml'),afterPatch,{mode:0o600}) }
       }
       const controlAfter=JSON.stringify(document,null,2)+'\n';record(controlFile,saved.controlsRaw,controlAfter);const controlTemp=controlFile+'.'+randomUUID();writeFileSync(controlTemp,controlAfter,{flag:'wx',mode:0o600});renameSync(controlTemp,controlFile)
       record(saved.file,saved.raw,next);const temp=saved.file+'.superlcm-'+randomUUID();writeFileSync(temp,next,{flag:'wx',mode:0o600});renameSync(temp,saved.file)
-      for(const profile of profiles){const result=await (options.runCommand||run)(host.bin,[...host.argsPrefix,'--profile',profile.name,'--dump-config'],{...commandOptions(options.env||process.env),timeout:5000});const status=inspectDshTree(host.parse(result.stdout));if(!status.configured||status.enabled!==document.config.auto||!status.route_ready)throw Error('Global integration did not validate')}
+      for(const profile of profiles){const result=await (options.runCommand||run)(host.bin,[...host.argsPrefix,'--profile',profile.name,'--dump-config'],{...commandOptions(options.env||process.env),timeout:5000});const tree=host.parse(result.stdout),status=inspectDshTree(tree);if(!status.configured||status.enabled!==document.config.auto||!status.route_ready||presetCompactionLeaks(tree).length)throw Error('Global integration did not validate')}
       const result={harness:'dsh',scope:'global',version:packageInfo.version,saved:true,configuration_verified:true,restart_required:true,state:'awaiting_client_reload',backup,package:stage,serviceRestarted:false}
       writeFileSync(join(backup,'receipt.json'),JSON.stringify(result,null,2),{mode:0o600});return result
     } catch {

@@ -26,6 +26,13 @@ test('DSH reports config only when exactly one engine and archive are composed',
   assert.equal(inspectDshTree([{ disabled: true, config: { plugins: tree() } }]).configured, false)
   assert.equal(inspectDshTree([{ name: 'agent-preset', config: { plugins: tree() } }]).configured, false)
 })
+test('one portable SuperLcm runtime owns compaction and archive without exposing module paths', () => {
+  const status = inspectDshTree([{ id: 'superlcm-global', name: 'superlcm/runtime',
+    config: { auto: true, summarizationProvider: 'local', summarizationModel: 'fixture' } }])
+  assert.equal(status.configured, true)
+  assert.equal(status.engines, 1)
+  assert.equal(status.archives, 1)
+})
 test('heartbeat, stale process and shutdown are different from configured compaction', () => {
   const store = fixture(); let now = 100000
   const reporter = new CompressionReporter(store.db, { kind: 'engine', enabled: true, routeReady: true, profile: 'web', clock: () => now })
@@ -66,4 +73,21 @@ test('console exposes compression status without spawning models and refuses a s
     const r = await fetch(web.url+'api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'harness',harness:'dsh',mode:'api',api_url:'https://example.test',model:'fixture'})})
     assert.equal(r.status,400); assert.match((await r.json()).error,/SuperLcm 插件管理/)
   } finally { await web.close() }
+})
+
+test('preset compaction must inherit the host; hidden native pruning prevents a green connection', async () => {
+  const {inheritGlobalCompaction,presetCompactionLeaks}=await import('../src/dsh-preset-compaction.js')
+  const rows=[{id:'compaction',name:'cordis:group',group:true,isolate:{compaction:true,toolResultPruner:true},config:[
+    {id:'compaction-basic',name:'@deepseek-ai/dsh-compaction-basic'},
+    {id:'command-compact',name:'@deepseek-ai/dsh-command-compact'},
+    {id:'tool-result-pruner',name:'@deepseek-ai/dsh-compaction-tool-result-pruner'}]}]
+  const preset={id:'preset-pi-both',name:'@deepseek-ai/dsh-agent-preset',config:{id:'pi-both',plugins:rows}}
+  assert.equal(presetCompactionLeaks([preset]).length,3)
+  const runtime={id:'superlcm-global',name:'superlcm/runtime',config:{auto:true,summarizationProvider:'local',summarizationModel:'fixture'}}
+  assert.equal(inspectDshTree([runtime,preset]).configured,false)
+  const patched={...preset,config:{...preset.config,plugins:inheritGlobalCompaction(rows)}}
+  assert.equal(inspectDshTree([runtime,patched]).configured,true)
+  assert.equal(patched.config.plugins[0].config.length,1)
+  assert.equal(patched.config.plugins[0].config[0].id,'command-compact')
+  assert.equal(rows[0].config.length,3)
 })

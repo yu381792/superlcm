@@ -23,6 +23,7 @@ import * as PiAdapter from '@deepseek-ai/dsh-llm-pi-ai'
 import Authorization from '@deepseek-ai/dsh-authorization'
 import { summaryContext } from '../dsh/summary-model.js'
 import { readControls,controlsConfig } from '../dsh/controls-config.js'
+import { summarySessionId } from '../dsh/summary-session.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 async function withHost(config, response, run) {
@@ -34,7 +35,7 @@ async function withHost(config, response, run) {
   try {
     new SessionStore(ctx); new SessionProjections(ctx)
     ctx.reflect.provide('llm', { async *stream(options) {
-      calls.push({ provider: options.provider, model: options.model, signal: options.signal })
+      calls.push({ provider: options.provider, model: options.model, signal: options.signal, sessionId: options.sessionId })
       const text = await response(options)
       yield { type: 'text-delta', index: 0, text }
     }, imageRequestPricing() {}, fileRequestText() {} })
@@ -50,6 +51,47 @@ async function withHost(config, response, run) {
 }
 const append = (session, text) => session.append('user/message', createUserMessage({ content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
 const source = 'original engineering facts and exact numbers. '.repeat(5000)
+
+test('background model calls use a stable private identity and never rename the main conversation', async () => {
+  await withHost({}, async () => 'summary', async ({ engine, session, agent, calls }) => {
+    const id = session.id
+    const raw = append(session, source)
+    const prepared = prepareAsyncRegion(engine, agent, { start: raw.seq, end: raw.seq })
+    await summarizeAsyncRegion(engine, agent, prepared, new AbortController().signal)
+    await summarizeAsyncRegion(engine, agent, prepared, new AbortController().signal)
+    assert.equal(session.id, id)
+    assert.equal(calls[0].sessionId, calls[1].sessionId)
+    assert.equal(calls[0].sessionId, summarySessionId(id, { provider: 'local', model: 'fixture' }))
+    assert.notEqual(calls[0].sessionId, id)
+    assert.notEqual(calls[0].sessionId, summarySessionId(id, { provider: 'local', model: 'other-model' }))
+    assert.equal(session.surface.nodes.length, 1)
+  })
+})
+
+test('soft and hard pressure never publish a small draft while background assembly is unfinished', async () => {
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  await withHost({ tailCount: 64, minRetainTokens: 1000, foldBatchTokens: 6000,
+    pressureFoldTokens: 1000, softActiveTokens: 26000, hardActiveTokens: 28000 },
+  async () => { await gate; return 'small complete summary' }, async ({ engine, session, agent }) => {
+    for (let i = 0; i < 7; i++) append(session, source.slice(0, 16000) + i)
+    const live = [...session.surface.nodes]
+    const selection = engine.planRolling(agent)
+    assert.equal(selection.reason, 'hard-cap')
+    engine.startBackgroundFold(agent, selection)
+    assert.equal(engine.tryCommitBackgroundFold(agent, { allowPressure: true }), null)
+    assert.equal(engine.tryCommitBackgroundFold(agent, { force: true }), null)
+    assert.deepEqual(session.surface.nodes, live)
+    release(); await engine.settleBackgroundFold(agent)
+    const state = engine.backgroundFolds.get(agent)
+    assert.ok(state.parts.length > 1)
+    assert.deepEqual(session.surface.nodes, live)
+    assert.ok(engine.tryCommitBackgroundFold(agent, { allowPressure: true }))
+    const starts = Array.from({ length: session.seq }, (_, seq) => session.eventAt(seq))
+      .filter(event => event.type === 'compaction/start')
+    assert.equal(starts.length, 1)
+  })
+})
 
 test('background drafts accumulate across turns and replace once at the threshold', async () => {
   await withHost({ tailCount: 64, minRetainTokens: 1000, foldBatchTokens: 2000,

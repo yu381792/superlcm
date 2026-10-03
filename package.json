@@ -1,16 +1,20 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness: layered summaries, exact-source recall and cross-harness continuation, with compaction integration for Claude Code and dsh harness.",
   "type": "module",
-  "publishConfig": {"access":"public"},
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/mcp.js",
     "./dsh": "./dsh/archive.js",
     "./dsh-engine": "./dsh/engine.js"
   },
   "dsh": {
-    "bundle": { "patch": "./dsh/cordis.patch.yml" }
+    "bundle": {
+      "patch": "./dsh/cordis.patch.yml"
+    }
   },
   "license": "MIT",
   "bin": {
@@ -59,16 +63,36 @@
     "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-compaction": { "optional": true },
-    "@deepseek-ai/dsh-compaction-basic": { "optional": true },
-    "@deepseek-ai/dsh-llm": { "optional": true },
-    "@deepseek-ai/dsh-llm-pi-ai": { "optional": true },
-    "@deepseek-ai/dsh-llm-deepseek-api-key": { "optional": true },
-    "@deepseek-ai/dsh-llm-deepseek-account": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true },
-    "@deepseek-ai/dsh-mcp-client": { "optional": true },
-    "@deepseek-ai/dsh-session-query": { "optional": true },
-    "@deepseek-ai/schemastery": { "optional": true }
+    "@deepseek-ai/dsh-compaction": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction-basic": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm-pi-ai": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm-deepseek-api-key": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm-deepseek-account": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-mcp-client": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-query": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
   },
   "keywords": [
     "superlcm",

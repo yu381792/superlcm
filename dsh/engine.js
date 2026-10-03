@@ -388,6 +388,9 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       if (condensed) return condensed
     }
     const selection = selectRollingRange(priced.nodes, session.surface.nodes, options)
+    // At hard pressure, never reselect ranges already present in the assembled
+    // draft. Otherwise the fallback blocks its own completed commit forever.
+    if (staged?.parts?.length) return selection
     if (selection !== null || (!forceHard && measurement.totalTokens < this.rollingConfig.hardActiveTokens)) return selection
     if (options.firstFoldableIndex <= systemEnd) return null
     return selectRollingRange(priced.nodes, session.surface.nodes, { ...options, firstFoldableIndex: systemEnd })
