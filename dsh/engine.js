@@ -39,6 +39,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.disposeSummary=summary?.dispose
     this.summaryModelReady?.catch(()=>ctx.logger?.warn?.('SuperLcm 压缩模型配置无法加载'))
     this.rollingConfig = rolling
+    ctx.logger?.info?.('SuperLcm：已启用后台分批组装，达到压缩门槛后一次替换上下文')
     this.fallbackSummarizationRoute = fallbackRoute
     this.superLcmStore = new SuperLcmStore(config.archiveHome ? join(config.archiveHome,'lcm.sqlite') : resolveDatabasePath())
     this.compressionReporter = this.superLcmStore.compressionReporter({

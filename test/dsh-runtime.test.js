@@ -53,7 +53,7 @@ const source = 'original engineering facts and exact numbers. '.repeat(5000)
 
 test('background drafts accumulate across turns and replace once at the threshold', async () => {
   await withHost({ tailCount: 64, minRetainTokens: 1000, foldBatchTokens: 2000,
-    pressureFoldTokens: 1000, softActiveTokens: 100000, hardActiveTokens: 120000 },
+    pressureFoldTokens: 1000, softActiveTokens: 26000, hardActiveTokens: 32000 },
   async () => 'Facts preserved in this batch.', async ({ engine, session, agent, calls }) => {
     const originals = []
     for (let i = 0; i < 6; i++) originals.push(append(session, source.slice(0, 16000) + i).seq)
@@ -77,7 +77,7 @@ test('background drafts accumulate across turns and replace once at the threshol
     assert.ok(calls.length > purchased)
     const staged = engine.backgroundFolds.get(agent)
     assert.equal(new Set(staged.summarized.shadowedSeqs).size, staged.summarized.shadowedSeqs.length)
-    engine.rollingConfig.softActiveTokens = 1
+    assert.ok(engine.ctx.tokenMeter.measure(session).totalTokens >= 26000)
     const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true })
     assert.ok(result)
     await tick()
