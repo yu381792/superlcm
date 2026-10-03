@@ -256,16 +256,33 @@ test('the newest stretch up to the keep size stays word for word, from the start
   assert.equal(plan(500000).start, 20) // never more than half the context
 })
 
-test('the retrieval note after a compaction is left out when SuperLcm did the compaction', () => {
+test('after a compaction the user sees who compacted; the retrieval note goes to Claude only after Claude Code\'s own', () => {
   const { dir, claude, project } = claudeHome(), home = join(dir, 'home')
-  const env = { ...process.env, SUPERLCM_HOME: home, CLAUDE_CONFIG_DIR: claude }
-  const hook = (id, file) => spawnSync(process.execPath, ['src/cli.js', 'hook'], { input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact', session_id: id, transcript_path: file }), env, encoding: 'utf8' }).stdout
+  const env = { ...process.env, SUPERLCM_HOME: home, CLAUDE_CONFIG_DIR: claude, SUPERLCM_UI_LOCALE: 'en-US' }
+  const hook = (id, file) => JSON.parse(spawnSync(process.execPath, ['src/cli.js', 'hook'], { input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact', session_id: id, transcript_path: file }), env, encoding: 'utf8' }).stdout)
   const base = line('user', 'hello') + line('assistant', [{ type: 'text', text: 'hi' }]) + JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n'
-  const ours = join(project, 'o1.jsonl'), theirs = join(project, 'o2.jsonl')
+  const ours = join(project, 'o1.jsonl'), theirs = join(project, 'o2.jsonl'), early = join(project, 'o3.jsonl')
   writeFileSync(ours, base + line('user', '<superlcm-context conversation="#x" keep="0" through="1">s</superlcm-context>'))
   writeFileSync(theirs, base + line('user', 'This session is being continued from a previous conversation.'))
-  assert.equal(hook('o1', ours), '')
-  assert.match(hook('o2', theirs), /original records are preserved/)
+  writeFileSync(early, base) // the hook can run before Claude Code writes the packet after the boundary
+  const counted = join(project, 'o4.jsonl')
+  writeFileSync(counted, base.replace('"compact_boundary"}', '"compact_boundary","compactMetadata":{"preTokens":135952,"postTokens":41790}}') + line('user', '<superlcm-context conversation="#x" keep="0" through="1">s</superlcm-context>'))
+  const a = hook('o1', ours)
+  assert.match(a.systemMessage, /^Conversation compacted · by SuperLcm · 4 original records kept as #/)
+  assert.equal(a.hookSpecificOutput, undefined)
+  const b = hook('o2', theirs)
+  assert.match(b.systemMessage, /^Conversation compacted · by Claude Code · /)
+  assert.match(b.hookSpecificOutput.additionalContext, /original records are preserved/)
+  hook('o3', early) // records the conversation
+  const s = new ClaudeStore(home); s.noteTakeover('o3', 301000, 98400); s.close()
+  const c = hook('o3', early)
+  assert.match(c.systemMessage, /^Conversation compacted · by SuperLcm · 301K → 98K · /)
+  assert.equal(c.hookSpecificOutput, undefined)
+  assert.match(hook('o3', early).systemMessage, /by Claude Code/) // the record is used once
+  hook('o4', counted); const t = new ClaudeStore(home); t.noteTakeover('o4', 135952, 135000); t.close()
+  assert.match(hook('o4', counted).systemMessage, / · 136K → 42K · /) // Claude Code's own counts win over the estimate
+  const zh = JSON.parse(spawnSync(process.execPath, ['src/cli.js', 'hook'], { input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact', session_id: 'o1', transcript_path: ours }), env: { ...env, SUPERLCM_UI_LOCALE: 'zh-CN' }, encoding: 'utf8' }).stdout)
+  assert.match(zh.systemMessage, /^对话已压缩 · SuperLcm 接管 · 4 条原文保存在 #/)
 })
 
 test('a repeated run of messages does not move the cut past an uncovered one', () => {

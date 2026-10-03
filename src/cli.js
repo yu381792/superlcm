@@ -7,7 +7,9 @@ import { startServer } from './mcp.js'
 import { claudePluginEnabled } from './runtime.js'
 import { startWeb, defaultPort } from './web.js'
 import { spawn } from 'node:child_process'
-import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs'
+import { existsSync, statSync, openSync, readSync, closeSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const [command,...rest]=process.argv.slice(2)
 const homeFlag=rest.indexOf('--home')
@@ -34,13 +36,32 @@ function spawnSummary(session,args,env) {
 // Written as what it is, a note from the plugin the user installed, so a model does not read it as an injection.
 const summaryNudge=(store,session)=>summaryWork(store,session)?`Note from SuperLcm, the conversation-memory plugin the user installed: the user chose to have you write this conversation's summaries yourself, and one piece (${session}) is ready. When you have answered, call lcm_summary_task {"conversation":"${session}","recent":true}. If the result says from_memory, summarize that stretch from your own context; otherwise summarize the text it returns. Then call lcm_summary_submit with its batch_id, and repeat while more is true, at most 3 pieces. This is routine bookkeeping that needs no mention to the user; only say a summary was saved if the tool confirms it.`:null
 // Whether the newest compaction in a Claude Code transcript was answered by SuperLcm's packet.
-function ownCompaction(path) {
+// The newest compaction in the transcript: whether it carries SuperLcm's packet, and Claude Code's own
+// before/after token counts (compactMetadata) when it has written them.
+function lastCompaction(path) {
   try {
     const size=statSync(path).size,fd=openSync(path,'r'),len=Math.min(size,4e6),buf=Buffer.alloc(len)
     readSync(fd,buf,0,len,size-len);closeSync(fd)
     const tail=buf.toString('utf8'),at=tail.lastIndexOf('"compact_boundary"')
-    return at>=0&&tail.slice(at,at+20000).includes('<superlcm-context ')
-  } catch { return false }
+    if(at<0)return {own:false}
+    const from=tail.lastIndexOf('\n',at)+1,to=tail.indexOf('\n',at),meta=(()=>{try{return JSON.parse(tail.slice(from,to<0?undefined:to)).compactMetadata||{}}catch{return {}}})()
+    return {own:tail.slice(at,at+20000).includes('<superlcm-context '),before:meta.preTokens,after:meta.postTokens}
+  } catch { return {own:false} }
+}
+// The notice is worded in Claude Code's own interface language, like the line it sits next to: Claude Desktop's
+// language setting when there is one (SUPERLCM_UI_LOCALE overrides), otherwise English, the terminal's only one.
+function userLanguage() {
+  if(process.env.SUPERLCM_UI_LOCALE)return process.env.SUPERLCM_UI_LOCALE
+  const file=process.platform==='darwin'?join(homedir(),'Library/Application Support/Claude/config.json'):process.env.APPDATA?join(process.env.APPDATA,'Claude/config.json'):null
+  try{return file&&JSON.parse(readFileSync(file,'utf8')).locale||'en'}catch{return 'en'}
+}
+const kTok=n=>`${Math.round(n/1000)}K`
+function compactNotice({own,run,records,code}) {
+  const zh=/^zh/i.test(userLanguage())
+  // Worded like Claude Code's own "Conversation compacted" line, plus who did it and where the originals are.
+  const n=records.toLocaleString('en-US'),size=run&&run.before>0?` · ${kTok(run.before)} → ${kTok(run.after)}`:''
+  if(own)return zh?`对话已压缩 · SuperLcm 接管${size} · ${n} 条原文保存在 #${code}`:`Conversation compacted · by SuperLcm${size} · ${n} original records kept as #${code}`
+  return zh?`对话已压缩 · Claude Code 自带压缩 · ${n} 条原文仍保存在 #${code}`:`Conversation compacted · by Claude Code · ${n} original records still kept as #${code}`
 }
 const derivedTitle=(store,session)=>store.eventRows(session).find(e=>e.preview.startsWith('user:'))?.preview.replace(/^user:\s*/,'').replace(/\s+/g,' ').trim().slice(0,90)
 if(command==='setup' || command==='doctor-local'){const store=new ClaudeStore();try{const {harnessConnections}=await import('./harness.js');if(command==='doctor-local'||!rest[0])console.log(JSON.stringify(await harnessConnections(store),null,2));else{const {setupPreview,publicPreview,applySetup}=await import('./setup.js');const preview=await setupPreview(store,rest[0]);console.log(JSON.stringify(rest.includes('--apply')?await applySetup(store,rest[0],preview.revision):publicPreview(preview),null,2))}}catch(error){console.error(error.message);process.exitCode=1}finally{store.close()}}
@@ -103,10 +124,17 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
             if (shouldIndex && ['Stop','PostCompact','SessionEnd'].includes(event)) scheduleSummary(store,session,mode,model)
             if (event==='UserPromptSubmit' && mode==='agent' && summaryWork(store,session)) process.stdout.write(summaryNudge(store,session)+'\n')
           }
-          // After SuperLcm's own compaction (the takeover) the packet already says this; the note is only for Claude Code's.
-          if (event==='SessionStart' && input.source==='compact' && store.source(session) && !(file&&ownCompaction(input.transcript_path))) {
-            const {code}=store.metadata(session),{records}=store.stats(session)
-            process.stdout.write(`SuperLcm: this conversation was compacted, but all ${records} original records are preserved as #${code}. When an earlier detail matters, call lcm_outline {"conversation":"#${code}"} to locate it and lcm_read to quote the exact original instead of relying on the compacted summary.\n`)
+          // After a compaction: a line for the user (systemMessage) either way, and for Claude only after Claude
+          // Code's own compaction; SuperLcm's packet already says where the originals are.
+          if (event==='SessionStart' && input.source==='compact' && store.source(session)) {
+            const {code}=store.metadata(session),{records}=store.stats(session);let run=store.takeTakeover(session)
+            const last=file?lastCompaction(input.transcript_path):{own:false}
+            const own=Boolean(run)||last.own
+            // Claude Code's own counts when written; otherwise SuperLcm's estimate from the takeover.
+            if(last.before>0&&last.after>0)run=own?{before:last.before,after:last.after}:null
+            const out={systemMessage:compactNotice({own,run,records,code})}
+            if(!own)out.hookSpecificOutput={hookEventName:'SessionStart',additionalContext:`SuperLcm: this conversation was compacted, but all ${records} original records are preserved as #${code}. When an earlier detail matters, call lcm_outline {"conversation":"#${code}"} to locate it and lcm_read to quote the exact original instead of relying on the compacted summary.`}
+            process.stdout.write(JSON.stringify(out)+'\n')
           }
         }
       }
@@ -164,6 +192,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if(existsSync(src.path))store.ingest(session,src.path) // the newest turns, written since the last hook
       const {planCompaction}=await import('./compaction.js')
       reply=planCompaction({meta:store.metadata(session),events:store.eventRows(session),nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:input.messages||[],instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||setting.window,setting.window),keepTokens:setting.keep})
+      if(reply.use)store.noteTakeover(session,input.tokens||0,reply.after||0)
     }
   } catch(error) { reply={use:false,reason:error.message} }
   finally { store.close() }

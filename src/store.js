@@ -84,6 +84,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS takeover_settings(id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, window INTEGER NOT NULL, previous TEXT);
       CREATE TABLE IF NOT EXISTS takeover_copies(session TEXT PRIMARY KEY, remaining INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS host_writers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS takeover_runs(session TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, before INTEGER NOT NULL, after INTEGER NOT NULL);
     `)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!new Set(this.db.prepare('PRAGMA table_info(leases)').all().map(c=>c.name)).has('owner'))this.db.exec("ALTER TABLE leases ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
@@ -168,6 +169,10 @@ export class ClaudeStore {
     this.db.prepare('INSERT INTO takeover_settings(id,enabled,window,previous,keep_tokens) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,window=excluded.window,previous=excluded.previous,keep_tokens=excluded.keep_tokens').run(enabled?1:0,window,previous,keep)
     return this.takeover()
   }
+  // The newest packet SuperLcm handed Claude Code for a conversation, so the SessionStart hook after the
+  // compaction can tell the user it was ours and how much it freed. Taken (read and cleared) once.
+  noteTakeover(session,before,after) { this.db.prepare('INSERT INTO takeover_runs(session,at_ms,before,after) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET at_ms=excluded.at_ms,before=excluded.before,after=excluded.after').run(session,Date.now(),Math.round(before)||0,Math.round(after)||0) }
+  takeTakeover(session,maxAge=3600000) { const r=this.db.prepare('SELECT at_ms,before,after FROM takeover_runs WHERE session=?').get(session); this.db.prepare('DELETE FROM takeover_runs WHERE session=?').run(session); return r&&Date.now()-r.at_ms<=maxAge?{before:r.before,after:r.after}:null }
   markCompaction(session,ordinal=this.stats(session).records) { if(this.source(session))this.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session,ordinal) }
   lastCompaction(session) { return this.db.prepare('SELECT MAX(ordinal) AS o FROM compactions WHERE session=?').get(session)?.o ?? 0 }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.22
+
+- New: after a compaction the conversation shows one line for the user, worded like Claude Code's own: `Conversation compacted · by SuperLcm · 136K → 42K · 19,243 original records kept as #df671` (or `by Claude Code` when SuperLcm handed it back). The sizes are Claude Code's own counts when it has written them, otherwise SuperLcm's estimate. The line follows Claude Desktop's interface language (English in the terminal; `SUPERLCM_UI_LOCALE` overrides).
+- Fixed: after its own takeover SuperLcm sometimes still added the retrieval note meant for Claude Code's compaction, because the hook could run before the packet was written to the transcript. The takeover is now recorded when the packet is handed over.
+
 ## 0.4.21
 
 - Fixed: the compaction takeover still handed long tool-heavy conversations back to Claude Code's own 70–100 s summary. Two causes, both seen on a real conversation run through Paseo: (1) a stretch of mostly tool calls filled the window while its dialogue stayed under one summary segment, so no summary covered it; the planner now carries such dialogue (up to 40000 characters) into the packet word for word, tool output left to lcm_read, after checking that the conversation in context matches the record. (2) Keeping the newest 40k tokens extended back to the start of a turn even when that turn was one 190k-token task; the planner now keeps less instead of pulling in more than twice its target. On the real 23:26 compaction the plan is now to take over.
