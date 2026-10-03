@@ -7,6 +7,7 @@ const FALLBACK_CONFIG_KEYS = new Set(['fallbackSummarizationProvider', 'fallback
 
 const ROLLING_CONFIG_KEYS = new Set([
   'archiveHome',
+  'controlFile',
   'summaryAdapter',
   'runtimeTuning',
   'mode',

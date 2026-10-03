@@ -23,6 +23,7 @@ import { summaryEstimate, summarizeWithModel } from './summarize.js'
 import { writerTool } from './cli-writers.js'
 import { openInTerminal } from './open-terminal.js'
 import { compressionSnapshot, compressionCapabilities, runtimeVersion } from './compression-status.js'
+import { dshCompressionSettings,publicCompressionSettings,saveDshCompression } from './dsh-controls.js'
 export { probeMcp } from './mcp-probe.js'
 
 const nonce = () => randomBytes(18).toString('hex')
@@ -69,8 +70,10 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'GET /api/tuning': () => store.tuning(),
     'POST /api/tuning': async req => store.setTuning(await body(req)),
     'GET /api/connections': () => ({ connections: definitions.map(h => ({ harness: h.id, evidence: connectionEvidence(store, h.id) })) }),
-    'GET /api/harnesses': async () => ({ version:runtimeVersion,features:{dsh_setup:true,dsh_global_setup:true},harnesses: await discovery(store, { env }) }),
+    'GET /api/harnesses': async () => ({ version:runtimeVersion,features:{dsh_setup:true,dsh_global_setup:true,dsh_compression_controls:true},harnesses: await discovery(store, { env }) }),
     'GET /api/compression': () => ({ capabilities: compressionCapabilities, ...compressionSnapshot(store) }),
+    'GET /api/dsh-compression': async()=>publicCompressionSettings(await dshCompressionSettings(store,{env})),
+    'POST /api/dsh-compression': async req=>saveDshCompression(store,await body(req),{env}),
     // Claude card: install / update the SuperLcm plugin, or clean up the older MCP + hooks connection.
     'POST /api/claude-plugin': async req => { const x = await body(req); const { pluginAction } = await import('./claude-plugin.js'); return pluginAction(store, x.action, { env }) },
     'GET /api/local-conversations': url => localConversations(store, url.searchParams.get('harness'), { env, offset: int(url.searchParams.get('offset'), 0) }),
@@ -125,7 +128,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       const x = await body(req)
       if (x.scope !== 'global' && x.scope !== 'harness') throw new Error('Invalid settings scope')
       if (x.scope === 'harness' && !definitions.some(d => d.id === x.harness) && !store.harnessSetting(x.harness)) throw new Error('Unknown tool')
-      if (x.scope === 'harness' && x.harness === 'dsh') throw new Error('DSH 摘要由其原生压缩引擎生成；请在 DSH 插件设置中修改')
+      if (x.scope === 'harness' && x.harness === 'dsh') throw new Error('dsh harness 的摘要与压缩由 SuperLcm 插件管理，请在设置里的压缩页面修改')
       if (x.scope === 'harness' && x.mode === 'inherit') return store.clearHarnessSetting(x.harness)
       if (x.scope === 'harness' && x.mode === 'api' && x.api_ref) {
         const result = store.setHarnessSetting(x.harness, 'api', null, null, null, x.api_ref)

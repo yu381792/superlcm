@@ -6,6 +6,7 @@ import { existsSync,readFileSync,readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { dshHost,dshHome,dshEntries } from './dsh-connection.js'
 import { runCommand as run,commandOptions } from './runtime.js'
+import { readControls } from '../dsh/controls-config.js'
 export const adapterNames = new Set(['@deepseek-ai/dsh-llm-pi-ai','@deepseek-ai/dsh-llm-deepseek-api-key','@deepseek-ai/dsh-llm-deepseek-account'])
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v
 const hash=v=>createHash('sha256').update(JSON.stringify(canonical(v))).digest('hex')
@@ -30,7 +31,7 @@ export async function readDshCatalog(configuration) {
   const choices=new Map(),errors=[]
   for(const profile of profiles) {
     const rows=dshEntries(profile.tree),entries=rows.filter(e=>adapterNames.has(e.name))
-    for(const row of rows){const spec=row.config?.summaryAdapter;if(spec&&adapterNames.has(spec.plugin))entries.push({name:spec.plugin,config:spec.config})}
+    for(const row of rows){for(const spec of [row.config?.summaryAdapter,readControls(row.config?.controlFile)?.config.summaryAdapter])if(spec&&adapterNames.has(spec.plugin))entries.push({name:spec.plugin,config:spec.config})}
     for(const entry of entries) {
       const ctx=new Context()
       try {

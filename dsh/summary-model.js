@@ -19,5 +19,5 @@ export function summaryContext(ctx,spec) {
     new Llm(child)
     adapter=child.plugin({name:'superlcm-summary-model',inject:plugin.inject,apply(modelCtx){plugin.apply(modelCtx,plugin.Config(spec.config||{}))}})
   }})
-  return {ctx:registry.ctx,ready:registry.await().then(()=>adapter.await())}
+  return {ctx:registry.ctx,ready:registry.await().then(()=>adapter.await()),dispose:()=>registry.dispose()}
 }

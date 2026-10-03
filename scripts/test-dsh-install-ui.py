@@ -34,7 +34,23 @@ try:
   with page.expect_response(lambda r:'/api/setup-apply' in r.url) as updated:page.locator('#dshApply').click()
   assert updated.value.status==200,updated.value.text();page.wait_for_selector('.modal:has-text("全局接入完成")',timeout=30000)
   assert global_file.read_text().count('# BEGIN SuperLcm global DSH integration')==1
+  page.locator('.modal [data-close]').last.click()
+  page.locator('[data-view="settings"]').click();page.locator('#setNav [data-sec="compact"]').click()
+  page.wait_for_selector('#dshControlsSave:not([disabled])')
+  assert page.locator('#dshControlsModel').input_value()=='cheap-summary'
+  page.locator('[data-dsh-window="200000"]').click()
+  page.locator('#dshKeepPercent').fill('30');page.locator('#dsh-tailCount').fill('8')
+  page.locator('#dshControlsModel').select_option('alternate-model');page.locator('#dshControlsOn').uncheck()
+  with page.expect_response(lambda r:'/api/dsh-compression' in r.url and r.request.method=='POST') as saved:page.locator('#dshControlsSave').click()
+  assert saved.value.status==200,saved.value.text();value=saved.value.json()
+  assert value['enabled']==False and value['model']=='alternate-model'
+  assert value['softActiveTokens']==200000 and value['minRetainTokens']==60000 and value['tailCount']==8
+  page.wait_for_selector('#dshControlsSave:not([disabled])')
+  page.screenshot(path='/private/tmp/superlcm-dsh-controls.png',full_page=True)
+  page.locator('#dshControlsRead').click();page.wait_for_selector('#dshControlsModel option[value="alternate-model"]:checked',state='attached')
+  assert not page.locator('#dshControlsOn').is_checked()
+  assert 'fixture-private-key' not in page.locator('#dshCompressionSettings').inner_text()
   assert not errors,errors;browser.close()
- print(json.dumps({'status':'PASS','scope':'global','noLegacyPluginRequired':True,'allConfiguredModels':True,'providerAndModelDropdowns':True,'originalModelSettingsUnchanged':True,'modelCalls':0,'screenshot':'/private/tmp/superlcm-dsh-global-models.png'},ensure_ascii=False))
+ print(json.dumps({'status':'PASS','scope':'global','noLegacyPluginRequired':True,'allConfiguredModels':True,'providerAndModelDropdowns':True,'originalModelSettingsUnchanged':True,'dailyCompressionControls':True,'modelCalls':0,'screenshot':'/private/tmp/superlcm-dsh-global-models.png'},ensure_ascii=False))
 finally:
  server.terminate();server.wait(timeout=10)

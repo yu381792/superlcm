@@ -8,7 +8,7 @@ const WRITERS = [
 const writerLabel = mode => WRITERS.find(w => w[0] === mode)?.[1] || mode
 const kfmt=n=>Math.round(n/1000)+'K'
 const admin = { settings: null, catalog: {}, modelEdit: null, compression: { runtimes: [], jobs: [] }, outdated: false }
-const DSH_STATES = { enabled: '已启用 · dsh harness 原生压缩', disabled: '自动压缩已关闭', 'missing-route': '未配置压缩模型', 'awaiting-runtime': '已配置 · 待加载或重启', 'runtime-mismatch': '运行设置与保存配置不同', misconfigured: '压缩配置不完整或有冲突', 'not-connected':'尚未接入' }
+const DSH_STATES = { enabled: '已启用 · SuperLcm 接管压缩', disabled: '自动压缩已关闭', 'missing-route': '未配置压缩模型', 'awaiting-runtime': '已配置 · 待加载或重启', 'runtime-mismatch': '运行设置与保存配置不同', misconfigured: '压缩配置不完整或有冲突', 'not-connected':'尚未接入' }
 function dshCompressionLabel(h) {
   const global=h.dsh?.global
   if(global?.configured)return t(DSH_STATES[global.state]||'未核实运行状态')+' · '+t('全局接入')
@@ -293,7 +293,7 @@ $('#saveWriter').onclick = () => act(async () => {
 }, $('#saveWriter'))
 // Each tool picks its own summary writer on its card; a second row picks the model where there is a choice.
 function writerRows(h) {
-  if (h.harness === 'dsh') return [[t('摘要生成'), t('dsh harness 原生引擎生成，SuperLcm 同步收录')]]
+  if (h.harness === 'dsh') return [[t('摘要生成'), t('SuperLcm 插件生成，使用 DSH 已配置模型')]]
   const s = admin.settings
   if (!s) return []
   const x = s.settings.find(y => y.harness === h.harness)
@@ -363,7 +363,7 @@ async function loadCompression() {
     if(dsh.dsh.global?.configured)dsh.dsh.global.state=dsh.dsh.profiles.some(p=>p.state==='enabled')?'enabled':dsh.dsh.profiles.some(p=>p.state==='disabled')?'disabled':'awaiting-runtime'
     if (before !== JSON.stringify(dsh.dsh.profiles)) { renderTools(); renderStatus() }
   }
-  renderCompression()
+  renderCompression();dshSettingsStatus()
 }
 function renderCompression() {
   $('#compressionAdapters').innerHTML = state.harnesses.filter(h => h.supported).map(h => {
@@ -455,7 +455,7 @@ function boot() {
   applyLook()
   show(location.hash.slice(1) || 'conversations', false)
   act(loadConversations)
-  act(async()=>{await loadHarnesses();if(!admin.outdated)await loadCompression()})
+  act(async()=>{await loadHarnesses();if(!admin.outdated){await loadCompression();await loadDshControls()}})
   act(loadSettings)
 }
 let compressionPolling = false

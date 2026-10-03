@@ -16,9 +16,9 @@ SuperLcm 让 **Claude Code、Codex、Hermes、Pi 和 dsh harness** 共用一座�
 | Codex | 支持 | 暂未接管压缩 | 控制台：查档工具和记录钩子 |
 | Hermes | 支持 | 暂未接管压缩 | 控制台：通过 Hermes 自身配置接入 |
 | Pi | 支持 | 暂未接管压缩 | 控制台：自动加载的扩展 |
-| dsh harness | 支持 | 原生引擎压缩，原文和摘要共享归档 | 控制台：选择已有模型，全局接入一次 |
+| dsh harness | 支持 | SuperLcm 插件接管压缩，原文和摘要共享归档 | 控制台：选择已有模型，全局接入一次 |
 
-五种载体都能存档、整理摘要和接续任务。真正替换模型当前上下文的压缩接入，目前有两种：**Claude Code 由 SuperLcm 接管，dsh harness 由原生引擎执行**。控制台会区分已保存的配置和实际运行状态。
+五种载体都能存档、整理摘要和接续任务。真正替换模型当前上下文的压缩接入，目前有两种：**Claude Code 和 dsh harness 均由 SuperLcm 接管压缩**。控制台会区分已保存的配置和实际运行状态。
 
 先从 [安装包说明](docs/RELEASE.md) 安装，运行 `superlcm web`，在「接入」页选择工具即可。Claude Code 用户也可 [安装 Claude 插件](#安装成-claude-插件)，用 `/superlcm:console` 打开控制台。dsh harness 用户从现有供应商及模型列表中选择压缩模型，点击「安装并启用压缩」完成全局接入，再重新加载 dsh harness；见 [接入说明](docs/DSH.md)。
 
@@ -79,7 +79,7 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 
 ## 摘要谁来写
 
-**dsh harness 使用原生压缩模型。** SuperLcm 将已提交的摘要同步到共享档案，不为这些会话另调第二个摘要模型。下面的选择适用于 Claude Code、Codex、Hermes 和 Pi。
+**dsh harness 由 SuperLcm 插件接管压缩。** 在「设置 → 压缩」选择 DSH 已配置的模型，调整开关、门槛、保留比例和近期消息量，保存后自动应用。插件生成分层摘要、替换旧上下文，并将原文和摘要存入共享档案；不会同时启动第二套摘要写入器。下面的选择适用于 Claude Code、Codex、Hermes 和 Pi。
 
 在控制台里按工具分别选：**对话里的 AI 自己写**（默认，它刚经历过这段，凭记忆就能写）、**本工具后台写**（单独起一次该工具的命令行，用你已经配好的账号和模型；插件配 Claude Code 2.1.286+ 时改为在对话内部直接调用模型，选 Haiku 就很合适）、**自定义 API**（任何兼容 Anthropic 或 OpenAI 的地址，包括你电脑上自己跑的网关），或者**关闭**（照样全部存下、能搜）。
 

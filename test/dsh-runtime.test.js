@@ -2,7 +2,7 @@
 // responses only. No API keys, network requests, or production session writes.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync,writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -22,6 +22,7 @@ import Llm from '@deepseek-ai/dsh-llm'
 import * as PiAdapter from '@deepseek-ai/dsh-llm-pi-ai'
 import Authorization from '@deepseek-ai/dsh-authorization'
 import { summaryContext } from '../dsh/summary-model.js'
+import { readControls,controlsConfig } from '../dsh/controls-config.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 async function withHost(config, response, run) {
@@ -49,6 +50,41 @@ async function withHost(config, response, run) {
 }
 const append = (session, text) => session.append('user/message', createUserMessage({ content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
 const source = 'original engineering facts and exact numbers. '.repeat(5000)
+
+test('console document hot-applies model, switch and retention and cancels old pending compaction',async()=>{
+  const file=join(mkdtempSync(join(tmpdir(),'superlcm-controls-runtime-')),'controls.json')
+  const spec=id=>({plugin:'@deepseek-ai/dsh-llm-pi-ai',config:{providers:{[id]:{api:'openai-responses',baseURL:'http://127.0.0.1:9/v1',models:[{id:'cheap-model',contextWindow:128000}]}}}})
+  const config=controlsConfig({auto:true,summaryAdapter:spec('first-provider'),summarizationProvider:'first-provider',summarizationModel:'cheap-model',tailCount:2,minRetainTokens:100,softActiveTokens:3000,hardActiveTokens:4000,foldBatchTokens:2000,pressureFoldTokens:100})
+  const publish=(revision,next)=>writeFileSync(file,JSON.stringify({format:1,revision,config:next}))
+  publish('initial',config)
+  await withHost({controlFile:file},async()=>{throw Error('Chat model must not compact')},async({engine,ctx,session,agent,calls,dir})=>{
+    await engine.summaryModelReady
+    const dashboard=new ClaudeStore(dir)
+    try {
+      assert.equal(engine.rollingConfig.minRetainTokens,100)
+      assert.equal(compressionSnapshot(dashboard).runtimes[0].settings_revision,'initial')
+      let finish;const pending=new Promise(resolve=>{finish=resolve})
+      engine.summaryContext.llm.stream=async function*(){await pending;yield{type:'text-delta',index:0,text:'迟到的旧摘要'}}
+      const event=append(session,source),before=[...session.surface.nodes]
+      assert.equal(engine.startBackgroundFold(agent,{start:event.seq,end:event.seq,reason:'pressure'}),true)
+      await tick();publish('disabled',{...config,auto:false});await engine.reloadControls()
+      assert.equal(engine.config.auto,false);assert.equal(engine.canPrepareBackground(agent),false)
+      assert.equal(engine.backgroundFolds.get(agent).controller.signal.aborted,true)
+      finish();await engine.settleBackgroundFold(agent)
+      assert.deepEqual(session.surface.nodes,before)
+      publish('new-model',{...config,summaryAdapter:spec('second-provider'),summarizationProvider:'second-provider',minRetainTokens:200,softActiveTokens:5000,hardActiveTokens:7000})
+      await engine.reloadControls()
+      assert.equal(engine.config.auto,true);assert.equal(engine.config.summarizationProvider,'second-provider');assert.equal(engine.rollingConfig.minRetainTokens,200);assert.equal(engine.rollingConfig.softActiveTokens,5000)
+      assert.equal(compressionSnapshot(dashboard).runtimes[0].settings_revision,'new-model')
+      const selected=[];engine.summaryContext.llm.stream=async function*(o){selected.push(o.provider);yield{type:'text-delta',index:0,text:'新的压缩摘要保留原文指针'}}
+      const prepared=prepareAsyncRegion(engine,agent,{start:event.seq,end:event.seq});const summary=await summarizeAsyncRegion(engine,agent,prepared,new AbortController().signal)
+      assert.deepEqual(selected,['second-provider']);assert.equal(calls.length,0);assert.ok(commitAsyncRegion(engine,agent,summary))
+      publish('bad',{...config,hardActiveTokens:2000});await engine.reloadControls()
+      assert.equal(engine.controlRevision,'new-model');assert.equal(engine.config.summarizationProvider,'second-provider')
+      assert.throws(()=>readControls(file),/强制压缩/)
+    } finally {dashboard.close()}
+  })
+})
 
 test('native summary adapters reuse credentials without duplicating settings or sign-in flows',async()=>{
   const ctx=new Context()

@@ -14,7 +14,7 @@ const tree = () => [
   { id: 'SuperLcm-compaction', name: 'superlcm-mcp/dsh-engine', config: { auto: true, summarizationProvider: 'local', summarizationModel: 'fixture' } },
 ]
 test('compression capabilities distinguish native engine, takeover and summary-only adapters', () => {
-  assert.equal(compressionCapabilities.dsh.owner, 'dsh')
+  assert.equal(compressionCapabilities.dsh.owner, 'superlcm')
   assert.equal(compressionCapabilities['claude-code'].mode, 'takeover')
   for (const h of ['codex','hermes','pi']) assert.equal(compressionCapabilities[h].supported, false)
 })
@@ -64,6 +64,6 @@ test('console exposes compression status without spawning models and refuses a s
     const data = await fetch(web.url+'api/compression').then(r => r.json())
     assert.deepEqual(data.runtimes,[]); assert.equal(data.capabilities.dsh.supported,true)
     const r = await fetch(web.url+'api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'harness',harness:'dsh',mode:'api',api_url:'https://example.test',model:'fixture'})})
-    assert.equal(r.status,400); assert.match((await r.json()).error,/原生压缩引擎/)
+    assert.equal(r.status,400); assert.match((await r.json()).error,/SuperLcm 插件管理/)
   } finally { await web.close() }
 })

@@ -1,6 +1,6 @@
 # SuperLcm setup and reference (preview)
 
-SuperLcm is a shared local archive with adapters for Claude Code, Codex, Hermes, Pi and DSH. Claude Code supports plugin compaction takeover; DSH uses its native compaction plugin with the same archive. The current Codex, Hermes and Pi adapters provide summaries and recall only. Configuration changes require the reviewed Web installer or explicit `setup --apply`; startup does not install integrations. For DSH's portable installer and downloadable package, see [DSH setup](DSH.md) and [distribution](RELEASE.md).
+SuperLcm is a shared local archive with adapters for Claude Code, Codex, Hermes, Pi and DSH. Claude Code supports plugin compaction takeover; SuperLcm also takes over DSH compaction through its plugin, with models and retention configured in the same console. The current Codex, Hermes and Pi adapters provide summaries and recall only. Configuration changes require the reviewed Web installer or explicit `setup --apply`; startup does not install integrations. For DSH's portable installer and downloadable package, see [DSH setup](DSH.md) and [distribution](RELEASE.md).
 
 ## Requirements and data ownership
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import z from '@deepseek-ai/schemastery'
+import { engineSchema } from './engine-schema.js'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import { toolPairingBalancedBefore, toolPairingBalancedAfter } from '@deepseek-ai/dsh-compaction'
@@ -11,6 +11,9 @@ import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
 import { SuperLcmStore, resolveDatabasePath } from './store.js'
 import { join } from 'node:path'
 import { summaryContext } from './summary-model.js'
+import { summarizeWithRecall } from './engine-summary.js'
+import { readControls, controlsConfig } from './controls-config.js'
+import { watchControls } from './controls-runtime.js'
 import {
   AsyncSurfaceChangedError,
   commitAsyncRegion,
@@ -21,51 +24,18 @@ import {
 import { DEPRECATED_CONFIG_KEYS, FALLBACK_CONFIG_KEYS, ROLLING_CONFIG_KEYS, ROLLING_DEFAULTS, positiveInteger, nonNegativeInteger, normalizeRolling, cleanRouteValue, cleanRoute, routeIsComplete, routeIsConfigured, routesEqual, SETTINGS_NAMESPACE, SUMMARIZATION_ROUTE_SCHEMA, SETTINGS_SCHEMA, unwrapVolatile, unwrapConfig, splitConfig, systemPrefixEndIndex, isFrozenCheckpoint, firstFoldableSurfaceIndex, reportIndexFailure } from './engine-config.js'
 
 export class SuperLcmCompactionEngine extends BasicCompactionEngine {
-  // dsh 0.1.7: 运行时可热更字段（原 installSection 的 settings 区）改为在 Config 上
-  // 声明 volatile。Settings 表单直接读写本条目的 Config，变更经 loader 的
-  // volatile 提交路径更新 fiber.config 并触发 loader/volatile-update。
-  // 注意：必须用单层 z.object —— z.intersect 会把 volatile ref 按 key 拆散合并，
-  // 丢失引用语义（实测 schemastery 3.18.3），所以这里平铺声明全部字段。
-  static Config = z.object({
-    // —— 继承自 BasicCompactionEngine.Config 的字段（保持同形）——
-    thresholdRatio: z.number(),
-    headroomTokens: z.number().step(1).min(0),
-    retainRatio: z.number(),
-    retainTokens: z.number().step(1).min(0),
-    maxTokens: z.number().step(1).min(1),
-    compactionRetries: z.number().step(1).min(0),
-    maxOverflowRetries: z.number().step(1).min(0),
-    modelPolicies: z.array(z.object({})),
-    auto: z.boolean(),
-    archiveHome: z.string().default(''),
-    summaryAdapter: z.any(),
-    runtimeTuning: z.any(),
-    // —— SuperLcm 自有字段，全部 volatile，可运行中热更 ——
-    summarizationProvider: z.string().default('').volatile(),
-    summarizationModel: z.string().default('').volatile(),
-    fallbackSummarizationProvider: z.string().default('').volatile(),
-    fallbackSummarizationModel: z.string().default('').volatile(),
-    mode: z.const('rolling').default(ROLLING_DEFAULTS.mode).volatile(),
-    tailCount: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.tailCount).volatile(),
-    minRetainTokens: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.minRetainTokens).volatile(),
-    pressureFoldTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.pressureFoldTokens).volatile(),
-    foldBatchTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.foldBatchTokens).volatile(),
-    softActiveTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.softActiveTokens).volatile(),
-    hardActiveTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(ROLLING_DEFAULTS.hardActiveTokens).volatile(),
-    foldTiming: z.const('background').default(ROLLING_DEFAULTS.foldTiming).volatile(),
-    summaryPrefixTargetTokens: z.number().step(1).min(0).default(ROLLING_DEFAULTS.summaryPrefixTargetTokens).volatile(),
-    condensedMinFanout: z.number().step(1).min(2).default(ROLLING_DEFAULTS.condensedMinFanout).volatile(),
-    summaryTimeoutMs: z.number().step(1).min(1000).default(ROLLING_DEFAULTS.summaryTimeoutMs).volatile(),
-    summaryRetryCooldownMs: z.number().step(1).min(1000).default(ROLLING_DEFAULTS.summaryRetryCooldownMs).volatile(),
-  })
+  static Config = engineSchema
 
   constructor(ctx, config = {}) {
     config={...config,...(config.runtimeTuning?.[ctx.get?.('profileContext')?.name]||{})}
+    const controls=readControls(config.controlFile)
+    if(controls)config={...config,...controls.config}
     const { base, rolling, fallbackRoute } = splitConfig(config)
     super(ctx, base)
     const summary=summaryContext(ctx,config.summaryAdapter)
     this.summaryContext=summary?.ctx
     this.summaryModelReady=summary?.ready
+    this.disposeSummary=summary?.dispose
     this.summaryModelReady?.catch(()=>ctx.logger?.warn?.('SuperLcm 压缩模型配置无法加载'))
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
@@ -104,6 +74,8 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     })
 
     this.watchVolatileConfig(ctx)
+    watchControls(this,ctx,config.controlFile,controls)
+    if(config.controlFile&&!this.config.auto)this._registerAutomaticCompaction()
   }
 
   // dsh 0.1.7 迁移：原 installSection 的 onChange/validate 由这里承接。
@@ -111,6 +83,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   // 并对本 fiber 发 loader/volatile-update；这里重读 config 派生运行参数。
   watchVolatileConfig(ctx) {
     ctx.on('loader/volatile-update', () => {
+      if(this.controlFile)return
       try {
         this.applyRuntimeConfig(ctx.fiber?.config)
       } catch (error) {
@@ -155,82 +128,15 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     }
   }
 
-  async summarize(...args) {
-    await this.summaryModelReady
-    const metadata = args[3]
-    const children = Array.isArray(metadata?.trustedChildNodeIds)
-      ? [...new Set(metadata.trustedChildNodeIds)]
-      : []
-    const summarizeArgs = args.slice(0, 3)
-    const primaryRoute = cleanRoute({
-      provider: this.config?.summarizationProvider,
-      model: this.config?.summarizationModel,
-    })
-    const fallbackRoute = cleanRoute(this.fallbackSummarizationRoute)
-
-    const attempt = async (route) => {
-      if (route) this.summaryGuards.assertRoute(route)
-      const receiver = route === null ? this : Object.assign(Object.create(this), {
-        config: {
-          ...this.config,
-          summarizationProvider: route.provider,
-          summarizationModel: route.model,
-          modelPolicies: Array.isArray(this.config?.modelPolicies)
-            ? this.config.modelPolicies.map((policy) => ({
-                ...policy,
-                summarizationProvider: route.provider,
-                summarizationModel: route.model,
-              }))
-            : [],
-        },
-      })
-      let result
-      if (this.summaryContext && route?.provider===this.config.summarizationProvider) Object.defineProperty(receiver,'ctx',{value:this.summaryContext})
-      try {
-        result = await super.summarize.call(receiver, ...summarizeArgs)
-        if (route) this.summaryGuards.succeededRoute(route)
-      } catch (error) {
-        if (route && !summarizeArgs[2]?.aborted) this.summaryGuards.failedRoute(route, error, this.rollingConfig.summaryRetryCooldownMs)
-        throw error
-      }
-      if (result === null || typeof result !== 'object' || !Array.isArray(result.summary)) {
-        throw new TypeError('BasicCompactionEngine.summarize() returned an invalid summary result')
-      }
-      return result
-    }
-
-    let result
-    try {
-      result = await attempt(routeIsConfigured(primaryRoute) ? primaryRoute : null)
-    } catch (primaryError) {
-      const signal = summarizeArgs[2]
-      if (signal?.aborted || !routeIsConfigured(fallbackRoute)) throw primaryError
-      this.ctx.logger?.warn?.(
-        `primary summarization route ${primaryRoute.provider}/${primaryRoute.model} failed; retrying once with fallback ${fallbackRoute.provider}/${fallbackRoute.model}`,
-      )
-      try {
-        result = await attempt(fallbackRoute)
-      } catch (fallbackError) {
-        if (signal?.aborted) throw fallbackError
-        throw new AggregateError(
-          [primaryError, fallbackError],
-          `primary and fallback summarization routes failed (${primaryRoute.provider}/${primaryRoute.model} -> ${fallbackRoute.provider}/${fallbackRoute.model})`,
-        )
-      }
-    }
-
-    const nodeId = randomUUID()
-    return {
-      ...result,
-      summary: appendRecallEnvelope(result.summary, { id: nodeId, children }),
-    }
-  }
+  async summarize(...args) { return summarizeWithRecall(this,args) }
 
   _registerAutomaticCompaction() {
     if (this.rollingConfig === undefined) {
       queueMicrotask(() => this._registerAutomaticCompaction())
       return
     }
+    if(this.automaticRegistered)return
+    this.automaticRegistered=true
     if (this.rollingConfig.mode !== 'rolling') return super._registerAutomaticCompaction()
     this._registerRollingPressure()
     this._registerOverflowRecovery()
@@ -239,7 +145,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   _registerRollingPressure() {
     const { ctx } = this
     ctx.on('agent/pre-step', ({ agent, signal }, next) => {
-      if (signal.aborted) return next()
+      if (signal.aborted||!this.config.auto) return next()
       this.tryCommitBackgroundFold(agent, { allowPressure: true })
       if (!this.canPrepareBackground(agent)) return next()
 
@@ -253,7 +159,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       return next()
     })
     ctx.on('agent/status', ({ agent, status }) => {
-      if (status === 'idle') this.tryCommitBackgroundFold(agent)
+      if (status === 'idle'&&this.config.auto) this.tryCommitBackgroundFold(agent)
     })
   }
 
@@ -284,6 +190,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   summaryRouteFingerprint() { return JSON.stringify([this.config.summarizationProvider, this.config.summarizationModel, this.fallbackSummarizationRoute]) }
 
   canPrepareBackground(agent) {
+    if(this.controlFile&&!this.config.auto)return false
     return !this.backgroundFolds.has(agent) && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint())
   }
 
@@ -300,7 +207,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     }
 
     const controller = new AbortController()
-    const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null }
+    const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null,revision:this.controlRevision }
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)
     this.compressionReporter.report(agent.session.id, 'summarizing', selection)
@@ -334,6 +241,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   tryCommitBackgroundFold(agent, options = {}) {
     const state = this.backgroundFolds.get(agent)
     if (state?.status !== 'ready') return null
+    if(this.controlFile&&(!this.config.auto||state.revision!==this.controlRevision)){this.backgroundFolds.delete(agent);this.compressionReporter.report(agent.session.id,'discarded',state.selection);return null}
     if (options.force !== true && state.selection.reason === 'background-batch') {
       const activeTokens = options.allowPressure === true
         ? this.ctx.tokenMeter.measure(agent.session).totalTokens
@@ -390,7 +298,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       if (agent !== void 0) this.overflowRetries.delete(agent)
     })
     ctx.on('agent/request-error', ({ agent, failure, signal }, next) => {
-      if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE || signal.aborted) return next()
+      if (!this.config.auto||failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE || signal.aborted) return next()
       this.overflowAgents.set(agent.session, agent)
       const retries = this.overflowRetries.get(agent) ?? 0
       if (retries >= (this.config?.maxOverflowRetries ?? 1)) return next()

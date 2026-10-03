@@ -1,0 +1,79 @@
+import { randomUUID } from 'node:crypto'
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
+import { cleanRoute, routeIsConfigured } from './engine-config.js'
+import { appendRecallEnvelope } from './marker.js'
+export async function summarizeWithRecall(engine,args) {
+    const lease=engine.acquireSummary?.()
+    try {
+    await (lease?.ready||engine.summaryModelReady)
+    const metadata = args[3]
+    const children = Array.isArray(metadata?.trustedChildNodeIds)
+      ? [...new Set(metadata.trustedChildNodeIds)]
+      : []
+    const summarizeArgs = args.slice(0, 3)
+    const config=lease?.config||engine.config
+    const primaryRoute = cleanRoute({
+      provider: config?.summarizationProvider,
+      model: config?.summarizationModel,
+    })
+    const fallbackRoute = cleanRoute(lease?.fallback||engine.fallbackSummarizationRoute)
+
+    const attempt = async (route) => {
+      if (route) engine.summaryGuards.assertRoute(route)
+      const receiver = route === null ? engine : Object.assign(Object.create(engine), {
+        config: {
+          ...config,
+          summarizationProvider: route.provider,
+          summarizationModel: route.model,
+          modelPolicies: Array.isArray(config?.modelPolicies)
+            ? config.modelPolicies.map((policy) => ({
+                ...policy,
+                summarizationProvider: route.provider,
+                summarizationModel: route.model,
+              }))
+            : [],
+        },
+      })
+      let result
+      const modelContext=lease?.ctx||engine.summaryContext
+      if (modelContext && route?.provider===primaryRoute.provider) Object.defineProperty(receiver,'ctx',{value:modelContext})
+      try {
+        result = await BasicCompactionEngine.prototype.summarize.call(receiver, ...summarizeArgs)
+        if (route) engine.summaryGuards.succeededRoute(route)
+      } catch (error) {
+        if (route && !summarizeArgs[2]?.aborted) engine.summaryGuards.failedRoute(route, error, engine.rollingConfig.summaryRetryCooldownMs)
+        throw error
+      }
+      if (result === null || typeof result !== 'object' || !Array.isArray(result.summary)) {
+        throw new TypeError('BasicCompactionEngine.summarize() returned an invalid summary result')
+      }
+      return result
+    }
+
+    let result
+    try {
+      result = await attempt(routeIsConfigured(primaryRoute) ? primaryRoute : null)
+    } catch (primaryError) {
+      const signal = summarizeArgs[2]
+      if (signal?.aborted || !routeIsConfigured(fallbackRoute)) throw primaryError
+      engine.ctx.logger?.warn?.(
+        `primary summarization route ${primaryRoute.provider}/${primaryRoute.model} failed; retrying once with fallback ${fallbackRoute.provider}/${fallbackRoute.model}`,
+      )
+      try {
+        result = await attempt(fallbackRoute)
+      } catch (fallbackError) {
+        if (signal?.aborted) throw fallbackError
+        throw new AggregateError(
+          [primaryError, fallbackError],
+          `primary and fallback summarization routes failed (${primaryRoute.provider}/${primaryRoute.model} -> ${fallbackRoute.provider}/${fallbackRoute.model})`,
+        )
+      }
+    }
+
+    const nodeId = randomUUID()
+    return {
+      ...result,
+      summary: appendRecallEnvelope(result.summary, { id: nodeId, children }),
+    }
+    } finally {lease?.release()}
+}

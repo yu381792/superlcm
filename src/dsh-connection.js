@@ -6,6 +6,7 @@ import { dirname,join, resolve } from 'node:path'
 import {fileURLToPath} from 'node:url'
 import { paths, findCli, runCommand as run, commandOptions } from './runtime.js'
 import { compressionSnapshot } from './compression-status.js'
+import { readControls } from '../dsh/controls-config.js'
 export function dshHome(env = process.env) { return resolve(env.DSH_HOME || join(paths(env).home, '.dsh')) }
 export function dshHost(env = process.env) {
   const bin = findCli('dsh',env)
@@ -39,7 +40,8 @@ export function inspectDshTree(tree) {
   const entries = dshEntries(tree)
   const engines = entries.filter(isDshEngine)
   const archives = entries.filter(isDshArchive)
-  const engine = engines.find(x => x.name!=='@deepseek-ai/dsh-compaction-basic')
+  const entry = engines.find(x => x.name!=='@deepseek-ai/dsh-compaction-basic')
+  const engine=entry?{...entry,config:{...entry.config,...readControls(entry.config?.controlFile)?.config}}:undefined
   return { configured: engines.length === 1 && !!engine && archives.length === 1,
     engines: engines.length, archives: archives.length, enabled: engine?.config?.auto === true,
     route_ready: typeof engine?.config?.summarizationProvider === 'string' && !!engine.config.summarizationProvider.trim() && typeof engine?.config?.summarizationModel === 'string' && !!engine.config.summarizationModel.trim(),

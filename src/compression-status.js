@@ -6,7 +6,7 @@ const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 export const runtimeVersion = version
 export const compressionCapabilities = {
   'claude-code': { supported: true, owner: 'superlcm', mode: 'takeover' },
-  dsh: { supported: true, owner: 'dsh', mode: 'native' },
+  dsh: { supported: true, owner: 'superlcm', mode: 'takeover' },
   codex: { supported: false, owner: null, mode: 'summary-only' },
   hermes: { supported: false, owner: null, mode: 'summary-only' },
   pi: { supported: false, owner: null, mode: 'summary-only' },
@@ -37,6 +37,11 @@ export class CompressionReporter {
     } catch (error) { this.onError(error) }
   }
   configure({ enabled, routeReady }) { this.enabled = enabled; this.routeReady = routeReady; this.report('', 'loaded') }
+  applied(revision) {
+    this.db.exec('CREATE TABLE IF NOT EXISTS superlcm_compression_settings_ack(instance TEXT PRIMARY KEY,revision TEXT NOT NULL)')
+    this.db.prepare('INSERT INTO superlcm_compression_settings_ack VALUES(?,?) ON CONFLICT(instance) DO UPDATE SET revision=excluded.revision').run(this.instance,revision)
+    this.report('','loaded')
+  }
   close() { clearInterval(this.timer); this.report('', 'stopped'); this.closed = true }
 }
 export function compressionSnapshot(store, { now = Date.now(), alive = pid => { try { process.kill(pid, 0); return true } catch { return false } } } = {}) {
@@ -44,6 +49,7 @@ export function compressionSnapshot(store, { now = Date.now(), alive = pid => { 
   const recent = store.db.prepare("SELECT * FROM superlcm_compression_runtime WHERE session='' ORDER BY updated_ms DESC LIMIT 100").all()
   const runtimes = recent.map(row => ({ ...row, enabled: !!row.enabled, route_ready: !!row.route_ready,
     live: row.phase === 'loaded' && row.updated_ms <= now && row.updated_ms > now - 45000 && alive(row.pid) }))
+  if(store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='superlcm_compression_settings_ack'").get())for(const row of runtimes)row.settings_revision=store.db.prepare('SELECT revision FROM superlcm_compression_settings_ack WHERE instance=?').get(row.instance)?.revision||null
   const active = new Set(runtimes.filter(r => r.live).map(r => r.instance))
   const jobs = store.db.prepare("SELECT * FROM superlcm_compression_runtime WHERE session<>'' ORDER BY updated_ms DESC LIMIT 20").all()
     .map(row => ({ ...row, live: active.has(row.instance) }))

@@ -8,7 +8,7 @@
     {
       "name": "superlcm",
       "source": "./",
-      "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness, with exact-source recall and cross-harness continuation. Claude Code supports SuperLcm compaction takeover; dsh harness uses its native compaction engine."
+      "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness, with exact-source recall and cross-harness continuation. SuperLcm takes over compaction in Claude Code and dsh harness, with DSH models and retention managed in the console."
     }
   ]
 }

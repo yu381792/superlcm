@@ -227,9 +227,9 @@ export class ClaudeStore {
   harnessSettings() {return this.db.prepare(ClaudeStore.SETTING+' ORDER BY h.harness').all()}
   effectiveSetting(session,env=process.env) {
     const harness=this.metadata(session).harness
-    // DSH's native engine is its only summary writer, including when a user
+    // SuperLcm's DSH compaction plugin is its only summary writer, including when a user
     // changes the global archive preference. Recall never starts a second AI.
-    if(harness==='dsh')return {mode:'off',model:null,scope:'native',harness}
+    if(harness==='dsh')return {mode:'off',model:null,scope:'compaction-plugin',harness}
     const specific=harness!=='legacy'?this.harnessSetting(harness):null
     const choice=specific||this.globalSetting()
     const r=choice ? {...choice,scope:specific?'harness':'global',harness} : {mode:summaryMode(env),model:null,api_provider:null,api_url:null,scope:'environment',harness}

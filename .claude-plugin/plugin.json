@@ -1,8 +1,8 @@
 {
   "name": "superlcm",
   "displayName": "SuperLcm — Five harnesses. One local conversation archive.",
-  "version": "0.5.4",
-  "description": "One local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness. Keep full original records, browse layered summaries, recall exact sources and continue tasks across tools. Claude Code supports opt-in SuperLcm compaction takeover; dsh harness uses its native compaction engine with the same archive. Open /superlcm:console to connect the other harnesses.",
+  "version": "0.5.5",
+  "description": "One local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness. Keep full original records, browse layered summaries, recall exact sources and continue tasks across tools. SuperLcm supports opt-in compaction takeover in Claude Code and dsh harness; DSH model and retention settings are managed in the console. Open /superlcm:console to connect the other harnesses.",
   "author": {
     "name": "ygc381792"
   },
