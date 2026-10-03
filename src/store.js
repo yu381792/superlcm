@@ -1,3 +1,4 @@
+import { initializeEventCounts } from './event-counts.js'
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { dshCoverage, dshNodeSources } from './dsh-summaries.js'
@@ -68,6 +69,7 @@ export class ClaudeStore {
       CREATE VIRTUAL TABLE IF NOT EXISTS event_fts USING fts5(session UNINDEXED, ordinal UNINDEXED, preview);
       CREATE TABLE IF NOT EXISTS nodes(session TEXT NOT NULL, id TEXT NOT NULL, level INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, children TEXT NOT NULL, summary TEXT NOT NULL, digest TEXT NOT NULL, model TEXT NOT NULL, PRIMARY KEY(session,id));
       CREATE INDEX IF NOT EXISTS nodes_level ON nodes(session,level,first);
+      CREATE INDEX IF NOT EXISTS nodes_coverage ON nodes(session,last);
       CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(session UNINDEXED, id UNINDEXED, summary);
       CREATE TABLE IF NOT EXISTS leases(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS summary_policies(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('off','cli','api')));
@@ -87,6 +89,7 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS host_writers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS takeover_runs(session TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, before INTEGER NOT NULL, after INTEGER NOT NULL);
     `)
+    initializeEventCounts(this.db)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!new Set(this.db.prepare('PRAGMA table_info(leases)').all().map(c=>c.name)).has('owner'))this.db.exec("ALTER TABLE leases ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
     if(!new Set(this.db.prepare('PRAGMA table_info(takeover_settings)').all().map(c=>c.name)).has('keep_tokens'))this.db.exec('ALTER TABLE takeover_settings ADD COLUMN keep_tokens INTEGER NOT NULL DEFAULT 40000')
@@ -100,6 +103,7 @@ export class ClaudeStore {
       this.db.exec('ALTER TABLE sources ADD COLUMN updated_ms INTEGER')
       for(const row of this.db.prepare('SELECT session,path FROM sources').all()){let ms=null;try{ms=Math.round(statSync(row.path).mtimeMs)}catch{}this.db.prepare('UPDATE sources SET updated_ms=? WHERE session=?').run(ms,row.session)}
     }
+    this.db.exec('CREATE INDEX IF NOT EXISTS sources_recent ON sources(updated_ms IS NULL,updated_ms DESC,session)')
     for(const table of ['global_summary_settings','harness_summary_settings']){const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name));for(const column of ['api_provider','api_url'])if(!names.has(column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)}
     if(!new Set(this.db.prepare('PRAGMA table_info(harness_summary_settings)').all().map(c=>c.name)).has('api_ref'))this.db.exec('ALTER TABLE harness_summary_settings ADD COLUMN api_ref TEXT')
     // Custom API models are added once in Settings and picked per tool; each keeps its own key ('model:<id>').
@@ -298,8 +302,9 @@ export class ClaudeStore {
     const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
-    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,(SELECT COUNT(*) FROM events e WHERE e.session=s.session) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session) AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session) AS levels,(SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) AS first_message FROM sources s LEFT JOIN session_origins o ON s.session=o.session"
-    const sessions=this.db.prepare(select+where+' ORDER BY s.updated_ms IS NULL, s.updated_ms DESC, s.session LIMIT ? OFFSET ?').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,code:shortCode(row.session),summary_mode:setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
+    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session) AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session) AS levels,CASE WHEN COALESCE(o.display_name,'')<>'' THEN NULL ELSE (SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) END AS first_message FROM page p JOIN sources s ON p.session=s.session LEFT JOIN session_origins o ON s.session=o.session"
+    const page="WITH page AS MATERIALIZED (SELECT s.session FROM sources s LEFT JOIN session_origins o ON s.session=o.session"+where+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session LIMIT ? OFFSET ?) '
+    const sessions=this.db.prepare(page+select+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,code:shortCode(row.session),summary_mode:setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}
   }
   resolveSession(query,harness) {
@@ -324,7 +329,7 @@ export class ClaudeStore {
     throw new Error(`"${query}" matches ${matches.length} conversations: `+matches.slice(0,8).map(m=>`#${m.code} ${m.name} (${m.harness})`).join('; ')+'. Retry with a #code.')
   }
   stats(session) {
-    const stats=this.db.prepare('SELECT (SELECT COUNT(*) FROM events WHERE session=?) AS records,(SELECT COALESCE(MAX(last)+1,0) FROM nodes WHERE session=?) AS summarized_to,(SELECT COUNT(*) FROM nodes WHERE session=?) AS summary_count,(SELECT COALESCE(MAX(level)+1,0) FROM nodes WHERE session=?) AS levels,(SELECT updated_ms FROM sources WHERE session=?) AS updated_ms').get(session,session,session,session,session)
+    const stats=this.db.prepare('SELECT COALESCE((SELECT records FROM session_event_counts WHERE session=?),0) AS records,(SELECT COALESCE(MAX(last)+1,0) FROM nodes WHERE session=?) AS summarized_to,(SELECT COUNT(*) FROM nodes WHERE session=?) AS summary_count,(SELECT COALESCE(MAX(level)+1,0) FROM nodes WHERE session=?) AS levels,(SELECT updated_ms FROM sources WHERE session=?) AS updated_ms').get(session,session,session,session,session)
     return this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness==='dsh'?{...stats,...dshCoverage(this.db,session,stats.records)}:stats
   }
   // Roots of the summary forest in time order: the shortest outline that covers everything summarized.
@@ -467,7 +472,7 @@ export class ClaudeStore {
     try {
       const deliveries = this.db.prepare('SELECT id FROM deliveries WHERE source_session=? OR target_session=?').all(session, session).map(x => x.id)
       for (const id of deliveries) { this.db.prepare('DELETE FROM delivery_packets WHERE id=?').run(id); this.db.prepare('DELETE FROM deliveries WHERE id=?').run(id) }
-      for (const table of ['event_fts', 'events', 'node_fts', 'nodes', 'leases', 'compactions', 'takeover_copies', 'host_writers', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+      for (const table of ['event_fts', 'events', 'session_event_counts', 'node_fts', 'nodes', 'leases', 'compactions', 'takeover_copies', 'host_writers', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
       this.db.prepare('INSERT INTO deleted_sessions(session,deleted_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET deleted_ms=excluded.deleted_ms').run(session, Date.now())
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }
@@ -480,7 +485,7 @@ export class ClaudeStore {
   // Conversations whose last activity is before a cutoff, optionally for one tool.
   staleSessions(beforeMs, harness) {
     if (!Number.isSafeInteger(beforeMs)) throw new Error('Invalid cutoff')
-    return this.db.prepare("SELECT s.session,COALESCE(o.harness,'legacy') AS harness,o.display_name AS name,s.updated_ms,(SELECT COUNT(*) FROM events e WHERE e.session=s.session) AS records FROM sources s LEFT JOIN session_origins o ON o.session=s.session WHERE s.updated_ms IS NOT NULL AND s.updated_ms<?" + (harness ? " AND COALESCE(o.harness,'legacy')=?" : '') + ' ORDER BY s.updated_ms').all(...(harness ? [beforeMs, harness] : [beforeMs]))
+    return this.db.prepare("SELECT s.session,COALESCE(o.harness,'legacy') AS harness,o.display_name AS name,s.updated_ms,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records FROM sources s LEFT JOIN session_origins o ON o.session=s.session WHERE s.updated_ms IS NOT NULL AND s.updated_ms<?" + (harness ? " AND COALESCE(o.harness,'legacy')=?" : '') + ' ORDER BY s.updated_ms').all(...(harness ? [beforeMs, harness] : [beforeMs]))
   }
   storageStats() {
     const size = file => { try { return statSync(file).size } catch { return 0 } }

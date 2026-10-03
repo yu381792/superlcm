@@ -72,13 +72,20 @@ document.addEventListener('keydown', event => {
 
 /* ---------- conversation list ---------- */
 async function loadConversations(reset = true) {
-  if (reset) { state.offset = 0; state.rows = [] }
-  const data = await api('/api/conversations?offset=' + state.offset + (state.h ? '&harness=' + q(state.h) : ''))
-  state.rows.push(...data.sessions); state.total = data.total; state.groups = data.groups; state.offset = data.next_offset
-  renderChips(); renderList()
-  if (state.harnesses) renderTools()
-  if (!state.sel && state.rows[0] && window.innerWidth > 860) select(state.rows[0].session)
+  const seq = state.listSeq = (state.listSeq || 0) + 1, harness = state.h, offset = reset ? 0 : state.offset
+  if (reset) renderChips() // Highlight the clicked filter before waiting for the server.
+  $('#rows').setAttribute('aria-busy', 'true')
+  try {
+    const data = await api('/api/conversations?offset=' + offset + (harness ? '&harness=' + q(harness) : ''))
+    if (seq !== state.listSeq || harness !== state.h || state.query) return
+    state.rows = reset ? data.sessions : [...state.rows, ...data.sessions]
+    state.total = data.total; state.groups = data.groups; state.offset = data.next_offset
+    renderChips(); renderList()
+    if (state.harnesses) renderTools()
+    if (!state.sel && state.rows[0] && window.innerWidth > 860) select(state.rows[0].session)
+  } finally { if (seq === state.listSeq) $('#rows').removeAttribute('aria-busy') }
 }
+
 function renderChips() {
   // Early records (no known tool) stay under 全部 without a filter of their own.
   const chips = [['', t('全部')]].concat(state.groups.filter(g => g.harness !== 'legacy').map(g => [g.harness, toolName(g.harness)]))
