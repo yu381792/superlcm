@@ -313,7 +313,9 @@ async function openRaw(from, to, focus) {
 
 /* ---------- continue in another tool ---------- */
 async function openContinue() {
-  const d = state.detail, x = await api('/api/continue?session=' + q(state.sel))
+  const selected=state.sel,d=state.detail
+  const [x]=await Promise.all([api('/api/continue?session='+q(selected)),loadHarnesses()])
+  if(selected!==state.sel)return
   if (LANG !== 'zh') x.line = t('通过 SuperLcm 接续对话 #{code}「{name}」，继续之前的任务。', { code: x.code, name: x.name })
   const tools = state.harnesses.filter(h => h.supported || h.detected)
   if (!state.target || !tools.some(h => h.harness === state.target)) state.target = (tools.find(h => h.configuration_matches && h.harness !== d.source.harness) || tools[0])?.harness
@@ -333,7 +335,7 @@ async function openContinue() {
       for (const b of root.querySelectorAll('.target')) b.onclick = () => { state.target = b.dataset.t; render() }
       root.querySelector('#cp1')?.addEventListener('click', event => copyText(x.line, event.target))
       root.querySelector('#cp2')?.addEventListener('click', event => copyText(cmd, event.target))
-      root.querySelector('#goSetup')?.addEventListener('click', () => { closeOverlay(); show('connect'); openSetup(state.target) })
+      root.querySelector('#goSetup')?.addEventListener('click', () => { closeOverlay(); show('connect'); openConnectionManager(state.target) })
     })
   }
   render()
