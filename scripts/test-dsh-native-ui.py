@@ -5,6 +5,8 @@ root=pathlib.Path(__file__).resolve().parents[1]
 folder=pathlib.Path(tempfile.mkdtemp(prefix='superlcm-native-ui-'));profile=folder/'dsh/profiles/web';profile.mkdir(parents=True)
 env={**os.environ,'DSH_HOME':str(folder/'dsh'),'SUPERLCM_HOME':str(folder/'archive')}
 (profile/'package.json').write_text(json.dumps({'name':'native-ui-fixture','private':True,'dsh':{'profile':{'bundles':['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app']}},'dependencies':{}}))
+legacy=profile/'node_modules/superlcm';legacy.mkdir(parents=True)
+(legacy/'package.json').write_text(json.dumps({'name':'SuperLcm','repository':{'url':'git+https://github.com/ygc3817922006-sketch/SuperLcm-Lossless-Context.git'}}))
 (profile/'cordis.patch.yml').write_text('''- id: llm-pi-ai
   config:
     providers:
@@ -21,6 +23,7 @@ env={**os.environ,'DSH_HOME':str(folder/'dsh'),'SUPERLCM_HOME':str(folder/'archi
 preview=json.loads(subprocess.check_output(['node',str(root/'src/cli.js'),'setup','dsh'],cwd=root,env=env,text=True,stderr=subprocess.DEVNULL))
 ref=preview['catalog']['providers'][0]['ref']
 subprocess.run(['node',str(root/'src/cli.js'),'setup','dsh','--provider-ref',ref,'--model','cheap-model','--apply'],cwd=root,env=env,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+assert list((folder/'archive/config-backups').glob('dsh-global-*/web-ui-link.before/package.json')),'legacy package was retained in backup'
 logfile=folder/'dsh.log';log=logfile.open('w');server=subprocess.Popen(['dsh','--profile','web','--port','0','--host','127.0.0.1','--no-open'],cwd=folder,env=env,stdout=log,stderr=log)
 try:
  url=None
