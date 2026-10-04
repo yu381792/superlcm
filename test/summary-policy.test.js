@@ -37,6 +37,20 @@ test('Codex, Pi and portable tool results retain evidence without treating reaso
   assert.equal(summarySource(line({type:'compacted',replacement_history:[{role:'user',content:'old decision'}]})),'')
   assert.equal(summarySource(line({type:'assistant',message:{content:[{type:'thinking',thinking:'private'}]}})),'')
 })
+test('Codex custom tool calls and failures enter leaf summary work from exact originals',fixture(async({store,dir})=>{
+  const input="*** Begin Patch\n*** Update File: staging-plan.md\n@@\n-old\n+new\n*** End Patch", result='exit code: 1. Patch failed; no files changed.'
+  const rows=[{type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Only edit the staging plan; production remains forbidden.'}]}},
+    {type:'response_item',payload:{type:'custom_tool_call',call_id:'patch-1',name:'apply_patch',input}},
+    {type:'response_item',timestamp:'2026-01-01T09:00:00Z',payload:{type:'custom_tool_call_output',call_id:'patch-1',output:result}},
+    {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'I think the edit succeeded.'}]}}]
+  const file=join(dir,'custom-tools.jsonl');writeFileSync(file,rows.map(line).join(''));store.ingest('s',file)
+  const work=summaryWork(store,'s',{batchSize:4})
+  assert.match(work.content,/tool call apply_patch; id=patch-1/)
+  assert.ok(work.content.includes(input),'custom tool input preserves literal patch newlines')
+  assert.match(work.content,/tool result id=patch-1/);assert.ok(work.content.includes(result))
+  assert.match(work.content,/source time: 2026-01-01T09:00:00Z/)
+  assert.equal(work.last,3);assert.equal(store.exact('s',2),line(rows[2]),'failure evidence remains exactly recoverable')
+}))
 test('condensation keeps a critical exception beyond the former 3600-character child cutoff',fixture(async ({store,dir})=>{
   const file=join(dir,'source.jsonl');writeFileSync(file,line({role:'user',content:'source'}));store.ingest('s',file)
   const exception='只有测试环境获准；生产部署仍禁止，撤销旧方案。'

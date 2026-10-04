@@ -13,7 +13,7 @@ function blocks(content) {
   }
   return content.map(block => {
     if (['text','input_text','output_text'].includes(block?.type)) return block.text || ''
-    if (['tool_use','toolCall','function_call'].includes(block?.type)) return `[tool call ${block.name || ''}; id=${block.id || block.call_id || ''}; requested, not proof of completion]\n${textOf(block.input ?? block.arguments)}`
+    if (['tool_use','toolCall','function_call','custom_tool_call'].includes(block?.type)) return `[tool call ${block.name || ''}; id=${block.id || block.call_id || ''}; requested, not proof of completion]\n${textOf(block.input ?? block.arguments)}`
     if (block?.type === 'tool_result') return `[tool result id=${block.tool_use_id || ''}; ${block.is_error === true ? 'ERROR / failed' : 'outcome must be read from result'}]\n${blocks(block.content)}`
     return '' // private reasoning, binary images and administrative fields
   }).filter(Boolean).join('\n')
@@ -27,8 +27,8 @@ export function summarySource(raw, kind = 'jsonl') {
   if (record.type === 'response_item') {
     item=record.payload
     if (item?.type === 'message') role=item.role
-    else if (item?.type === 'function_call') role='tool-call'
-    else if (item?.type === 'function_call_output') role='tool-result'
+    else if (['function_call','custom_tool_call'].includes(item?.type)) role='tool-call'
+    else if (['function_call_output','custom_tool_call_output'].includes(item?.type)) role='tool-result'
     else return ''
   } else if (record.type === 'event_msg') {
     item=record.payload
@@ -37,7 +37,7 @@ export function summarySource(raw, kind = 'jsonl') {
     item=record.message;role=item.role || role
   }
   let content=''
-  if (role === 'tool-call') content=`[tool call ${item.name || ''}; id=${item.call_id || ''}; requested, not proof of completion]\n${textOf(item.arguments)}`
+  if (role === 'tool-call') content=`[tool call ${item.name || ''}; id=${item.call_id || ''}; requested, not proof of completion]\n${textOf(item.arguments ?? item.input)}`
   else if (role === 'tool-result') content=`[tool result id=${item.call_id || ''}; outcome must be read from result]\n${textOf(item.output)}`
   else if (['user','assistant','tool','toolResult'].includes(role)) {
     content=blocks(item.content ?? item.message ?? '')
