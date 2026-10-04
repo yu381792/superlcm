@@ -18,6 +18,20 @@ const header = { id: 'native-test', createdAt: 100, cwd: '/project' }
 const record = (seq, text = 'event ' + seq) => ({ role: seq === 0 ? 'user' : 'assistant', content: text, dsh_session: header.id, event: { seq, time: 100 + seq, type: seq === 0 ? 'user/message' : 'assistant/message', data: { content: [{ type: 'text', text }] }, surfaceOp: 'append' } })
 const packet = records => ({ header, title: 'DSH 任务', records })
 
+test('historical replay keeps native activity time and does not bury active conversations', () => {
+  const store = fixture()
+  try {
+    const recentHeader = { ...header, id: 'recent-native' }
+    const recent = { ...record(0), dsh_session: recentHeader.id, event: { ...record(0).event, time: 1000 } }
+    const active = captureDshPacket(store, { header: recentHeader, records: [recent] })
+    const older = captureDshPacket(store, packet([record(0), record(1)]))
+    assert.equal(store.source(older.session).updated_ms, 101)
+    captureDshPacket(store, packet([]))
+    assert.equal(store.source(older.session).updated_ms, 101)
+    assert.equal(store.listSessions(2, 0, 'dsh').sessions[0].session, active.session)
+  } finally { store.close() }
+})
+
 test('cold capture reads raw persistence and excludes synthetic interrupted-turn closers', async () => {
   const originals = [record(0).event], synthetic = { seq: 1, type: 'turn/end' }
   let disposed = false, closed = false
