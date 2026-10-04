@@ -10,8 +10,10 @@ export function preparedTreeNodes(session, event, root) {
   const declared = [...data.preparedTree, { ...root, kind: data.summaryTreeKind,
     childIds: markerFromSummary(root.summary)?.children ?? [] }]
   const nodes = new Map(), checkpoints = new Map()
+  const rootSources = new Set(root.sourceSeqs)
+  const eventMap = session.eventAt ? null : new Map(session.snapshotEvents().map(e => [e.seq, e]))
   for (const seq of root.sourceSeqs) {
-    const source = session.eventAt ? session.eventAt(seq) : session.snapshotEvents().find(e => e.seq === seq)
+    const source = session.eventAt ? session.eventAt(seq) : eventMap.get(seq)
     if (source?.type !== 'user/message' || !source.data?.source || !isCompactCheckpointSource(source.data.source)) continue
     const marker = markerFromSummary(source.data.content)
     if (marker) checkpoints.set(marker.id, [seq])
@@ -22,7 +24,7 @@ export function preparedTreeNodes(session, event, root) {
       || !['leaf', 'condensed'].includes(item.kind) || !Array.isArray(item.sourceSeqs) || !item.sourceSeqs.length
       || !Array.isArray(item.childIds) || !isDeepStrictEqual(marker.children, item.childIds)
       || new Set(item.sourceSeqs).size !== item.sourceSeqs.length
-      || !item.sourceSeqs.every(seq => root.sourceSeqs.includes(seq))) throw Error('invalid prepared summary tree')
+      || !item.sourceSeqs.every(seq => rootSources.has(seq))) throw Error('invalid prepared summary tree')
     nodes.set(item.nodeId, { ...root, ...item, sessionId: root.sessionId, summarySeq: root.summarySeq,
       createdAt: root.createdAt, compactionId: root.compactionId, status: 'ready',
       summaryText: stripRecallMetadata(contentBlocksToText(item.summary)) })

@@ -423,7 +423,16 @@ export function doctorSession(store, session) {
     if (marker === null) continue
     markers.push({ seq: event.seq, id: marker.id })
     if (markerIds.has(marker.id)) duplicates.push(marker.id)
-    markerIds.add(marker.id)
+    try {
+      const root = nodeFromCompactionEvent(session, event)
+      for (const node of preparedTreeNodes(session, event, root)) {
+        if (markerIds.has(node.nodeId) && node.nodeId !== marker.id) duplicates.push(node.nodeId)
+        markerIds.add(node.nodeId)
+      }
+    } catch {
+      invalidSources.push({ summarySeq: event.seq, reason: 'invalid prepared summary tree' })
+      markerIds.add(marker.id)
+    }
     const sourceSeqs = event.data?.shadowedSeqs ?? []
     for (const seq of sourceSeqs) {
       if (!Number.isSafeInteger(seq) || !eventSeqs.has(seq)) {

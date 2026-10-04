@@ -4,10 +4,11 @@
 // A conversation that Hermes split on context compression (a child session whose parent ended with
 // end_reason='compression') is kept as one SuperLcm conversation.
 import { DatabaseSync } from 'node:sqlite'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, statSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { configFiles } from './harness.js'
+import { jsonlTail } from './jsonl-tail.js'
 const hash = x => createHash('sha256').update(x).digest('hex')
 const columns = (db, table) => new Set(db.prepare('PRAGMA table_info(' + table + ')').all().map(x => x.name))
 export const hermesSessionKey = root => 'hermes-' + String(root).replace(/[^\w.-]/g, '_').slice(0, 180)
@@ -39,6 +40,7 @@ export function hermesLineage(db, sessionId) {
 const init = store => {
   store.db.exec('CREATE TABLE IF NOT EXISTS hermes_mirror(session TEXT PRIMARY KEY, root TEXT NOT NULL, last_id INTEGER NOT NULL)')
   if (!columns(store.db, 'hermes_mirror').has('last_sid')) store.db.exec('ALTER TABLE hermes_mirror ADD COLUMN last_sid TEXT')
+  for (const column of ['bytes', 'record_count']) if (!columns(store.db, 'hermes_mirror').has(column)) store.db.exec(`ALTER TABLE hermes_mirror ADD COLUMN ${column} INTEGER`)
 }
 // Append new Hermes message rows of this conversation to SuperLcm's mirror, then index it.
 export function captureHermes(store, sessionId, { env = process.env, automatic = false } = {}) {
@@ -57,21 +59,47 @@ export function captureHermes(store, sessionId, { env = process.env, automatic =
     let rows, compactions
     store.db.exec('BEGIN IMMEDIATE')
     try {
-      const saved = store.db.prepare('SELECT last_id,last_sid FROM hermes_mirror WHERE session=?').get(session)
+      const saved = store.db.prepare('SELECT last_id,last_sid,bytes,record_count FROM hermes_mirror WHERE session=?').get(session)
       let last = saved?.last_id ?? 0, lastSid = saved?.last_sid ?? null
-      if (!existsSync(file)) { last = 0; lastSid = null } // a deleted conversation is mirrored again from the start
-      else if (last === 0 && readFileSync(file).length) throw new Error('Hermes mirror exists without a checkpoint; refusing to duplicate records')
+      let bytes = saved?.bytes ?? null, count = saved?.record_count ?? 0
+      compactions = []
+      const size = existsSync(file) ? statSync(file).size : 0
+      if (saved && last && !existsSync(file)) throw Error('Hermes mirror is missing; original history was not replaced')
+      if (bytes !== null && size < bytes) throw Error('Hermes mirror became shorter; original history was not replaced')
+      if (existsSync(file) && (bytes === null || size > bytes)) {
+        const legacy = bytes === null
+        if (legacy) { bytes = 0; count = 0 }
+        let priorId = 0, foundCheckpoint = !legacy || !last
+        for (const item of jsonlTail(file, legacy ? 0 : bytes)) {
+          const r = item.record
+          if (!Number.isSafeInteger(r.id) || r.id <= (legacy ? priorId : last) || !ids.includes(r.session_id)) throw Error('Hermes mirror recovery found an invalid row identity')
+          priorId = r.id
+          if (legacy && r.id <= last) {
+            if (r.id === last) foundCheckpoint = true
+          } else {
+            if (!foundCheckpoint) throw Error('Hermes mirror checkpoint is missing')
+            const native = db.prepare('SELECT * FROM messages WHERE id=?').get(r.id)
+            if (!native || JSON.stringify(native) !== JSON.stringify(r)) throw Error('Hermes mirror recovery row differs from its source')
+            if (lastSid !== null && r.session_id !== lastSid) compactions.push(count)
+            last = r.id; lastSid = r.session_id
+          }
+          count++; bytes = item.end
+        }
+        if (!foundCheckpoint) throw Error('Hermes mirror checkpoint is missing')
+      }
+      bytes ??= 0
       rows = db.prepare(`SELECT * FROM messages WHERE session_id IN (${marks}) AND id>? ORDER BY id LIMIT 200001`).all(...ids, last)
       if (rows.length > 200000) throw new Error('Too many new Hermes messages in one pass')
       // Each mirrored row is one record. A row from the next session of the chain is where Hermes compressed
       // the conversation: note that record so later summaries of it are not written from lost context.
-      const base = store.source(session) ? store.stats(session).records : 0; compactions = []
-      rows.forEach((r, k) => { if (lastSid !== null && r.session_id !== lastSid) compactions.push(base + k); lastSid = r.session_id })
+      rows.forEach((r, k) => { if (lastSid !== null && r.session_id !== lastSid) compactions.push(count + k); lastSid = r.session_id })
       if (rows.length) {
-        appendFileSync(file, rows.map(r => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 })
+        const text = rows.map(r => JSON.stringify(r)).join('\n') + '\n'
+        appendFileSync(file, text, { mode: 0o600 }); bytes += Buffer.byteLength(text); count += rows.length
         last = rows.at(-1).id
       }
-      store.db.prepare('INSERT INTO hermes_mirror(session,root,last_id,last_sid) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET last_id=excluded.last_id,last_sid=excluded.last_sid').run(session, root, last, lastSid)
+      store.db.prepare('INSERT INTO hermes_mirror(session,root,last_id,last_sid,bytes,record_count) VALUES(?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET last_id=excluded.last_id,last_sid=excluded.last_sid,bytes=excluded.bytes,record_count=excluded.record_count').run(session, root, last, lastSid, bytes, count)
+      for (const ordinal of compactions) store.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session, ordinal)
       store.db.exec('COMMIT')
     } catch (error) { store.db.exec('ROLLBACK'); throw error }
     const result = existsSync(file) ? store.ingest(session, file) : { session, added: 0 }

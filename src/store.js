@@ -115,7 +115,7 @@ export class ClaudeStore {
       const adopt=(choice,scope)=>{
         let m=this.apiModels().find(y=>y.provider===choice.api_provider&&y.url===choice.api_url&&y.model===choice.model)
         if(!m){m={id:randomBytes(4).toString('hex'),provider:choice.api_provider,url:choice.api_url,model:choice.model};this.db.prepare('INSERT INTO api_models(id,provider,url,model,created_ms) VALUES(?,?,?,?,?)').run(m.id,m.provider,m.url,m.model,Date.now())}
-        try{const key=readApiKey(this.dir,scope);if(key&&!readApiKey(this.dir,'model:'+m.id))saveApiKey(this.dir,'model:'+m.id,key)}catch{}
+        try{const key=readApiKey(this.dir,scope,m.url);if(key&&!readApiKey(this.dir,'model:'+m.id))saveApiKey(this.dir,'model:'+m.id,key,m.url)}catch{}
         return m.id
       }
       const g=this.globalSetting();if(g?.mode==='api'&&g.model)adopt(g,'global')
@@ -248,7 +248,7 @@ export class ClaudeStore {
     if(chosen.mode!=='api')return null
     const scope=chosen.scope==='harness'?this.harnessKeyScope(chosen.harness,chosen):'global'
     // '' = no key needed (a local gateway); null = not configured.
-    return readApiKey(this.dir,scope) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(chosen.api_url) ? '' : null)
+    return readApiKey(this.dir,scope,chosen.api_url||undefined) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(chosen.api_url) ? '' : null)
   }
   // A saved custom API (this conversation's tool first, then global) usable for a one-off catch-up in any mode.
   apiConfig(session,env=process.env) {
@@ -257,7 +257,7 @@ export class ClaudeStore {
     const own=harness!=='legacy'?this.harnessSetting(harness):null
     for (const [scope,choice] of [[this.harnessKeyScope(harness,own),own],['global',this.globalSetting()]]) {
       if (choice?.mode!=='api') continue
-      const apiKey=readApiKey(this.dir,scope) || (scope==='global' && !choice.api_url && !choice.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(choice.api_url) ? '' : null)
+      const apiKey=readApiKey(this.dir,scope,choice.api_url||undefined) || (scope==='global' && !choice.api_url && !choice.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(choice.api_url) ? '' : null)
       if (apiKey!==null) return {model:choice.model,api_provider:choice.api_provider,api_url:choice.api_url,effort:choice.api_effort||null,apiKey}
     }
     return null
@@ -602,9 +602,10 @@ export class ClaudeStore {
   eventRowsFrom(session, start) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? AND ordinal>=? ORDER BY ordinal').all(session, start) }
   nodeRows(session, level) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND level=? ORDER BY first').all(session, level) }
   node(session, id) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND id=?').get(session, id) }
-  addNode(node) {
+  addNode(node, { leaseOwner } = {}) {
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      if (leaseOwner && !this.ownsLease(node.session, leaseOwner)) throw new Error('Summary writer lost its lease; result not saved')
       this.db.prepare('INSERT OR IGNORE INTO nodes VALUES(?,?,?,?,?,?,?,?,?)').run(node.session,node.id,node.level,node.first,node.last,JSON.stringify(node.children),node.summary,node.digest,node.model)
       if (this.db.prepare('SELECT changes() AS n').get().n) this.db.prepare('INSERT INTO node_fts(session,id,summary) VALUES(?,?,?)').run(node.session,node.id,node.summary)
       this.db.exec('COMMIT')
@@ -617,7 +618,11 @@ export class ClaudeStore {
     const result=this.db.prepare("INSERT INTO leases(session,until_ms,owner) VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms,owner=excluded.owner WHERE leases.until_ms < ?").run(session, now+duration, owner, now)
     return result.changes === 1
   }
-  renewLease(session, duration = 120000, owner = `worker:${process.pid}`) { this.db.prepare('UPDATE leases SET until_ms=? WHERE session=? AND owner=?').run(Date.now()+duration, session, owner) }
+  ownsLease(session, owner) { return !!this.db.prepare('SELECT 1 FROM leases WHERE session=? AND owner=? AND until_ms>=?').get(session, owner, Date.now()) }
+  renewLease(session, duration = 120000, owner = `worker:${process.pid}`) {
+    const now = Date.now()
+    return this.db.prepare('UPDATE leases SET until_ms=? WHERE session=? AND owner=? AND until_ms>=?').run(now+duration, session, owner, now).changes === 1
+  }
   release(session, owner = `worker:${process.pid}`) { this.db.prepare('UPDATE leases SET until_ms=0 WHERE session=? AND owner=?').run(session, owner) }
   search(session, query, limit = 10) {
     if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new Error('Provide a query of 1–200 characters')

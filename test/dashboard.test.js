@@ -77,7 +77,7 @@ test('authenticated Web workflow detects, indexes, pages nodes and gates setup',
   assert.ok((await fetch(base+'/api/conversation?session='+result.session,{headers}).then(r=>r.json())).backends.includes('api'))
   {const same={scope:'harness',harness:'codex',mode:'api',model:'gpt-tool',api_provider:'openai',api_url:'https://api.example.test/v1/chat/completions'}
    const r=await post('/api/settings',same).then(r=>r.json());assert.equal(r.api_key_configured,true,'same endpoint reuses the default key');assert.equal(store.harnessSetting('codex').model,'gpt-tool')
-   assert.equal((await post('/api/settings',{...same,api_url:'https://other.example.test/v1/chat/completions'})).status,200,'a saved tool key stays')
+   assert.equal((await post('/api/settings',{...same,api_url:'https://other.example.test/v1/chat/completions'})).status,400,'a saved tool key cannot follow a different endpoint')
    assert.equal((await post('/api/settings',{scope:'harness',harness:'codex',mode:'inherit'})).status,200)}
   store.release(result.session)
   assert.equal((await post('/api/summarize',{session:result.session,backend:'api'}).then(r=>r.json())).started,true);assert.deepEqual(spawned.at(-1)[1].slice(-2),['--backend','api'])

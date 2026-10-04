@@ -13,14 +13,24 @@ function credentials(dir) {
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid API credential file')
   return value
 }
-export function readApiKey(dir,scope) {
+export function apiKeyEndpoint(dir,scope) {
   if(!scopeValid(scope))throw new Error('Invalid API credential scope')
   const value=credentials(dir)[scope]
+  return value && typeof value==='object' && typeof value.endpoint==='string' ? value.endpoint : null
+}
+export function readApiKey(dir,scope,endpoint) {
+  if(!scopeValid(scope))throw new Error('Invalid API credential scope')
+  const value=credentials(dir)[scope]
+  if(value && typeof value==='object') {
+    if(endpoint !== undefined && value.endpoint !== endpoint)return null
+    return typeof value.key==='string'&&value.key.length>=8?value.key:null
+  }
   return typeof value==='string'&&value.length>=8?value:null
 }
-export function saveApiKey(dir,scope,key) {
+export function saveApiKey(dir,scope,key,endpoint=null) {
   if(!scopeValid(scope)||typeof key!=='string'||key.length<8||key.length>4096||/[\r\n\0]/.test(key)||!key.trim())throw new Error('API key must be 8–4096 nonempty characters without line breaks')
-  const next={...credentials(dir),[scope]:key}
+  if(endpoint!==null&&(typeof endpoint!=='string'||endpoint.length>2048))throw new Error('Invalid API credential endpoint')
+  const next={...credentials(dir),[scope]:endpoint===null?key:{key,endpoint}}
   const file=keyFile(dir),temp=join(dir,`.api-credentials-${randomBytes(12).toString('hex')}.tmp`)
   try {writeFileSync(temp,JSON.stringify(next),{flag:'wx',mode:0o600});renameSync(temp,file)}
   catch(error){try{unlinkSync(temp)}catch{};throw error}

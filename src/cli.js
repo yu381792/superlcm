@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { ClaudeStore, claudeTranscript } from './store.js'
 import { codexTranscript, codexNativeName, codexSessionKey } from './codex.js'
-import { buildHierarchy, summaryWork } from './summarize.js'
+import { buildHierarchy, summaryWork, summarySettingsRevision } from './summarize.js'
 import { summarizeWith, writerTool, WRITER_CLI } from './cli-writers.js'
 import { startServer } from './mcp.js'
 import { claudePluginEnabled } from './runtime.js'
@@ -162,6 +162,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       // Indexing alone never starts a paid summarizer.
     } else if (command==='summarize') {
       if (!store.source(rest[0])) throw new Error('Unknown session')
+      if (store.metadata(rest[0]).harness === 'dsh') throw new Error('dsh harness 的摘要由 SuperLcm 压缩插件生成；请导入或重建已提交的摘要')
       // --backend runs one explicit subscription pass (console "generate now"), independent of the saved mode.
       const backendFlag=rest.indexOf('--backend'),backend=backendFlag>=0?rest[backendFlag+1]:null
       if (backend!==null && !['cli','api'].includes(backend)) throw new Error('--backend must be cli or api')
@@ -171,14 +172,16 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         const {mode,model,api_provider,api_url,effort,api_effort}=oneOffApi?{mode:'api',...oneOffApi}:backend?{mode:backend,model:null}:effective(store,rest[0])
         if (!backend && process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
+        const revision = summarySettingsRevision(store, rest[0])
+        const shouldContinue = backend ? () => true : () => summarySettingsRevision(store, rest[0]) === revision
         result=mode==='api'
-          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL,effort:effort||api_effort||null})
+          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL,effort:effort||api_effort||null,shouldContinue})
           : await (async()=>{
             // 本工具后台写: this conversation's own tool (or, for an imported one, any installed tool), as configured.
             const tool=writerTool(store.metadata(rest[0]).harness)
             if (!tool) throw new Error('No installed tool can write summaries')
             const chosen=model||(tool==='claude-code'?process.env.SUPERLCM_CLAUDE_CLI_MODEL:tool==='codex'?process.env.SUPERLCM_CODEX_CLI_MODEL:'')||''
-            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:text=>summarizeWith(tool,text,{model:chosen})})
+            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:text=>summarizeWith(tool,text,{model:chosen}),shouldContinue})
           })()
         if (!result.busy) store.setStatus(rest[0],'ok')
       }

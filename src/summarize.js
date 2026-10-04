@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { nodeId } from './store.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS } from './api-endpoint.js'
 import { MAX_SUMMARY_INPUT } from './runtime.js'
@@ -112,23 +112,43 @@ export function summaryEstimate(store, session) {
   }
   return { records, segments, calls, tail: pending, tail_chars: chars, target_chars: targetChars }
 }
-export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars = store.tuning().target_chars, fanout = store.tuning().fanout, summarize = summarizeWithModel } = {}) {
+export function summarySettingsRevision(store, session, env = process.env) {
+  const setting = store.effectiveSetting(session, env)
+  return hash(JSON.stringify([setting, setting.mode === 'api' ? store.apiCredential(session, env) : null]))
+}
+export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars = store.tuning().target_chars, fanout = store.tuning().fanout, summarize = summarizeWithModel, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000 } = {}) {
+  if (store.metadata(session).harness === 'dsh') throw new Error('DSH summaries are owned by the compaction plugin')
   if (!model || (apiKey == null && summarize === summarizeWithModel)) throw new Error('Explicit summarizer model and API key required')
   if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 200) throw new Error('batchSize must be 2–200')
   if (!Number.isSafeInteger(fanout) || fanout < 2 || fanout > 8) throw new Error('fanout must be 2–8')
-  if (!store.lease(session)) return { session, busy:true }
+  if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 20 || !Number.isSafeInteger(leaseHeartbeatMs) || leaseHeartbeatMs < 1 || leaseHeartbeatMs >= leaseDurationMs) throw new Error('Invalid summary lease timing')
+  const owner = `worker:${process.pid}:${randomUUID()}`
+  const revision = summarySettingsRevision(store, session)
+  const mayContinue = shouldContinue || (() => summarySettingsRevision(store, session) === revision)
+  if (!store.lease(session, leaseDurationMs, owner)) return { session, busy:true }
   let created = 0
+  let lostLease = false
+  const checkLease = () => { if (lostLease || !store.ownsLease(session, owner)) throw new Error('Summary writer lost its lease; result not saved') }
+  const timer = setInterval(() => {
+    try { if (!store.renewLease(session, leaseDurationMs, owner)) lostLease = true }
+    catch { lostLease = true }
+  }, leaseHeartbeatMs)
+  timer.unref()
   try {
     for (let work; (work = summaryWork(store, session, { batchSize, targetChars, fanout })); ) {
+      if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
+      checkLease()
       // Fail closed if the on-disk original changed after indexing or during model execution.
       const verify = () => { if (work.level === 0) for (let i = work.first; i <= work.last; i++) store.exact(session, i) }
       verify()
       const summary = await summarize(work.content, { model, apiKey, baseURL, apiURL, apiProvider, effort })
+      checkLease()
+      if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
       verify()
-      store.addNode({ session, id: work.batch_id, level: work.level, first: work.first, last: work.last, children: work.children, summary, digest: work.digest, model })
-      store.renewLease(session)
+      store.addNode({ session, id: work.batch_id, level: work.level, first: work.first, last: work.last, children: work.children, summary, digest: work.digest, model }, { leaseOwner: owner })
+      if (!store.renewLease(session, leaseDurationMs, owner)) throw new Error('Summary writer lost its lease')
       created++
     }
     return { session, created, overview: store.overview(session) }
-  } finally { store.release(session) }
+  } finally { clearInterval(timer); store.release(session, owner) }
 }

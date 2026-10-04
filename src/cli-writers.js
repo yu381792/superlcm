@@ -13,6 +13,7 @@ export const WRITER_CLI = { 'claude-code': 'claude', codex: 'codex', hermes: 'he
 const ORDER = ['claude-code', 'codex', 'hermes', 'pi']
 // The conversation's own tool when its CLI is installed; otherwise (an imported conversation) the first installed one.
 export function writerTool(harness, env = process.env) {
+  if (harness === 'dsh') return null
   if (WRITER_CLI[harness] && findCli(WRITER_CLI[harness], env)) return harness
   return ORDER.find(h => findCli(WRITER_CLI[h], env)) || null
 }

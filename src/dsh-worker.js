@@ -11,7 +11,8 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
     if (line.length > 32e6) throw Error('DSH capture input exceeds 32 MB')
     const request = JSON.parse(line); id = request.id
     let result
-    if (request.method === 'cursor') {
+    if (request.method === 'ping') result = { ready: true }
+    else if (request.method === 'cursor') {
       const table = store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='dsh_mirrors'").get()
       result = table ? store.db.prepare('SELECT next_seq FROM dsh_mirrors WHERE session=?').get(request.session)?.next_seq ?? 0 : 0
     } else if (request.method === 'call') {

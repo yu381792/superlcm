@@ -22,12 +22,14 @@ export class CompressionReporter {
   constructor(db, { kind, profile = null, enabled = false, routeReady = false, clock = Date.now, onError = () => {} }) {
     this.db = db; this.clock = clock; this.onError = onError; this.instance = randomUUID()
     this.kind = kind; this.profile = profile; this.enabled = enabled; this.routeReady = routeReady
+    this.phase = 'loaded'
     db.exec(schema)
     this.report('', 'loaded')
-    this.timer = setInterval(() => this.report('', 'loaded'), 15000); this.timer.unref()
+    this.timer = setInterval(() => this.report('', this.phase), 15000); this.timer.unref()
   }
   report(session, phase, selection = {}) {
     if (this.closed) return
+    if (session === '') this.phase = phase
     try {
       this.db.prepare(`INSERT INTO superlcm_compression_runtime VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(instance,session) DO UPDATE SET phase=excluded.phase,enabled=excluded.enabled,
@@ -36,7 +38,7 @@ export class CompressionReporter {
           +this.enabled, +this.routeReady, selection.start ?? null, selection.end ?? null, this.clock())
     } catch (error) { this.onError(error) }
   }
-  configure({ enabled, routeReady }) { this.enabled = enabled; this.routeReady = routeReady; this.report('', 'loaded') }
+  configure({ enabled, routeReady }) { this.enabled = enabled; this.routeReady = routeReady; this.report('', this.phase) }
   applied(revision) {
     this.db.exec('CREATE TABLE IF NOT EXISTS superlcm_compression_settings_ack(instance TEXT PRIMARY KEY,revision TEXT NOT NULL)')
     this.db.prepare('INSERT INTO superlcm_compression_settings_ack VALUES(?,?) ON CONFLICT(instance) DO UPDATE SET revision=excluded.revision').run(this.instance,revision)

@@ -17,6 +17,8 @@ test('public package has executable CLI, DSH icon and portable installer',()=>{
   assert.match(readFileSync(join(root,'src/web-icons.js'),'utf8'),/"dsh":/)
   assert.doesNotMatch(readFileSync(join(root,'src/dsh-setup.js'),'utf8'),/\/Users\/yu|\.npm-global/)
   const ui=JSON.parse(readFileSync(join(root,'dsh/ui/package.json'),'utf8'))
+  assert.equal(ui.version, pkg.version)
+  assert.equal(JSON.parse(readFileSync(join(root,'.claude-plugin/plugin.json'),'utf8')).version, pkg.version)
   assert.equal(ui.exports['.'],'./runtime.js')
   assert.match(readFileSync(join(root,'src/dsh-setup.js'),'utf8'),/name:'superlcm'/)
 })

@@ -176,9 +176,9 @@ export function createSuperLcmToolDefinitions(store) {
 export const createSuperLCMToolDefinitions = createSuperLcmToolDefinitions
 export const createLosslessToolDefinitions = createSuperLcmToolDefinitions
 
-export function apply(ctx) {
-  const store = new SuperLcmStore(resolveDatabasePath())
-  ctx.effect(() => () => store.close())
+export function apply(ctx, { store: suppliedStore, databasePath } = {}) {
+  const store = suppliedStore || new SuperLcmStore(databasePath || resolveDatabasePath())
+  if (!suppliedStore) ctx.effect(() => () => store.close())
   for (const definition of createSuperLcmToolDefinitions(store)) {
     ctx.tools.register(definition)
   }

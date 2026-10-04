@@ -29,9 +29,18 @@ export function apply(ctx,config={}) {
   const migrated = migrateLegacyIndex(native)
   if (migrated.added) ctx.logger?.info?.(`SuperLcm 已迁入 ${migrated.added} 条旧 DSH 摘要`)
   const warn = error => ctx.logger?.warn?.('SuperLcm 归档：' + (error?.message || error))
-  const worker = new ArchiveWorker({...process.env,SUPERLCM_HOME:archiveHome}, warn)
-  const dirty = new Set(), cursors = new Map()
+  const dirty = new Set(), cursors = new Map(), observed = new Set()
   let stopped = false, running = null
+  reporter.report('', 'starting')
+  const worker = new ArchiveWorker({...process.env,SUPERLCM_HOME:archiveHome}, warn, {
+    onUnavailable(error) { reporter.report('', 'failed'); warn(error) },
+    onReady() {
+      if (stopped) return
+      reporter.report('', 'loaded')
+      for (const id of observed) dirty.add(id)
+      queueMicrotask(drain)
+    },
+  })
 
   const capture = async id => {
     const live = ctx.sessions.get(id), cursor = cursors.get(id)
@@ -79,12 +88,12 @@ export function apply(ctx,config={}) {
     })().finally(() => { running = null; if (dirty.size && !stopped) drain() })
     return running
   }
-  ctx.on('session/event', (session) => { dirty.add(session.id); queueMicrotask(drain) })
+  ctx.on('session/event', (session) => { observed.add(session.id); dirty.add(session.id); queueMicrotask(drain) })
   ctx.on('ready', async () => {
-    try { for (const { header } of await ctx.sessionQuery.listSessions()) dirty.add(header.id); drain() }
+    try { for (const { header } of await ctx.sessionQuery.listSessions()) { observed.add(header.id); dirty.add(header.id) }; drain() }
     catch (error) { warn(error) }
   })
-  mountNativeTools(ctx)
+  mountNativeTools(ctx, { store: native })
   for (const tool of tools.filter(t => !t.name.startsWith('lcm_summary_'))) {
     ctx.tools.register(createMcpToolDefinition(ctx, {
       ...tool, rawName: tool.name,

@@ -16,7 +16,7 @@ import { ClaudeStore } from './store.js'
 import { continuePacket } from './context.js'
 import { modelCatalog, harnessConnections } from './model-catalog.js'
 import { summaryMode } from './mode.js'
-import { saveApiKey, readApiKey } from './api-credentials.js'
+import { saveApiKey, readApiKey, removeApiKey, apiKeyEndpoint } from './api-credentials.js'
 import { loopbackEndpoint } from './api-endpoint.js'
 import { findCli } from './runtime.js'
 import { summaryEstimate, summarizeWithModel } from './summarize.js'
@@ -48,7 +48,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local Web port')
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
   // One-off catch-up methods this computer can actually run for a conversation.
-  const backends = id => [...(writerTool(store.metadata(id).harness, env) ? ['cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
+  const backends = id => store.metadata(id).harness === 'dsh' ? [] : [...(writerTool(store.metadata(id).harness, env) ? ['cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
   const routes = {
     'GET /api/conversations': url => ({ ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() }),
     'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), writer_tool: writerTool(store.metadata(id).harness, env), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id), estimate: summaryEstimate(store, id) } },
@@ -118,7 +118,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
         catch (error) { throw new Error('Test call failed: ' + String(error?.message || error).slice(0, 400)) }
       }
       const saved = store.saveApiModel({ id: x.id || null, ...m })
-      if (key) saveApiKey(store.dir, 'model:' + saved.id, key)
+      if (key) saveApiKey(store.dir, 'model:' + saved.id, key, m.url)
+      else if (before && before.url !== m.url) removeApiKey(store.dir, 'model:' + saved.id)
       return { ...saved, key_configured: store.hasApiCredential('model:' + saved.id), tested: x.skip_test !== true }
     },
     // 接管压缩 on/off and its size; turning it on also sets Claude Code's autoCompactWindow (see src/takeover.js).
@@ -139,13 +140,17 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       const checked = store.validateSetting(x.mode, model, provider, address)
       if (x.mode === 'api') {
         if (key !== undefined && typeof key !== 'string') throw new Error('API key must be text')
+        const prior = x.scope === 'global' ? store.globalSetting() : store.harnessSetting(x.harness)
+        const sameEndpoint = prior?.mode === 'api' && !prior.api_ref && prior.api_url === checked.api_url
+        let chosenKey = key || (sameEndpoint || apiKeyEndpoint(store.dir, scope) === checked.api_url ? readApiKey(store.dir, scope, checked.api_url) : null)
         // Same endpoint as the default setting or another tool: reuse the key already saved there.
-        if (!key && !store.hasApiCredential(scope)) {
-          const donor = [['global', store.globalSetting()], ...store.harnessSettings().map(y => ['harness:' + y.harness, y])].find(([s, y]) => s !== scope && y?.mode === 'api' && y.api_url === checked.api_url && store.hasApiCredential(s))
-          if (donor) saveApiKey(store.dir, scope, readApiKey(store.dir, donor[0]))
+        if (!chosenKey) {
+          const donor = [['global', store.globalSetting()], ...store.harnessSettings().map(y => [store.harnessKeyScope(y.harness, y), y])].find(([s, y]) => s !== scope && y?.mode === 'api' && y.api_url === checked.api_url && store.hasApiCredential(s))
+          if (donor) chosenKey = readApiKey(store.dir, donor[0], checked.api_url)
         }
-        if (!key && !store.hasApiCredential(scope) && !loopbackEndpoint(address)) throw new Error('Enter and save an API key for this setting')
-        if (key) saveApiKey(store.dir, scope, key)
+        if (!chosenKey && !loopbackEndpoint(checked.api_url)) throw new Error('A new endpoint needs its API key; enter and save it for this setting')
+        if (chosenKey) saveApiKey(store.dir, scope, chosenKey, checked.api_url)
+        else if (!sameEndpoint) removeApiKey(store.dir, scope)
       } else if (key) throw new Error('API key is accepted only for custom API mode')
       const result = x.scope === 'global' ? store.setGlobalSetting(x.mode, model, provider, address) : store.setHarnessSetting(x.harness, x.mode, model, provider, address)
       return { ...result, api_key_configured: store.hasApiCredential(scope) }

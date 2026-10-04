@@ -40,7 +40,7 @@ export function frontier(nodes, through) {
 // that is still in context. Each candidate is checked against its predecessors, and against the first
 // uncovered record after it, so a repeated short message ("继续") or a repeated run of messages cannot be
 // mistaken for an earlier copy and drop what came between.
-export function cutIndex(messages, events, through) {
+function cutCandidates(messages, events, through) {
   // Only messages can be found in context; title records (written every turn by the desktop app) cannot.
   const visible = events.filter(e => /^(user|assistant): /.test(e.preview))
   const covered = visible.filter(e => e.ordinal <= through).map(e => key(e.preview))
@@ -57,7 +57,8 @@ export function cutIndex(messages, events, through) {
     for (let i = index + 1; i < keys.length; i++) if (keys[i] !== null && !isPacket(messages[i])) return keys[i] === later[0]
     return true
   }
-  if (covered.length) for (let i = keys.length - 1; i >= 0; i--) if (matches(covered, covered.length - 1, i)) return i + 1
+  const candidates = []
+  if (covered.length) for (let i = 0; i < keys.length; i++) if (matches(covered, covered.length - 1, i)) candidates.push(i + 1)
   // The last covered record is no longer in context (an earlier compaction removed it): everything
   // still in context starts after it, so the cut is at the first later record found, where up to 3 of the
   // records after it agree too (a repeated message such as a heartbeat prompt has earlier copies).
@@ -69,8 +70,12 @@ export function cutIndex(messages, events, through) {
     }
     return true
   }
-  if (later.length) for (let i = 0; i < keys.length; i++) if (keys[i] === later[0] && follows(i)) return i
-  return null
+  if (later.length) for (let i = 0; i < keys.length; i++) if (keys[i] === later[0] && follows(i)) candidates.push(i)
+  return [...new Set(candidates)]
+}
+export function cutIndex(messages, events, through) {
+  const candidates = cutCandidates(messages, events, through)
+  return candidates.length === 1 ? candidates[0] : null
 }
 // Move the cut back to the start of a turn and keep the newest turns whole.
 export function tailStart(messages, cut) {
@@ -107,7 +112,7 @@ export function renderPacket({ meta, summaries, through, keep, instructions, rec
 // Returns { use:true, packet, start } or { use:false, reason }.
 export function planCompaction(input) {
   const plan = planWith(input, null)
-  if (plan.use) return plan
+  if (plan.use || plan.ambiguous) return plan
   // The summaries lag behind: carry the dialogue they do not cover yet, when it is short enough.
   const { events, nodes } = input, through = coveredThrough(nodes), last = events.at(-1)?.ordinal ?? -1
   const text = recentText(events, through)
@@ -119,7 +124,9 @@ function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0
   const through = coveredThrough(nodes)
   if (through < 0 && !recent) return { use: false, reason: 'no summaries written yet' }
   // With the dialogue carried along, every message in context is covered: the cut is at the end.
-  const cut = recent ? messages.length : cutIndex(messages, events, through)
+  const candidates = recent ? [messages.length] : cutCandidates(messages, events, through)
+  if (candidates.length > 1) return { use: false, ambiguous: true, reason: 'summary boundary matches more than one place; use native compaction' }
+  const cut = candidates.length === 1 ? candidates[0] : null
   if (cut === null) return { use: false, reason: 'could not place the summaries in the live conversation' }
   // Each message's share of Claude Code's own token count, by its size in characters.
   const size = m => m.size ?? (m.text.length + 200)

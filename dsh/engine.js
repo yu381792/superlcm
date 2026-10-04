@@ -53,6 +53,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.backgroundFolds = new SessionFoldRegistry()
     this.summaryGuards = new SummaryGuards()
     this.backgroundControllers = new Set()
+    this.runtimeGeneration = 0
     this.warnedMissingBackgroundRoute = false
     this.superlcmStore = this.superLcmStore
     // 兼容 dsh-lossless-context <= 0.2.x 的旧属性 / Compatibility property for dsh-lossless-context <= 0.2.x.
@@ -121,6 +122,8 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     if (rolling.hardActiveTokens <= rolling.softActiveTokens) {
       throw new Error(`hardActiveTokens (${rolling.hardActiveTokens}) must be greater than softActiveTokens (${rolling.softActiveTokens})`)
     }
+    this.runtimeGeneration++
+    for (const controller of this.backgroundControllers) controller.abort(new Error('压缩设置已更新'))
     this.rollingConfig = rolling
     this.fallbackSummarizationRoute = fallbackRoute
     this.summaryGuards.clear()
@@ -224,7 +227,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
 
     const controller = new AbortController()
     const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null, parts,
-      cutoffEnd: previous?.cutoffEnd ?? (selection.activeTokens >= this.rollingConfig.softActiveTokens ? selection.eligibleEnd : undefined), revision:this.controlRevision }
+      cutoffEnd: previous?.cutoffEnd ?? (selection.activeTokens >= this.rollingConfig.softActiveTokens ? selection.eligibleEnd : undefined), revision:this.controlRevision, generation: this.runtimeGeneration }
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)
     this.compressionReporter.report(agent.session.id, 'summarizing', { ...selection, start: parts[0]?.start ?? selection.start })
@@ -257,7 +260,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       .catch((error) => {
         this.compressionReporter.report(agent.session.id, controller.signal.aborted ? 'cancelled' : 'failed', selection)
         if (this.backgroundFolds.get(agent) === state) {
-          if (previous?.status === 'ready' && previous.summarized) this.backgroundFolds.set(agent, previous)
+          if (previous?.status === 'ready' && previous.summarized && previous.generation === this.runtimeGeneration) this.backgroundFolds.set(agent, previous)
           else this.backgroundFolds.delete(agent)
         }
         this.summaryGuards.failedSession(agent, fingerprint, this.rollingConfig.summaryRetryCooldownMs)
@@ -283,6 +286,9 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       state.cutoffEnd = eligible?.eligibleEnd ?? state.prepared.end
     }
     if (state?.status !== 'ready') return null
+    if (state.generation !== this.runtimeGeneration) {
+      this.backgroundFolds.delete(agent); this.compressionReporter.report(agent.session.id, 'discarded', state.selection); return null
+    }
     if(this.controlFile&&(!this.config.auto||state.revision!==this.controlRevision)){this.backgroundFolds.delete(agent);this.compressionReporter.report(agent.session.id,'discarded',state.selection);return null}
     if (options.force !== true) {
       if (activeTokens < this.rollingConfig.softActiveTokens) return null
@@ -368,6 +374,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const session = agent.session
     const staged = this.backgroundFolds.get(agent)
     if (staged && staged.status !== 'ready') return null
+    if (staged && staged.generation !== this.runtimeGeneration) {
+      this.backgroundFolds.delete(agent)
+      return this.planRolling(agent, forceHard)
+    }
     if (staged?.frontier && draftTokens(this, agent, staged.frontier) > summaryBudget(this.rollingConfig)) {
       return { ...staged.selection, treeOnly: true }
     }
