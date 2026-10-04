@@ -146,6 +146,11 @@ export class SuperLcmStore {
 
   compressionReporter(options) { return new CompressionReporter(this.#db, options) }
 
+  archivedSessionIds() {
+    if (!this.#db.prepare("SELECT 1 FROM sqlite_master WHERE name='dsh_mirrors'").get()) return []
+    return this.#db.prepare('SELECT header FROM dsh_mirrors').all().map(row => JSON.parse(row.header).id)
+  }
+
   upsertNode(node) {
     this.#assertOpen()
     const childIds = [...new Set(node.childIds ?? [])]

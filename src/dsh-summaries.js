@@ -25,10 +25,14 @@ function recordCategories(store, session, records) {
   const db = store.db
   const saved = hasTable(db, 'dsh_record_kinds') ? db.prepare('SELECT seq,category FROM dsh_record_kinds WHERE session=? AND seq<? ORDER BY seq').all(session, records) : []
   const categories = new Map(saved.map(row => [row.seq, row.category]))
+  categories.revisionEvents = new Map()
   if (categories.size === records) return categories
   if (categories.size && store.exact) {
     for (let seq = 0; seq < records; seq++) {
-      if (!categories.has(seq)) categories.set(seq, dshRecordCategory(JSON.parse(store.exact(session, seq)).event))
+      if (!categories.has(seq)) {
+        const event = JSON.parse(store.exact(session, seq)).event
+        categories.set(seq, dshRecordCategory(event)); categories.revisionEvents.set(seq, revisionMetadata(event))
+      }
     }
     return categories
   }
@@ -42,10 +46,38 @@ function recordCategories(store, session, records) {
     const category = dshRecordCategory(event)
     if (categories.has(event.seq) && categories.get(event.seq) !== category) throw Error('Previously classified DSH event changed')
     categories.set(event.seq, category)
+    categories.revisionEvents.set(event.seq, revisionMetadata(event))
     if (item.end === source.offset) break
   }
   if (categories.size !== records) throw Error('DSH archive classification is incomplete')
   return categories
+}
+
+const revisionMetadata = event => ({ seq: event.seq, type: event.type, surfaceOp: event.surfaceOp,
+  sourceEventSeqs: event.sourceEventSeqs, data: { source: { kind: event.data?.source?.kind } } })
+function recordRevisions(store, session, records, categories) {
+  const db = store.db
+  const revisions = new Map(hasTable(db, 'dsh_record_revisions') ? db.prepare('SELECT seq,replaced_by FROM dsh_record_revisions WHERE session=? AND seq<?').all(session, records).map(row => [row.seq, row.replaced_by]) : [])
+  const cursor = hasTable(db, 'dsh_revision_scan') ? db.prepare('SELECT next_seq FROM dsh_revision_scan WHERE session=?').get(session)?.next_seq ?? 0 : 0
+  const inspect = event => {
+    const op = event.surfaceOp
+    if (event.data?.source?.kind === 'compact-checkpoint' || op?.op !== 'replace' || categories.get(event.seq) !== 'original') return
+    const cited = event.sourceEventSeqs
+    if (!Number.isSafeInteger(op.startSeq) || !Number.isSafeInteger(op.endSeq) || op.startSeq > op.endSeq
+      || !Array.isArray(cited) || !cited.includes(op.startSeq) || !cited.includes(op.endSeq)) return
+    for (const seq of cited) if (Number.isSafeInteger(seq) && seq >= op.startSeq && seq <= op.endSeq && seq < event.seq && categories.get(seq) === 'original') revisions.set(seq, event.seq)
+  }
+  if (cursor === 0 && categories.revisionEvents.size < records && records) {
+    const source = store.source(session), archive = store.archivePath?.(session)
+    for (const item of jsonlTail(archive && existsSync(archive) ? archive : source.path)) {
+      if (item.end > source.offset) break
+      inspect(item.record.event)
+      if (item.end === source.offset) break
+    }
+  } else {
+    for (let seq = cursor; seq < records; seq++) inspect(categories.revisionEvents.get(seq) ?? JSON.parse(store.exact(session, seq)).event)
+  }
+  return revisions
 }
 
 const ranges = seqs => {
@@ -61,13 +93,19 @@ const ranges = seqs => {
 export function syncDshSummaries(store, session, id) {
   store.db.exec(`CREATE TABLE IF NOT EXISTS dsh_node_sources(session TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,PRIMARY KEY(session,id,seq));
     CREATE TABLE IF NOT EXISTS dsh_shared_nodes(session TEXT NOT NULL,id TEXT NOT NULL,visible INTEGER NOT NULL,PRIMARY KEY(session,id));
-    CREATE TABLE IF NOT EXISTS dsh_record_kinds(session TEXT NOT NULL,seq INTEGER NOT NULL,category TEXT NOT NULL,PRIMARY KEY(session,seq));`)
+    CREATE TABLE IF NOT EXISTS dsh_record_kinds(session TEXT NOT NULL,seq INTEGER NOT NULL,category TEXT NOT NULL,PRIMARY KEY(session,seq));
+    CREATE TABLE IF NOT EXISTS dsh_record_revisions(session TEXT NOT NULL,seq INTEGER NOT NULL,replaced_by INTEGER NOT NULL,PRIMARY KEY(session,seq));
+    CREATE TABLE IF NOT EXISTS dsh_revision_scan(session TEXT PRIMARY KEY,next_seq INTEGER NOT NULL);`)
   const records = store.db.prepare('SELECT records FROM session_event_counts WHERE session=?').get(session)?.records ?? 0
   const categories = recordCategories(store, session, records)
+  const revisions = recordRevisions(store, session, records, categories)
   const remember = store.db.prepare('INSERT OR IGNORE INTO dsh_record_kinds VALUES(?,?,?)')
   store.db.exec('BEGIN IMMEDIATE')
   try {
     for (const [seq, category] of categories) remember.run(session, seq, category)
+    const revision = store.db.prepare('INSERT INTO dsh_record_revisions VALUES(?,?,?) ON CONFLICT(session,seq) DO UPDATE SET replaced_by=excluded.replaced_by')
+    for (const [seq, replacement] of revisions) revision.run(session, seq, replacement)
+    store.db.prepare('INSERT INTO dsh_revision_scan VALUES(?,?) ON CONFLICT(session) DO UPDATE SET next_seq=excluded.next_seq').run(session, records)
     store.db.exec('COMMIT')
   } catch (error) { store.db.exec('ROLLBACK'); throw error }
   if (!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lcm_nodes'").get()) return
@@ -135,12 +173,13 @@ export function syncDshSummaries(store, session, id) {
 }
 
 export function dshCoverage(store, session, records) {
-  const db = store.db, categories = recordCategories(store, session, records)
+  const db = store.db, categories = recordCategories(store, session, records), revisions = recordRevisions(store, session, records, categories)
   const seqs = hasTable(db, 'dsh_node_sources') ? db.prepare(`SELECT DISTINCT s.seq FROM dsh_node_sources s WHERE s.session=? AND ${dshVisibleNodes(db, 's')} ORDER BY s.seq`).all(session).map(row => row.seq).filter(seq => seq < records && categories.get(seq) !== 'checkpoint') : []
   const selected = new Set(seqs)
-  const originals = [], covered = [], uncovered = [], persistent = [], checkpoints = [], nonMessages = []
+  const originals = [], covered = [], uncovered = [], persistent = [], checkpoints = [], nonMessages = [], superseded = []
   for (const [seq, category] of [...categories].sort((a, b) => a[0] - b[0])) {
-    if (category === 'original') { originals.push(seq); (selected.has(seq) ? covered : uncovered).push(seq) }
+    if (category === 'original' && revisions.has(seq)) superseded.push(seq)
+    else if (category === 'original') { originals.push(seq); (selected.has(seq) ? covered : uncovered).push(seq) }
     else if (category === 'persistent') persistent.push(seq)
     else if (category === 'checkpoint') checkpoints.push(seq)
     else nonMessages.push(seq)
@@ -151,6 +190,7 @@ export function dshCoverage(store, session, records) {
     covered_ranges: ranges(covered), unsummarized_ranges: ranges(uncovered), selected_source_ranges: ranges(seqs),
     persistent_records: persistent.length, persistent_ranges: ranges(persistent),
     checkpoint_records: checkpoints.length, checkpoint_ranges: ranges(checkpoints),
+    superseded_records: superseded.length, superseded_ranges: ranges(superseded),
     non_message_records: nonMessages.length, non_message_ranges: ranges(nonMessages),
     latest_tail: latest.length ? { from: latest[0], to: latest.at(-1), records: latest.length, ranges: ranges(latest) } : null }
 }

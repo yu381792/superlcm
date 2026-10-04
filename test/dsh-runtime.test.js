@@ -12,8 +12,8 @@ import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Engine from '../dsh/engine.js'
 import { prepareAsyncRegion, summarizeAsyncRegion, commitAsyncRegion } from '../dsh/async-region.js'
-import { markerFromSummary, encodeMarker } from '../dsh/marker.js'
-import { nodeLevel, reindexSession } from '../dsh/core.js'
+import { markerFromSummary, encodeMarker, appendRecallEnvelope } from '../dsh/marker.js'
+import { nodeLevel, reindexSession, nodeFromCompactionEvent, doctorSession } from '../dsh/core.js'
 import { SuperLcmStore } from '../dsh/store.js'
 import { draftTokens } from '../dsh/draft-tree.js'
 import { semanticFrontier } from '../dsh/tree-semantics.js'
@@ -537,4 +537,57 @@ test('timeout requests cancellation, retains the exclusive slot until the provid
       assert.equal(calls.length, 1)
       assert.equal(session.snapshotEvents().filter(event => event.type === 'compaction/start').length, 0)
     })
+})
+
+const legacyHeader = { id: 'legacy-native-test', createdAt: 100 }
+const legacyArchiveFixture = () => new ClaudeStore(mkdtempSync(join(tmpdir(), 'superlcm-legacy-proof-')))
+const legacyRecord = seq => ({ event: { seq, type: 'user/message', data: { content: [{ type: 'text', text: 'Synthetic decision ' + seq }] }, surfaceOp: 'append' } })
+const legacyArchivePacket = records => ({ header: legacyHeader, records })
+function legacyHistory() {
+  const summary = [{ type: 'text', text: 'An old host summary.' }]
+  const next = appendRecallEnvelope([{ type: 'text', text: 'A later summary retaining the old checkpoint.' }], { id: 'after-legacy', children: [] })
+  const framed = body => [{ type: 'text', text: 'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.\n\n<compacted-summary>' }, ...body, { type: 'text', text: '</compacted-summary>' }]
+  return [legacyRecord(0).event, { seq: 1, type: 'compaction/start', data: { compactionId: 'old-host' } },
+    { seq: 2, type: 'compaction/summary', data: { compactionId: 'old-host', summary, shadowedSeqs: [0], shadowedRange: { start: 0, end: 0 } } },
+    { seq: 3, type: 'user/message', data: { source: { kind: 'compact-checkpoint', compactionId: 'old-host' }, content: framed(summary) }, surfaceOp: { op: 'replace', startSeq: 0, endSeq: 0 }, sourceEventSeqs: [1, 2, 0] },
+    { seq: 4, type: 'compaction/end', data: { compactionId: 'old-host' } }, legacyRecord(5).event,
+    { seq: 6, type: 'compaction/start', data: { compactionId: 'new-host' } },
+    { seq: 7, type: 'compaction/summary', data: { compactionId: 'new-host', summary: next, shadowedSeqs: [3, 5], shadowedRange: { start: 3, end: 5 } } },
+    { seq: 8, type: 'user/message', data: { source: { kind: 'compact-checkpoint', compactionId: 'new-host' }, content: framed(next) }, surfaceOp: { op: 'replace', startSeq: 3, endSeq: 5 }, sourceEventSeqs: [6, 7, 3, 5] },
+    { seq: 9, type: 'compaction/end', data: { compactionId: 'new-host' } }]
+}
+
+test('legacy committed summaries repair an advanced cursor and existing child references without duplicating migrated nodes', () => {
+  for (const migrated of [false, true]) {
+    const store = legacyArchiveFixture(), native = new SuperLcmStore(join(store.dir, 'lcm.sqlite'))
+    try {
+      const events = legacyHistory(), session = { id: legacyHeader.id, snapshotEvents: () => events }
+      if (migrated) native.upsertNode({ sessionId: legacyHeader.id, nodeId: 'prior-migration', compactionId: 'old-host', summarySeq: 2, summary: events[2].data.summary, summaryText: 'An old host summary.', sourceSeqs: [0], childIds: [], status: 'ready' })
+      native.upsertNode({ sessionId: legacyHeader.id, nodeId: 'after-legacy', compactionId: 'new-host', summarySeq: 7, summary: events[7].data.summary, summaryText: 'A later summary retaining the old checkpoint.', sourceSeqs: [3, 5], childIds: [], status: 'ready' })
+      native.setIndexCursor(legacyHeader.id, 9)
+      const before = native.getNode(legacyHeader.id, 'after-legacy').summary
+      const result = reindexSession(native, session)
+      assert.deepEqual(result.errors, []); assert.equal(native.listNodeIds(legacyHeader.id).length, 2)
+      const older = native.listNodes(legacyHeader.id).find(node => node.summarySeq === 2)
+      if (migrated) assert.equal(older.nodeId, 'prior-migration')
+      assert.deepEqual(native.getNode(legacyHeader.id, 'after-legacy').childIds, [older.nodeId])
+      assert.deepEqual(native.getNode(legacyHeader.id, 'after-legacy').summary, before)
+      assert.equal(reindexSession(native, session).indexed, 0)
+      assert.equal(doctorSession(native, session).ok, true)
+      const captured = captureDshPacket(store, legacyArchivePacket(events.map(event => ({ dsh_session: legacyHeader.id, role: event.type === 'user/message' ? 'user' : 'assistant', content: '', event }))))
+      assert.equal(store.stats(captured.session).unsummarized_records, 0)
+      assert.deepEqual(store.roots(captured.session)[0].source_records, [0, 5])
+    } finally { native.close(); store.close() }
+  }
+})
+
+test('markerless history refuses missing commits, changed bodies and incomplete source witnesses', () => {
+  const mutations = [events => events.splice(4, 1), events => { events[4].data.error = 'failed' },
+    events => { events[3].data.content[1].text = 'Different body' }, events => { events[3].sourceEventSeqs = [1, 2] },
+    events => { events[3].data.source.compactionId = 'wrong-id' }, events => { events[3].surfaceOp.endSeq = 5 },
+    events => { events[2].data.shadowedSeqs = [99]; events[3].sourceEventSeqs = [1, 2, 99] }]
+  for (const mutate of mutations) {
+    const events = JSON.parse(JSON.stringify(legacyHistory())); mutate(events)
+    assert.equal(nodeFromCompactionEvent({ id: legacyHeader.id, snapshotEvents: () => events }, events.find(event => event.seq === 2)), null)
+  }
 })

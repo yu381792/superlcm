@@ -110,6 +110,27 @@ test('incremental DSH classification reads only newly archived events', () => {
   } finally { store.close() }
 })
 
+test('replaced original versions stay archived and do not count as pending summaries', () => {
+  const store = fixture(), native = new SuperLcmStore(join(store.dir, 'lcm.sqlite'))
+  try {
+    const old = record(0), dependency = record(1), replacement = record(2)
+    replacement.event.type = 'tool/result'
+    replacement.event.surfaceOp = { op: 'replace', startSeq: 0, endSeq: 0 }
+    replacement.event.sourceEventSeqs = [0, 1]
+    native.upsertNode({ sessionId: header.id, nodeId: 'revised-result', summarySeq: 3, summary: [{ type: 'text', text: 'Updated result' }], summaryText: 'Updated result', sourceSeqs: [2], childIds: [], status: 'ready' })
+    const { session } = captureDshPacket(store, packet([old, dependency, replacement, { ...record(3), event: { seq: 3, type: 'compaction/summary', data: {} } }]))
+    const stats = store.stats(session)
+    assert.equal(stats.records, 4); assert.equal(stats.raw_records, 2); assert.equal(stats.summarized_records, 1)
+    assert.equal(stats.unsummarized_records, 1); assert.equal(stats.superseded_records, 1)
+    assert.deepEqual(stats.unsummarized_ranges, [{ from: 1, to: 1 }], 'a cited dependency outside the actual replaced span is still pending')
+    assert.deepEqual(stats.superseded_ranges, [{ from: 0, to: 0 }]); assert.match(store.exact(session, 0), /event 0/)
+    const reads = [], exact = store.exact.bind(store)
+    store.exact = (id, seq) => { reads.push(seq); return exact(id, seq) }
+    captureDshPacket(store, packet([record(4)]))
+    assert.deepEqual(reads, [4], 'classifying revisions also reads only newly appended events')
+  } finally { native.close(); store.close() }
+})
+
 test('shared DSH forest makes assembled nodes transparent and carries recursive exact originals', () => {
   const store = fixture(), native = new SuperLcmStore(join(store.dir, 'lcm.sqlite'))
   try {

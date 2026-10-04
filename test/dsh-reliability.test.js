@@ -16,6 +16,10 @@ import { appendRecallEnvelope, markerFromSummary } from '../dsh/marker.js'
 import { apply as nativeTools } from '../dsh/tool.js'
 import { isTransparentAssembly } from '../dsh/tree-semantics.js'
 import { preparedTreeNodes } from '../dsh/prepared-tree.js'
+import SessionQuery from '@deepseek-ai/dsh-session-query'
+import { apply as archivePlugin, projectEvent } from '../dsh/archive.js'
+import { ClaudeStore } from '../src/store.js'
+import { captureDshPacket, dshSessionKey } from '../src/dsh.js'
 
 test('transparent assembly proof preserves every image and file block', () => {
   const image = { type: 'image', source: { kind: 'fixture', data: 'original-image', mimeType: 'image/png' } }
@@ -59,6 +63,67 @@ test('prepared tree rejects duplicate forest coverage through a reused new draft
 })
 
 const tick = () => new Promise(r => setImmediate(r))
+
+for (const listingFails of [false, true]) test(listingFails
+  ? 'archive mounted after host ready drains known sources even when persistence listing fails'
+  : 'archive mounted after host ready replays live, mirrored cold and unseen cold sessions', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'superlcm-late-archive-')), ctx = new Context(), coldCtx = new Context()
+  const envKeys = ['DSH_SUPERLCM_DB', 'DSH_HOME', 'DSH_SUPERLCM_LEGACY_DB']
+  const prior = new Map(envKeys.map(key => [key, process.env[key]])), warnings = [], opened = []
+  process.env.DSH_SUPERLCM_DB = join(dir, 'lcm.sqlite')
+  process.env.DSH_HOME = join(dir, 'isolated-dsh')
+  process.env.DSH_SUPERLCM_LEGACY_DB = join(dir, 'absent-legacy.sqlite')
+  const shared = new ClaudeStore(dir)
+  try {
+    ctx.logger.warn = message => warnings.push(message)
+    new SessionStore(ctx); new SessionStore(coldCtx)
+    const append = (session, text) => session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
+    const live = ctx.sessions.create('late-live'), mirrored = coldCtx.sessions.create('late-mirrored-cold'), unseen = coldCtx.sessions.create('late-unseen-cold')
+    append(live, 'Live event before plugin mount')
+    for (const session of [mirrored, unseen]) for (let i = 0; i < 3; i++) append(session, 'Persisted fixture event ' + i)
+    const cold = new Map([mirrored, unseen].map(session => [session.id, { header: session.header, events: session.snapshotEvents() }]))
+    let failListing = false
+    ctx.reflect.provide('sessionPersistence', {
+      identity: {},
+      async list() { if (failListing) throw Error('fixture persistence listing failed'); return [...cold.values()].map(value => ({ header: value.header })) },
+      async stat(id) { const value = cold.get(id); return value ? { header: value.header, revision: 'fixture-revision' } : undefined },
+      async open(id, access) {
+        assert.equal(access, 'read'); opened.push(id)
+        const value = cold.get(id); assert.ok(value)
+        return { header: value.header, inheritedEventCount: 0, async read() { return { events: value.events } }, async close() {} }
+      },
+    })
+    ctx.reflect.provide('tools', { register() {} })
+    new SessionQuery(ctx)
+    await tick()
+    assert.deepEqual(ctx.sessions.list().map(session => session.id), [live.id], 'the actual live store does not enumerate cold histories')
+    assert.deepEqual(new Set((await ctx.sessionQuery.listSessions()).map(record => record.header.id)), new Set([live.id, mirrored.id, unseen.id]))
+    captureDshPacket(shared, { header: mirrored.header, records: [projectEvent(mirrored.id, mirrored.eventAt(0))] })
+    const native = new SuperLcmStore(join(dir, 'lcm.sqlite'))
+    try { assert.deepEqual(native.archivedSessionIds(), [mirrored.id]) } finally { native.close() }
+    ctx.emit('ready')
+    failListing = listingFails
+    archivePlugin(ctx, { archiveHome: dir })
+    const deadline = Date.now() + 5000
+    const expected = listingFails ? [live, mirrored] : [live, mirrored, unseen]
+    const complete = () => expected.every(session => shared.source(dshSessionKey(session.id)) && shared.stats(dshSessionKey(session.id)).records === session.seq)
+    while (!complete() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(complete(), true, 'worker readiness backfills every source without another ready event or chat message: ' + JSON.stringify(warnings))
+    assert.ok(opened.includes(mirrored.id))
+    if (!listingFails) assert.ok(opened.includes(unseen.id))
+    else assert.equal(shared.source(dshSessionKey(unseen.id)), undefined, 'listing failure cannot invent a cold source')
+    for (const session of expected) {
+      const key = dshSessionKey(session.id)
+      for (const event of session.snapshotEvents()) assert.deepEqual(JSON.parse(shared.exact(key, event.seq)).event, event)
+    }
+    assert.equal(warnings.some(message => /fixture persistence listing failed/.test(message)), listingFails)
+    assert.equal(warnings.some(message => /not found|history became shorter|identity changed|classification is incomplete/.test(message)), false)
+  } finally {
+    await ctx.fiber.dispose(); await coldCtx.fiber.dispose(); shared.close()
+    for (const [key, value] of prior) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
+  }
+})
+
 const config = { minRetainTokens: 1000, foldBatchTokens: 2000, pressureFoldTokens: 1000, softActiveTokens: 26000, hardActiveTokens: 28000 }
 async function host(response, run) {
   const dir = mkdtempSync(join(tmpdir(), 'superlcm-native-reliability-')), ctx = new Context(), prior = process.env.DSH_SUPERLCM_DB

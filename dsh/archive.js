@@ -37,8 +37,27 @@ export function apply(ctx,config={}) {
     onReady() {
       if (stopped) return
       reporter.report('', 'loaded')
+      // The host can mount this plugin after its ready event. Retry already
+      // archived sources at worker readiness instead of waiting for a new chat
+      // message or requiring the user to import a stranded archive manually.
+      for (const id of native.archivedSessionIds()) observed.add(id)
+      for (const session of ctx.sessions.list()) observed.add(session.id)
       for (const id of observed) dirty.add(id)
       queueMicrotask(drain)
+      // Live sessions and existing mirrors do not include cold histories that
+      // this plugin has never observed. Discover those after a late mount too;
+      // a failed persistence listing must not block the known-source replay.
+      void (async () => {
+        try {
+          const sessions = await ctx.sessionQuery.listSessions()
+          if (stopped) return
+          for (const { header } of sessions) {
+            if (observed.has(header.id)) continue
+            observed.add(header.id); dirty.add(header.id)
+          }
+          queueMicrotask(drain)
+        } catch (error) { warn(error) }
+      })()
     },
   })
 
