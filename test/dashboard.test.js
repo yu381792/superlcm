@@ -18,7 +18,34 @@ import { startWeb } from '../src/web.js'
 import { call } from '../src/mcp.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
+import { runInNewContext } from 'node:vm'
 const fixture=fn=>async t=>{const dir=mkdtempSync(join(tmpdir(),'superlcm-dashboard-')),store=new ClaudeStore(join(dir,'index')),_small=store.db.prepare('INSERT INTO summary_tuning VALUES(1,12000,8,4)').run(),env={...process.env,HOME:dir,USERPROFILE:dir,CODEX_HOME:join(dir,'codex'),CLAUDE_CONFIG_DIR:join(dir,'claude')};t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true})});await fn({dir,store,env,t})}
+
+test('DSH selected coverage UI uses effective counts, exact bands and plugin ownership', () => {
+ const code=readFileSync(new URL('../src/web-client.js',import.meta.url),'utf8')
+ const node={id:'summary',level:1,first:2,last:5,children:['leaf'],summary:'DSH native summary. Exact selected source records: 2, 4, 5. The range below is a reading envelope, not a claim that every intervening record was summarized.\nUseful navigation summary',source_records:[2,4,5],source_ranges:[{from:2,to:2},{from:4,to:5}]}
+ const leaf={id:'leaf',level:0,first:2,last:2,summary:'Leaf summary',children:[],source_records:[2],source_ranges:[{from:2,to:2}]}
+ const d={coverage:'selected-records',records:11,raw_records:5,summarized_records:3,unsummarized_records:2,summarized_to:8,summary_count:2,bands:[node,leaf],covered_ranges:node.source_ranges,unsummarized_ranges:[{from:8,to:8},{from:10,to:10}],latest_tail:{from:8,to:10,records:2},persistent_records:2,checkpoint_records:1,non_message_records:3,setting:{mode:'off',scope:'compaction-plugin'},backends:[]}
+ const elements=new Map(['#rows','#listCount','#more'].map(key=>[key,{querySelectorAll:()=>[]}]))
+ const context={state:{detail:d,open:new Set(),children:new Map(),rows:[{...d,session:'dsh-fixture',harness:'dsh',name:'DSH task'}],query:'',total:1,offset:null},t:(key,p={})=>key.replace(/\{([^}]+)\}/g,(_,k)=>p[k]),fmt:String,esc:String,writerLabel:()=> '关闭',mark:()=>'',ago:()=>'',delButton:()=>'',select:()=>{},$:key=>elements.get(key)}
+ const sections=[code.slice(code.indexOf('const pct = (x, total)'),code.indexOf('// One clear action')),code.slice(code.indexOf('function generateButton('),code.indexOf('function openGenerate(')),code.slice(code.indexOf('function nodeHtml('),code.indexOf('async function ensureChildren(')),code.slice(code.indexOf('function renderList('),code.indexOf("$('#more').onclick"))]
+ runInNewContext(sections.join('\n')+'\nthis.stripHtml=stripHtml;this.nodeHtml=nodeHtml;this.generateButton=generateButton;this.renderList=renderList',context)
+ const strip=context.stripHtml(d)
+ assert.match(strip,/SuperLcm 插件生成/);assert.doesNotMatch(strip,/摘要生成：关闭/)
+ assert.match(strip,/最新 2 条尚未摘要/);assert.doesNotMatch(strip,/最新 3 条尚未摘要/)
+ assert.match(strip,/已覆盖 3 条，未覆盖 2 条/)
+ assert.match(strip,/left:72\.727%;width:9\.091%/);assert.match(strip,/left:90\.909%;width:9\.091%/)
+ assert.doesNotMatch(strip,/left:0[^;]*;right:0|--p:/,'holes must not become one filled coverage envelope')
+ assert.match(strip,/阅读范围 #2–#5；精确选中 3 条记录/)
+ assert.equal((strip.match(/data-node=/g)||[]).length,2,'one clickable bar per real semantic node, including the leaf level')
+ assert.doesNotMatch(context.nodeHtml(node),/DSH native summary|Exact selected/)
+ assert.match(context.nodeHtml(node),/Useful navigation summary/)
+ context.state.open.add(node.id)
+ assert.match(context.nodeHtml({...node,level:0}),/class="children"/,'navigation children remain expandable on a leaf model layer')
+ assert.match(context.generateButton('生成摘要…'),/SuperLcm 插件生成/)
+ assert.doesNotMatch(context.generateButton('生成摘要…'),/配置自定义 API|没有可用/)
+ context.renderList();assert.match(elements.get('#rows').innerHTML,/width:60%/)
+})
 function transcript(env,h,id,name='Conversation'){const folder=configFiles(h,env).transcripts;mkdirSync(folder,{recursive:true});const path=join(folder,id+'.jsonl');const header=h==='codex'?{type:'session_meta',payload:{id}}:{sessionId:id,type:'custom-title',customTitle:name};writeFileSync(path,[header,...Array.from({length:8},(_,i)=>({role:i%2?'assistant':'user',content:name+' decision '+i,sessionId:id}))].map(x=>JSON.stringify(x)).join('\n')+'\n');return path}
 test('real CLI IDs survive policy and workers, dangerous model strings fail',fixture(({store})=>{for(const model of ['opus[1m]','claude-fable-5-1[1m]','tianyi/glm-5.3-oc','opencode-go/deepseek-v4.1-flash']){assert.equal(validModel(model),true);store.setGlobalSetting('cli',model);assert.equal(store.globalSetting().model,model)}for(const model of ['--flag','$(whoami)','a b','a;cmd','a\nfoo'])assert.equal(validModel(model),false)}))
 test('local conversations page by harness and index only a selected identity',fixture(async({env,store})=>{

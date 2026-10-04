@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { home as archiveHome } from '../src/store.js'
 import { CompressionReporter } from '../src/compression-status.js'
 
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 function parseJson(value, fallback) {
   if (typeof value !== 'string') return fallback
@@ -38,6 +38,7 @@ function rowToNode(row) {
     provider: row.provider ?? null,
     model: row.model ?? null,
     status: row.status,
+    kind: row.node_kind ?? null,
   }
 }
 
@@ -130,6 +131,9 @@ export class SuperLcmStore {
         tokenize = 'unicode61 remove_diacritics 2'
       );
     `)
+    if (!this.#db.prepare('PRAGMA table_info(lcm_nodes)').all().some(row => row.name === 'node_kind')) {
+      this.#db.exec('ALTER TABLE lcm_nodes ADD COLUMN node_kind TEXT')
+    }
     this.#db.exec(`
       INSERT OR IGNORE INTO lcm_scan_state(session_id, last_scanned_seq)
       SELECT session_id, last_committed_end_seq FROM lcm_index_state;
@@ -157,8 +161,8 @@ export class SuperLcmStore {
           session_id, node_id, compaction_id, summary_seq, created_at,
           summary_json, summary_text, summary_normalized,
           child_ids_json, source_seqs_json, source_start, source_end,
-          shadowed_token_count, provider, model, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          shadowed_token_count, provider, model, status, node_kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, node_id) DO UPDATE SET
           compaction_id = excluded.compaction_id,
           summary_seq = excluded.summary_seq,
@@ -173,7 +177,8 @@ export class SuperLcmStore {
           shadowed_token_count = excluded.shadowed_token_count,
           provider = excluded.provider,
           model = excluded.model,
-          status = excluded.status
+          status = excluded.status,
+          node_kind = excluded.node_kind
       `).run(
         node.sessionId,
         node.nodeId,
@@ -191,6 +196,7 @@ export class SuperLcmStore {
         node.provider ?? null,
         node.model ?? null,
         node.status ?? 'ready',
+        node.kind ?? null,
       )
       this.#db.prepare('DELETE FROM lcm_edges WHERE session_id = ? AND parent_id = ?')
         .run(node.sessionId, node.nodeId)

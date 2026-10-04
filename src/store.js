@@ -1,7 +1,7 @@
 import { initializeEventCounts } from './event-counts.js'
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
-import { dshCoverage, dshNodeSources } from './dsh-summaries.js'
+import { dshCoverage, dshNodeSources, dshVisibleNodes } from './dsh-summaries.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS, validApiModel } from './api-endpoint.js'
 import { readApiKey, saveApiKey, removeApiKey } from './api-credentials.js'
 import { takeoverDefaults, takeoverLimits } from './compaction.js'
@@ -305,9 +305,10 @@ export class ClaudeStore {
     const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
-    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session) AS summary_count,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session) AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session) AS levels,CASE WHEN COALESCE(o.display_name,'')<>'' AND COALESCE(o.name_source,'')<>'' THEN NULL ELSE (SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) END AS first_message FROM page p JOIN sources s ON p.session=s.session LEFT JOIN session_origins o ON s.session=o.session"
+    const visible = dshVisibleNodes(this.db)
+    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session AND "+visible+") AS summary_count,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session AND "+visible+") AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session AND "+visible+") AS levels,CASE WHEN COALESCE(o.display_name,'')<>'' AND COALESCE(o.name_source,'')<>'' THEN NULL ELSE (SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) END AS first_message FROM page p JOIN sources s ON p.session=s.session LEFT JOIN session_origins o ON s.session=o.session"
     const page="WITH page AS MATERIALIZED (SELECT s.session FROM sources s LEFT JOIN session_origins o ON s.session=o.session"+where+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session LIMIT ? OFFSET ?) '
-    const sessions=this.db.prepare(page+select+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,code:shortCode(row.session),summary_mode:setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
+    const sessions=this.db.prepare(page+select+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,...(row.harness==='dsh'?dshCoverage(this,row.session,row.records):{}),code:shortCode(row.session),summary_mode:setting.scope==='compaction-plugin'?'compaction-plugin':setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}
   }
   resolveSession(query,harness) {
@@ -332,18 +333,19 @@ export class ClaudeStore {
     throw new Error(`"${query}" matches ${matches.length} conversations: `+matches.slice(0,8).map(m=>`#${m.code} ${m.name} (${m.harness})`).join('; ')+'. Retry with a #code.')
   }
   stats(session) {
-    const stats=this.db.prepare('SELECT COALESCE((SELECT records FROM session_event_counts WHERE session=?),0) AS records,(SELECT COALESCE(MAX(last)+1,0) FROM nodes WHERE session=?) AS summarized_to,(SELECT COUNT(*) FROM nodes WHERE session=?) AS summary_count,(SELECT COALESCE(MAX(level)+1,0) FROM nodes WHERE session=?) AS levels,(SELECT updated_ms FROM sources WHERE session=?) AS updated_ms').get(session,session,session,session,session)
-    return this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness==='dsh'?{...stats,...dshCoverage(this.db,session,stats.records)}:stats
+    const visible=dshVisibleNodes(this.db)
+    const stats=this.db.prepare('SELECT COALESCE((SELECT records FROM session_event_counts WHERE session=?),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=? AND '+visible+') AS summarized_to,(SELECT COUNT(*) FROM nodes n WHERE n.session=? AND '+visible+') AS summary_count,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=? AND '+visible+') AS levels,(SELECT updated_ms FROM sources WHERE session=?) AS updated_ms').get(session,session,session,session,session)
+    return this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness==='dsh'?{...stats,...dshCoverage(this,session,stats.records)}:stats
   }
   // Roots of the summary forest in time order: the shortest outline that covers everything summarized.
   roots(session) {
-    const nodes=this.db.prepare('SELECT id,level,first,last,children,summary FROM nodes WHERE session=? ORDER BY first,level DESC').all(session)
+    const nodes=this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.children,n.summary FROM nodes n WHERE n.session=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.first,n.level DESC').all(session)
     const owned=new Set(nodes.flatMap(n=>JSON.parse(n.children)))
     return nodes.filter(n=>!owned.has(n.id)).map(n=>dshNodeSources(this.db,session,{...n,children:JSON.parse(n.children)}))
   }
   outline(session, nodeId) {
     const source=this.metadata(session), stats=this.stats(session)
-    const tail=stats.summarized_to<stats.records?{from:stats.summarized_to,to:stats.records-1}:null
+    const tail=stats.coverage==='selected-records'?stats.latest_tail:stats.summarized_to<stats.records?{from:stats.summarized_to,to:stats.records-1}:null
     if(!nodeId) return {source,...stats,nodes:this.roots(session),unsummarized:tail}
     const node=this.node(session,nodeId)
     if(!node) throw new Error('Unknown summary node')
@@ -377,7 +379,10 @@ export class ClaudeStore {
     if (!Number.isSafeInteger(from) || from<0 || !Number.isSafeInteger(to) || to<from) throw new Error('Invalid record range')
     return this.db.prepare('SELECT ordinal,preview FROM events WHERE session=? AND ordinal BETWEEN ? AND ? ORDER BY ordinal LIMIT 400').all(session,from,Math.min(to,from+399))
   }
-  bands(session) { return this.db.prepare('SELECT id,level,first,last FROM nodes WHERE session=? AND level>=1 ORDER BY level DESC,first').all(session) }
+  bands(session) {
+    const firstLevel=this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness==='dsh'?0:1
+    return this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.children FROM nodes n WHERE n.session=? AND n.level>=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.level DESC,n.first').all(session,firstLevel).map(node=>dshNodeSources(this.db,session,{...node,children:JSON.parse(node.children)}))
+  }
   harnessGroups() { return this.db.prepare("SELECT COALESCE(o.harness,'legacy') AS harness,COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON o.session=s.session GROUP BY 1 ORDER BY 2 DESC").all() }
   summarizing(session) { return Boolean(this.db.prepare('SELECT 1 FROM leases WHERE session=? AND until_ms>?').get(session,Date.now())) }
   // Most recent visible messages, oldest first, within a character budget.
@@ -403,15 +408,15 @@ export class ClaudeStore {
     const scope=session?' AND x.session=?':harness?" AND x.session IN (SELECT session FROM session_origins WHERE harness=?)":''
     const args=session?[session]:harness?[harness]:[]
     const conversations=session?[]:this.resolve(query).filter(m=>!harness||m.harness===harness).slice(0,10)
-    const summaries=this.db.prepare(`SELECT x.session,x.id,x.level,x.first,x.last,x.summary FROM nodes x WHERE x.summary LIKE ? ESCAPE '\\'${scope} ORDER BY x.level DESC,x.first DESC LIMIT ?`).all(like,...args,cap).map(r=>({...r,conversation:this.metadata(r.session)}))
+    const summaries=this.db.prepare(`SELECT x.session,x.id,x.level,x.first,x.last,x.summary FROM nodes x WHERE x.summary LIKE ? ESCAPE '\\' AND ${dshVisibleNodes(this.db,'x')}${scope} ORDER BY x.level DESC,x.first DESC LIMIT ?`).all(like,...args,cap).map(r=>({...r,conversation:this.metadata(r.session)}))
     const events=this.db.prepare(`SELECT x.session,x.ordinal,x.preview FROM events x WHERE x.preview LIKE ? ESCAPE '\\'${scope} ORDER BY x.rowid DESC LIMIT ?`).all(like,...args,cap).map(r=>{const i=r.preview.toLowerCase().indexOf(query.trim().toLowerCase());return {session:r.session,ordinal:r.ordinal,snippet:r.preview.slice(Math.max(0,i-120),i+240),conversation:this.metadata(r.session)}})
     return {query,conversations,summaries,events}
   }
   summaries(session, limit=10, offset=0) {
     const source=this.metadata(session)
     if (!Number.isSafeInteger(limit) || limit<1 || limit>50 || !Number.isSafeInteger(offset) || offset<0) throw new Error('Invalid summary page; limit must be 1–50 and offset nonnegative')
-    const total=this.db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE session=?').get(session).n
-    const rows=this.db.prepare('SELECT id,level,first,last,children,summary,model FROM nodes WHERE session=? ORDER BY level DESC,first ASC,id ASC LIMIT ? OFFSET ?').all(session,limit,offset).map(row=>({...row,children:JSON.parse(row.children)}))
+    const total=this.db.prepare('SELECT COUNT(*) AS n FROM nodes n WHERE n.session=? AND '+dshVisibleNodes(this.db)).get(session).n
+    const rows=this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.children,n.summary,n.model FROM nodes n WHERE n.session=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.level DESC,n.first ASC,n.id ASC LIMIT ? OFFSET ?').all(session,limit,offset).map(row=>({...row,children:JSON.parse(row.children)}))
     return {session,source,total,nodes:rows,next_offset:offset+rows.length<total ? offset+rows.length : null}
   }
   source(session) { return this.db.prepare('SELECT * FROM sources WHERE session=?').get(session) }
@@ -605,7 +610,7 @@ export class ClaudeStore {
   }
   eventRows(session) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? ORDER BY ordinal').all(session) }
   eventRowsFrom(session, start) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? AND ordinal>=? ORDER BY ordinal').all(session, start) }
-  nodeRows(session, level) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND level=? ORDER BY first').all(session, level) }
+  nodeRows(session, level) { return this.db.prepare('SELECT n.* FROM nodes n WHERE n.session=? AND n.level=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.first').all(session, level) }
   node(session, id) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND id=?').get(session, id) }
   addNode(node, { leaseOwner } = {}) {
     this.db.exec('BEGIN IMMEDIATE')
@@ -638,13 +643,13 @@ export class ClaudeStore {
     return {
       source:this.metadata(session),
       events: this.db.prepare('SELECT e.session,e.ordinal,substr(e.preview,1,500) AS snippet FROM event_fts f JOIN events e ON e.session=f.session AND e.ordinal=f.ordinal WHERE event_fts MATCH ? AND f.session=? ORDER BY e.ordinal DESC LIMIT ?').all(q,session,cap),
-      nodes: this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.summary FROM node_fts f JOIN nodes n ON n.session=f.session AND n.id=f.id WHERE node_fts MATCH ? AND f.session=? ORDER BY n.level DESC,n.first DESC LIMIT ?').all(q,session,cap)
+      nodes: this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.summary FROM node_fts f JOIN nodes n ON n.session=f.session AND n.id=f.id WHERE node_fts MATCH ? AND f.session=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.level DESC,n.first DESC LIMIT ?').all(q,session,cap)
     }
   }
   describe(session, id) {
     const node = this.node(session,id)
     if (!node) throw new Error('Unknown node')
-    const parents = this.db.prepare('SELECT id FROM nodes WHERE session=? AND level>? AND first<=? AND last>=? ORDER BY level LIMIT 20').all(session,node.level,node.first,node.last).map(r=>r.id)
+    const parents = this.db.prepare('SELECT n.id FROM nodes n WHERE n.session=? AND '+dshVisibleNodes(this.db)+' AND EXISTS (SELECT 1 FROM json_each(n.children) WHERE value=?) ORDER BY n.level LIMIT 20').all(session,node.id).map(r=>r.id)
     return { ...node, source:this.metadata(session), children: JSON.parse(node.children), parents }
   }
   expand(session, id, ordinal, charOffset = 0, maxChars = 12000) {
@@ -667,7 +672,7 @@ export class ClaudeStore {
     return { source:this.metadata(session),chunks, next: chunks.at(-1)?.ordinal < node.last ? { ordinal:chunks.at(-1).ordinal+1,charOffset:0 } : null }
   }
   overview(session) {
-    const nodes = this.db.prepare('SELECT id,level,first,last,substr(summary,1,320) AS summary FROM nodes WHERE session=? ORDER BY level DESC,last DESC LIMIT 5').all(session)
+    const nodes = this.db.prepare('SELECT n.id,n.level,n.first,n.last,substr(n.summary,1,320) AS summary FROM nodes n WHERE n.session=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.level DESC,n.last DESC LIMIT 5').all(session)
     return { session, nodes, source:this.metadata(session),kind:this.source(session)?.kind || null }
   }
   doctor(session) {

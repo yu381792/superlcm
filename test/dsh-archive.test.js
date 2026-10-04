@@ -11,10 +11,11 @@ import { migrateLegacyIndex } from '../dsh/migration.js'
 import { ArchiveWorker } from '../dsh/worker-client.js'
 import { call } from '../src/mcp.js'
 import { readRawDshSession } from '../dsh/raw-session.js'
+import { syncDshSummaries } from '../src/dsh-summaries.js'
 
 const fixture = () => new ClaudeStore(mkdtempSync(join(tmpdir(), 'superlcm-dsh-test-')))
 const header = { id: 'native-test', createdAt: 100, cwd: '/project' }
-const record = (seq, text = 'event ' + seq) => ({ role: seq === 0 ? 'user' : 'assistant', content: text, dsh_session: header.id, event: { seq, time: 100 + seq, type: seq === 0 ? 'user/message' : 'assistant/message', data: { content: [{ type: 'text', text }] } } })
+const record = (seq, text = 'event ' + seq) => ({ role: seq === 0 ? 'user' : 'assistant', content: text, dsh_session: header.id, event: { seq, time: 100 + seq, type: seq === 0 ? 'user/message' : 'assistant/message', data: { content: [{ type: 'text', text }] }, surfaceOp: 'append' } })
 const packet = records => ({ header, title: 'DSH 任务', records })
 
 test('cold capture reads raw persistence and excludes synthetic interrupted-turn closers', async () => {
@@ -55,6 +56,87 @@ test('changed event, sequence gap and changed identity refuse mutation', () => {
     assert.throws(() => captureDshPacket(store, { ...packet([]), header: { ...header, cwd: '/other' } }), /identity changed/)
     assert.equal(store.stats(result.session).records, 1)
   } finally { store.close() }
+})
+
+test('a legacy header without delegationDepth accepts its default only and refreshes the native title', () => {
+  const store = fixture()
+  try {
+    const result = captureDshPacket(store, { header, records: [record(0)] })
+    store.db.prepare('UPDATE dsh_mirrors SET header=? WHERE session=?').run(JSON.stringify(Object.fromEntries(Object.entries(header).sort(([a], [b]) => a.localeCompare(b)))), result.session)
+    captureDshPacket(store, { header: { ...header, delegationDepth: 0 }, records: [record(1)], title: 'Native user title' })
+    assert.equal(store.stats(result.session).records, 2)
+    assert.equal(store.metadata(result.session).name, 'Native user title')
+    assert.equal(store.metadata(result.session).name_source, 'native')
+    for (const change of [{ createdAt: 101 }, { cwd: '/different' }, { delegationDepth: 1 }, { delegationDepth: null }]) {
+      assert.throws(() => captureDshPacket(store, { header: { ...header, delegationDepth: 0, ...change }, records: [] }), /identity changed/)
+    }
+  } finally { store.close() }
+})
+
+test('DSH coverage counts exact original surface messages, not metadata or preview text', () => {
+  const store = fixture(), native = new SuperLcmStore(join(store.dir, 'lcm.sqlite'))
+  try {
+    const event = (seq, type, op, source) => ({ role: type === 'user/message' ? 'user' : 'assistant', content: '', dsh_session: header.id,
+      event: { seq, type, data: { ...(source ? { source } : {}), content: [] }, ...(op ? { surfaceOp: seq % 2 ? op : { op } } : {}) } })
+    const records = [event(0, 'turn/start'), event(1, 'system/message', 'append'), event(2, 'user/message', 'append'),
+      event(3, 'tool/call'), event(4, 'assistant/message', 'append'), event(5, 'tool/result', 'append'), event(6, 'compaction/summary'),
+      event(7, 'user/message', 'replace', { kind: 'compact-checkpoint' }), event(8, 'user/message', 'replace'),
+      event(9, 'developer/message', 'append'), event(10, 'tool/result', 'replace')]
+    native.upsertNode({ sessionId: header.id, nodeId: 'surface-node', summarySeq: 6, summary: [{ type: 'text', text: 'Source summary' }], summaryText: 'Source summary', sourceSeqs: [2, 4, 5], childIds: [], status: 'ready' })
+    const { session } = captureDshPacket(store, packet(records)), stats = store.stats(session), listed = store.listSessions().sessions[0]
+    assert.equal(stats.records, 11)
+    assert.equal(stats.raw_records, 5); assert.equal(stats.summarized_records, 3); assert.equal(stats.unsummarized_records, 2)
+    assert.equal(stats.non_message_records, 3); assert.equal(stats.persistent_records, 2); assert.equal(stats.checkpoint_records, 1)
+    assert.deepEqual(stats.covered_ranges, [{ from: 2, to: 2 }, { from: 4, to: 5 }])
+    assert.deepEqual(stats.unsummarized_ranges, [{ from: 8, to: 8 }, { from: 10, to: 10 }])
+    assert.deepEqual(stats.latest_tail, { from: 8, to: 10, records: 2, ranges: stats.unsummarized_ranges })
+    assert.deepEqual(store.outline(session).unsummarized, stats.latest_tail)
+    for (const key of ['records', 'raw_records', 'summarized_records', 'unsummarized_records', 'unsummarized_ranges', 'latest_tail']) assert.deepEqual(listed[key], stats[key])
+    assert.equal(listed.summary_mode, 'compaction-plugin')
+  } finally { native.close(); store.close() }
+})
+
+test('incremental DSH classification reads only newly archived events', () => {
+  const store = fixture()
+  try {
+    const { session } = captureDshPacket(store, packet([record(0)])), exact = store.exact.bind(store), read = []
+    store.exact = (id, seq) => { read.push(seq); return exact(id, seq) }
+    captureDshPacket(store, packet([record(1), record(2)]))
+    assert.deepEqual(read, [1, 2])
+    read.length = 0
+    store.stats(session); store.listSessions(); captureDshPacket(store, packet([]))
+    assert.deepEqual(read, [])
+    assert.equal(store.stats(session).raw_records, 3)
+  } finally { store.close() }
+})
+
+test('shared DSH forest makes assembled nodes transparent and carries recursive exact originals', () => {
+  const store = fixture(), native = new SuperLcmStore(join(store.dir, 'lcm.sqlite'))
+  try {
+    const base = { sessionId: header.id, summarySeq: 8, status: 'ready', childIds: [] }
+    const leaf = (nodeId, sourceSeqs, text) => ({ ...base, nodeId, sourceSeqs, summary: [{ type: 'text', text }], summaryText: text })
+    native.upsertNode(leaf('leaf-one', [0, 2], 'Summary one'))
+    native.upsertNode(leaf('leaf-two', [4], 'Summary two'))
+    native.upsertNode({ ...base, nodeId: 'assembled', sourceSeqs: [0, 2, 4], childIds: ['leaf-one', 'leaf-two'], summary: [{ type: 'text', text: 'Summary one' }, { type: 'text', text: 'Summary two' }], summaryText: 'Summary one\n\nSummary two' })
+    native.upsertNode({ ...leaf('condensed', [6], 'A genuinely shorter summary'), childIds: ['assembled'] })
+    const records = Array.from({ length: 9 }, (_, i) => record(i))
+    records[6].event = { seq: 6, type: 'user/message', data: { source: { kind: 'compact-checkpoint' }, content: [] }, surfaceOp: { op: 'replace' } }
+    const { session } = captureDshPacket(store, packet(records))
+    // Simulate a derived envelope from the prior implementation without touching native history.
+    store.addNode({ session, id: 'dsh-native-assembled', level: 1, first: 0, last: 4, children: ['dsh-native-leaf-one', 'dsh-native-leaf-two'], summary: 'Historical assembled text', digest: 'old', model: 'old' })
+    syncDshSummaries(store, session, header.id)
+    assert.equal(store.stats(session).summary_count, 3)
+    assert.equal(store.stats(session).levels, 2)
+    assert.equal(store.node(session, 'dsh-native-assembled').summary, 'Historical assembled text', 'historical derived rows are retained')
+    const [root] = store.roots(session)
+    assert.equal(root.id, 'dsh-native-condensed'); assert.equal(root.level, 1)
+    assert.deepEqual(root.children, ['dsh-native-leaf-one', 'dsh-native-leaf-two'])
+    assert.deepEqual(root.source_records, [0, 2, 4]); assert.equal(root.first, 0); assert.equal(root.last, 4)
+    assert.deepEqual(store.outline(session, root.id).nodes.map(n => n.id), root.children)
+    assert.equal(store.summaries(session).nodes.some(n => n.id === 'dsh-native-assembled'), false)
+    assert.equal(store.find('Historical assembled').summaries.length, 0)
+    assert.deepEqual(native.getNode(header.id, 'condensed').sourceSeqs, [6], 'native sources stay immutable')
+  } finally { native.close(); store.close() }
 })
 
 test('file append before database commit is recovered once; incomplete tail is refused', () => {

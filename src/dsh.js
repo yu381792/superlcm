@@ -7,6 +7,9 @@ import { syncDshSummaries } from './dsh-summaries.js'
 
 const sha = value => createHash('sha256').update(value).digest('hex')
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value
+// Native persistence adds this default when reading older headers. It does
+// not identify a different session; every other identity field stays exact.
+const stableHeader = value => JSON.stringify(canonical({ ...value, delegationDepth: value.delegationDepth === undefined ? 0 : value.delegationDepth }))
 export function dshSessionKey(id) {
   if (typeof id !== 'string' || !/^[\w.-]{1,190}$/.test(id)) throw Error('Invalid DSH session ID')
   return 'dsh-' + id
@@ -34,7 +37,7 @@ export function captureDshPacket(store, packet, {clientKind='hook'}={}) {
   initialize(store)
   const folder = join(store.dir, 'dsh'); mkdirSync(folder, { recursive: true, mode: 0o700 })
   const file = join(folder, sha(id).slice(0, 40) + '.jsonl')
-  const header = JSON.stringify(canonical(packet.header))
+  const header = stableHeader(packet.header)
   const records = packet.records.map(record => ({ record, digest: checkRecord(record, id) }))
   let added = 0
   store.db.exec('BEGIN IMMEDIATE')
@@ -43,7 +46,7 @@ export function captureDshPacket(store, packet, {clientKind='hook'}={}) {
       for(const table of ['deleted_sessions','dsh_mirrors','dsh_event_digests'])store.db.prepare('DELETE FROM '+table+' WHERE session=?').run(session)
     }
     const saved = store.db.prepare('SELECT * FROM dsh_mirrors WHERE session=?').get(session)
-    if (saved && saved.header !== header) throw Error('DSH session identity changed; refusing to mix histories')
+    if (saved && stableHeader(JSON.parse(saved.header)) !== header) throw Error('DSH session identity changed; refusing to mix histories')
     let next = saved?.next_seq ?? 0, bytes = saved?.bytes ?? 0
     const size = existsSync(file) ? statSync(file).size : 0
     if (size < bytes) throw Error('DSH mirror became shorter; original history was not replaced')

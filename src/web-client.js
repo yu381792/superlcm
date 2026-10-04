@@ -95,7 +95,8 @@ function renderChips() {
 function renderList() {
   if (state.query) return
   $('#rows').innerHTML = state.rows.length ? state.rows.map(c => {
-    const pct = c.records ? Math.round(Math.min(c.summarized_to, c.records) / c.records * 100) : 0
+    const count = c.raw_records ?? c.records, summarized = c.summarized_records ?? c.summarized_to
+    const pct = count ? Math.round(Math.min(summarized, count) / count * 100) : 0
     return '<div class="row-wrap"><button type="button" class="row" role="option" aria-selected="' + (c.session === state.sel) + '" data-id="' + esc(c.session) + '">' + mark(c.harness) +
       '<span class="name">' + esc(c.name) + '</span><span class="meta"><span class="num">' + t('{n} 条', { n: fmt(c.records) }) + '</span><span>·</span><span>' + ago(c.updated_ms) + '</span>' +
       (c.summary_count ? '<span class="mini" title="' + t('摘要覆盖 {n}%', { n: pct }) + '"><i style="width:' + pct + '%"></i></span>' : '<span>' + t('暂无摘要') + '</span>') + '</span></button>' + delButton(c) + '</div>'
@@ -175,17 +176,20 @@ async function loadDetail() {
 }
 const pct = (x, total) => (x / total * 100).toFixed(3) + '%'
 function stripHtml(d) {
-  const total = Math.max(d.records, 1), tail = d.records - d.summarized_to
+  const selected = d.coverage === 'selected-records'
+  const total = Math.max(d.records, 1), tail = selected ? d.latest_tail?.records || 0 : d.records - d.summarized_to
   const maxLevel = d.bands.reduce((m, b) => Math.max(m, b.level), 0)
   let lanes = ''
-  for (let level = maxLevel; level >= 1; level--) {
+  for (let level = maxLevel; level >= (selected ? 0 : 1); level--) {
     lanes += '<span class="lane-label">' + t('第 {n} 层', { n: level + 1 }) + '</span><div class="lane">' + d.bands.filter(b => b.level === level).map(b =>
-      '<button type="button" class="seg ' + (level > 3 ? 'lx' : 'l' + level) + '" data-node="' + esc(b.id) + '" title="' + t('第 {n} 层', { n: level + 1 }) + ' · #' + b.first + '–' + b.last + '" style="left:calc(' + pct(b.first, total) + ' + 1px);width:calc(' + pct(b.last - b.first + 1, total) + ' - 2px)"></button>').join('') + '</div>'
+      '<button type="button" class="seg ' + (level > 3 ? 'lx' : 'l' + level) + '" data-node="' + esc(b.id) + '" title="' + t('第 {n} 层', { n: level + 1 }) + ' · ' + (selected ? t('阅读范围 #{a}–#{b}；精确选中 {n} 条记录', { a: b.first, b: b.last, n: b.source_records?.length ?? 0 }) : '#' + b.first + '–' + b.last) + '" style="' + (selected ? 'background:var(--l' + Math.min(level, 3) + ');left:' + pct(b.first, total) + ';width:' + pct(b.last - b.first + 1, total) : 'left:calc(' + pct(b.first, total) + ' + 1px);width:calc(' + pct(b.last - b.first + 1, total) + ' - 2px)') + '"></button>').join('') + '</div>'
   }
-  if (d.summary_count) lanes += '<span class="lane-label">' + t('第 {n} 层', { n: 1 }) + '</span><div class="lane l0" style="--p:' + pct(d.summarized_to, total) + '"></div>'
-  lanes += '<span class="lane-label">' + t('原文') + '</span><div class="lane raw">' + (tail > 0 && d.summary_count ? '<span class="seg tail" style="left:' + pct(d.summarized_to, total) + ';right:0" title="' + t('最新 {n} 条尚未摘要', { n: tail }) + '"></span>' : '') + '</div>'
-  const note = d.summary_count ? '<div class="strip-note">' + (d.bands.length ? '<span><i class="k" style="background:var(--l3)"></i>' + t('层级越高越概括') + '</span>' : '') + (tail > 0 ? '<span><i class="k" style="background:var(--tail)"></i>' + t('最新 {n} 条尚未摘要，原文可查', { n: fmt(tail) }) + '</span>' : '') + '<span style="margin-left:auto">' + t('摘要生成：') + writerLabel(d.setting.mode) + '</span></div>' : ''
-  return '<div><div class="section-h"><h2>' + t('摘要层级') + '</h2>' + (d.bands.length ? '<span class="aside">' + t('点击色块定位到对应摘要') + '</span>' : '') + '</div><div class="strip"><div class="lanes">' + lanes + '</div><div class="axis"><span>#0</span>' + (d.records > 2 ? '<span>#' + Math.round(d.records / 2) + '</span>' : '') + '<span>#' + Math.max(d.records - 1, 0) + '</span></div>' + note + '</div></div>'
+  if (d.summary_count && !selected) lanes += '<span class="lane-label">' + t('第 {n} 层', { n: 1 }) + '</span><div class="lane l0" style="--p:' + pct(d.summarized_to, total) + '"></div>'
+  const pending = selected ? d.unsummarized_ranges : tail > 0 && d.summary_count ? [{ from: d.summarized_to, to: d.records - 1 }] : []
+  lanes += '<span class="lane-label">' + t('原文') + '</span><div class="lane raw">' + pending.map(r => '<span class="seg tail" style="left:' + pct(r.from, total) + ';width:' + pct(r.to - r.from + 1, total) + '" title="#' + r.from + '–' + r.to + '"></span>').join('') + '</div>'
+  const note = d.summary_count || selected ? '<div class="strip-note">' + (d.bands.length ? '<span><i class="k" style="background:var(--l3)"></i>' + t('层级越高越概括') + '</span>' : '') + (tail > 0 ? '<span><i class="k" style="background:var(--tail)"></i>' + t('最新 {n} 条尚未摘要，原文可查', { n: fmt(tail) }) + '</span>' : '') + '<span style="margin-left:auto">' + t('摘要生成：') + (selected ? t('SuperLcm 插件生成') : writerLabel(d.setting.mode)) + '</span></div>' : ''
+  const counts = selected ? '<p class="muted">' + t('有效原文：已覆盖 {a} 条，未覆盖 {b} 条；非消息事件 {c} 条，常驻消息 {d} 条，摘要检查点 {e} 条。全部原始事件均已存档。', { a: fmt(d.summarized_records), b: fmt(d.unsummarized_records), c: fmt(d.non_message_records), d: fmt(d.persistent_records), e: fmt(d.checkpoint_records) }) + '</p>' : ''
+  return '<div><div class="section-h"><h2>' + t('摘要层级') + '</h2>' + (d.bands.length ? '<span class="aside">' + t('点击色块定位到对应摘要') + '</span>' : '') + '</div><div class="strip"><div class="lanes">' + lanes + '</div><div class="axis"><span>#0</span>' + (d.records > 2 ? '<span>#' + Math.round(d.records / 2) + '</span>' : '') + '<span>#' + Math.max(d.records - 1, 0) + '</span></div>' + note + '</div>' + counts + '</div>'
 }
 // One clear action; the method (and whose quota it spends) is chosen in a confirmation dialog.
 // Only methods this computer can run are offered: installed CLIs and a saved custom API.
@@ -195,6 +199,7 @@ const BACKENDS = {
 }
 function generateButton(label, cls = 'btn small') {
   const d = state.detail
+  if (d.setting.scope === 'compaction-plugin') return '<span class="muted">' + t('摘要由 SuperLcm 插件生成，最近原文完整保留。') + '</span>'
   if (!(d.backends || []).length) return '<span class="muted">' + t('本机没有可用的摘要生成方式。') + '</span><button type="button" class="' + cls + '" data-goto="settings">' + t('配置自定义 API') + '</button>'
   if (!d.estimate?.calls) return '<span class="muted">' + t('未摘要的对话文字约 {a} 字，还不到一段摘要（{b} 字），暂不需要生成。', { a: fmt(d.estimate.tail_chars), b: fmt(d.estimate.target_chars) }) + '</span>'
   return '<button type="button" class="' + cls + '" data-generate>' + t(label) + '</button>'
@@ -219,7 +224,9 @@ function openGenerate() {
   })
 }
 function renderDetail() {
-  const d = state.detail, c = d.source, tail = d.records - d.summarized_to
+  const d = state.detail, c = d.source, selected = d.coverage === 'selected-records'
+  const tailRange = selected ? d.latest_tail : d.summarized_to < d.records ? { from: d.summarized_to, to: d.records - 1, records: d.records - d.summarized_to } : null
+  const tail = tailRange?.records || 0
   let html = '<div class="detail-inner"><button type="button" class="btn small back" id="back">← ' + t('返回列表') + '</button>' +
     '<div class="d-head"><div class="d-title"><h1 title="' + esc(c.name) + '">' + esc(c.name) + '</h1><div class="d-meta">' + mark(c.harness, 'sm') + '<span>' + esc(toolName(c.harness)) + '</span><span class="tag" title="' + t('对话编号，接续时使用') + '">#' + esc(c.code) + '</span><span class="num">' + t('{n} 条原文', { n: fmt(d.records) }) + '</span><span>' + t('更新于 {t}', { t: ago(d.updated_ms) }) + '</span></div></div>' +
     '<div class="actions"><button type="button" class="btn icon" id="delete" title="' + t('删除对话') + '" aria-label="' + t('删除对话') + '">' + TRASH + '</button><button type="button" class="btn" id="rename">' + t('重命名') + '</button><button type="button" class="btn primary" id="continue">' + t('换个工具继续') + '</button></div></div>'
@@ -230,7 +237,8 @@ function renderDetail() {
   else if (d.summary_count && d.estimate?.calls >= 2 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后：还差约 {n} 次摘要（含向上合并）。', { n: fmt(d.estimate.calls) }) + '</b>' + t('对话模型生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
   if (d.summary_count) {
     html += '<div><div class="section-h"><h2>' + t('摘要目录') + '</h2><span class="aside"><button type="button" class="link" id="collapseAll">' + t('收起全部') + '</button></span></div><div class="tree">' + d.nodes.map(nodeHtml).join('') +
-      (tail > 0 ? '<div class="tail-row"><span>' + t('最新 {n} 条（{r}）尚未摘要', { n: '<b class="num">' + fmt(tail) + '</b>', r: '#' + d.summarized_to + '–#' + (d.records - 1) }) + '</span><button type="button" class="btn small" data-raw="' + Math.max(d.summarized_to, d.records - 60) + '-' + (d.records - 1) + '">' + t('查看原文') + '</button></div>' : '') + '</div></div>'
+      (tail > 0 ? '<div class="tail-row"><span>' + t('最新 {n} 条（{r}）尚未摘要', { n: '<b class="num">' + fmt(tail) + '</b>', r: '#' + tailRange.from + '–#' + tailRange.to }) + '</span><button type="button" class="btn small" data-raw="' + Math.max(tailRange.from, tailRange.to - 60) + '-' + tailRange.to + '">' + t('查看原文') + '</button></div>' : '') +
+      (selected && d.unsummarized_records > tail ? '<div class="tail-row">' + t('另有 {n} 条较早有效原文未被选入摘要，原文仍可查。', { n: fmt(d.unsummarized_records - tail) }) + '</div>' : '') + '</div></div>'
   } else {
     html += '<div class="notice calm"><span><b>' + t('此对话暂无摘要。') + '</b>' + t('{n} 条原文已完整保存，AI 可按编号读取和搜索；接续时将提供最近的原文。', { n: fmt(d.records) }) + (d.setting.mode === 'agent' ? t('对话模型生成只在该对话继续进行时才会写摘要。') : '') + '</span></div>' +
       '<div class="actions">' + (d.summarizing ? '' : generateButton('生成摘要…', 'btn primary')) + '<button type="button" class="btn" data-raw="' + Math.max(0, d.records - 60) + '-' + Math.max(d.records - 1, 0) + '">' + t('查看最近原文') + '</button></div>'
@@ -240,11 +248,12 @@ function renderDetail() {
 }
 function nodeHtml(n) {
   const open = state.open.has(n.id), kids = state.children.get(n.id)
-  const inner = !open ? '' : n.level > 0
+  const summary = n.summary.replace(/^DSH native summary\. Exact selected source records:[^\n]*\n/, '')
+  const inner = !open ? '' : n.children?.length
     ? '<div class="children">' + (kids ? kids.map(nodeHtml).join('') : '<div class="tail-row">' + t('读取中…') + '</div>') + '</div>'
-    : '<div class="raw-link"><button type="button" class="btn small" data-raw="' + n.first + '-' + n.last + '">' + t('查看 {n} 条原文', { n: n.last - n.first + 1 }) + '</button></div>'
+    : '<div class="raw-link"><button type="button" class="btn small" data-raw="' + n.first + '-' + n.last + '">' + t('查看 {n} 条原文', { n: n.source_records?.length ?? n.last - n.first + 1 }) + '</button></div>'
   return '<div class="node" data-id="' + esc(n.id) + '" aria-expanded="' + open + '"><button type="button" class="node-h" data-toggle="' + esc(n.id) + '"><span class="caret"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5L7 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>' +
-    '<span class="lv l' + Math.min(n.level, 3) + '">' + t('第{n}层', { n: n.level + 1 }) + '</span><span class="node-text">' + esc(n.summary) + '</span><span class="range">#' + n.first + '–' + n.last + '</span></button>' + inner + '</div>'
+    '<span class="lv l' + Math.min(n.level, 3) + '">' + t('第{n}层', { n: n.level + 1 }) + '</span><span class="node-text">' + esc(summary) + '</span><span class="range">#' + n.first + '–' + n.last + '</span></button>' + inner + '</div>'
 }
 async function ensureChildren(id) {
   if (state.children.has(id)) return
@@ -264,7 +273,7 @@ function bindDetail() {
   for (const b of all('[data-toggle]')) b.onclick = () => act(async () => {
     const id = b.dataset.toggle, node = findNode(id)
     if (state.open.has(id)) state.open.delete(id)
-    else { state.open.add(id); if (node?.level > 0) await ensureChildren(id) }
+    else { state.open.add(id); if (node?.children?.length) await ensureChildren(id) }
     renderDetail()
   })
   for (const b of all('[data-raw]')) b.onclick = () => { const [a, z] = b.dataset.raw.split('-').map(Number); openRaw(a, z) }
@@ -272,12 +281,25 @@ function bindDetail() {
   for (const b of all('[data-goto]')) b.onclick = () => { show(b.dataset.goto); if (b.dataset.goto === 'settings') settingsSection('summary') }
   for (const b of all('[data-generate]')) b.onclick = openGenerate
 }
-// Expand every ancestor of a node (found by range containment), then scroll to it.
+// Follow child identities: a source-reading envelope is not a parent edge, and
+// a leaf summary may retain older navigation children at the same model level.
 async function revealNode(target, expand = false) {
   const d = state.detail
-  const ancestors = [...d.nodes, ...d.bands].filter(n => n.level > target.level && n.first <= target.first && n.last >= target.last).sort((a, b) => b.level - a.level)
-  for (const a of ancestors) { state.open.add(a.id); await ensureChildren(a.id) }
-  if (expand && target.level > 0) { state.open.add(target.id); await ensureChildren(target.id) }
+  if (!target) return
+  const nodes = new Map([...d.nodes, ...d.bands, ...[...state.children.values()].flat()].map(node => [node.id, node]))
+  const pathTo = (id, seen = new Set()) => {
+    if (id === target.id) return [id]
+    if (seen.has(id)) return null
+    const next = new Set([...seen, id])
+    for (const child of nodes.get(id)?.children || []) {
+      const path = pathTo(child, next)
+      if (path) return [id, ...path]
+    }
+    return null
+  }
+  const path = d.nodes.map(node => pathTo(node.id)).find(Boolean) || []
+  for (const id of path.slice(0, -1)) { state.open.add(id); await ensureChildren(id) }
+  if (expand && target.children?.length) { state.open.add(target.id); await ensureChildren(target.id) }
   renderDetail()
   const el = $('#detail').querySelector('.node[data-id="' + CSS.escape(target.id) + '"]')
   $('#detail').querySelector('.seg[data-node="' + CSS.escape(target.id) + '"]')?.setAttribute('aria-pressed', 'true')

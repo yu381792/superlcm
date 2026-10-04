@@ -16,6 +16,7 @@ import { markerFromSummary, encodeMarker } from '../dsh/marker.js'
 import { nodeLevel, reindexSession } from '../dsh/core.js'
 import { SuperLcmStore } from '../dsh/store.js'
 import { draftTokens } from '../dsh/draft-tree.js'
+import { semanticFrontier } from '../dsh/tree-semantics.js'
 import { ClaudeStore } from '../src/store.js'
 import { captureDshPacket } from '../src/dsh.js'
 import { projectEvent } from '../dsh/archive.js'
@@ -53,6 +54,42 @@ async function withHost(config, response, run) {
 }
 const append = (session, text) => session.append('user/message', createUserMessage({ content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
 const source = 'original engineering facts and exact numbers. '.repeat(5000)
+
+test('successive checkpoints retain a same-level forest and only four siblings truly升层', async () => {
+  let serial = 0
+  await withHost({ minRetainTokens: 1000, foldBatchTokens: 64000, pressureFoldTokens: 1000,
+    summaryPrefixTargetTokens: 64000, softActiveTokens: 4000, hardActiveTokens: 10000 },
+  async () => 'Distinct summarized facts and exact references ' + (++serial),
+  async ({ engine, session, agent, dir }) => {
+    const levels = [], sizes = [], original = [], replacements = []
+    for (let i = 0; i < 6; i++) {
+      const raw = append(session, source.slice(0, 24000) + i); original.push(raw.seq)
+      const live = [...session.surface.nodes]
+      engine.startBackgroundFold(agent, { start: raw.seq, end: raw.seq, activeTokens: 8000, eligibleEnd: raw.seq })
+      await engine.settleBackgroundFold(agent)
+      assert.deepEqual(session.surface.nodes, live, 'preparation never changes the live prefix')
+      const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true }); assert.ok(result)
+      await tick()
+      assert.equal(new Set(result.shadowedSeqs).size, result.shadowedSeqs.length, 'physical checkpoints occur once')
+      const root = markerFromSummary(result.summary).id
+      levels.push(nodeLevel(engine.superLcmStore, session.id, root))
+      sizes.push(semanticFrontier(engine.superLcmStore, session.id, root).length)
+      replacements.push(session.snapshotEvents().filter(e => e.surfaceOp?.op === 'replace').length)
+    }
+    assert.deepEqual(levels, [1, 1, 1, 2, 2, 2])
+    assert.deepEqual(sizes, [1, 2, 3, 1, 2, 3])
+    assert.deepEqual(replacements, [1, 2, 3, 4, 5, 6])
+    assert.equal(serial, 7, 'six first-level summaries plus one genuine four-way merge')
+    const root = markerFromSummary(session.eventAt(session.surface.nodes[0]).data.content).id
+    const rebuilt = new SuperLcmStore(join(dir, 'forest-rebuilt.sqlite'))
+    try {
+      assert.deepEqual(reindexSession(rebuilt, session).errors, [])
+      assert.equal(nodeLevel(rebuilt, session.id, root), 2)
+      assert.deepEqual(semanticFrontier(rebuilt, session.id, root), semanticFrontier(engine.superLcmStore, session.id, root))
+      for (const seq of original) assert.match(session.eventAt(seq).data.content[0].text, /original engineering facts/)
+    } finally { rebuilt.close() }
+  })
+})
 
 test('background model calls use a stable private identity and never rename the main conversation', async () => {
   await withHost({}, async () => 'summary', async ({ engine, session, agent, calls }) => {
@@ -148,7 +185,7 @@ test('prepared leaves form a recall tree before one switch; replay reconstructs 
     const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true }); assert.ok(result)
     await tick()
     const root = markerFromSummary(result.summary).id
-    assert.ok(nodeLevel(engine.superLcmStore, session.id, root) >= 3)
+    assert.equal(nodeLevel(engine.superLcmStore, session.id, root), 2, 'four leaves merge once; the envelope adds no level')
     assert.equal(session.eventAt(result.summarySeq).data.summaryTreeDepth, nodeLevel(engine.superLcmStore, session.id, root))
     assert.equal(engine.superLcmStore.stats(session.id).missingChildren.length, 0)
     const rebuilt = new SuperLcmStore(join(dir, 'rebuilt.sqlite'))
@@ -161,7 +198,7 @@ test('prepared leaves form a recall tree before one switch; replay reconstructs 
     const shared = new ClaudeStore(dir)
     try {
       const captured = captureDshPacket(shared, { header: session.header, records: session.snapshotEvents().map(event => projectEvent(session.id, event)) })
-      assert.ok(shared.outline(captured.session).nodes[0].level >= 2)
+      assert.ok(shared.outline(captured.session).nodes[0].level >= 1)
       for (const seq of originals) assert.equal(JSON.parse(shared.exact(captured.session, seq)).event.data.content[0].text, session.eventAt(seq).data.content[0].text)
     } finally { shared.close() }
   })

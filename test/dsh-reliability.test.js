@@ -10,10 +10,53 @@ import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Engine from '../dsh/engine.js'
-import { doctorSession, reindexSession } from '../dsh/core.js'
+import { doctorSession, reindexSession, nodeLevel } from '../dsh/core.js'
 import { SuperLcmStore } from '../dsh/store.js'
 import { appendRecallEnvelope, markerFromSummary } from '../dsh/marker.js'
 import { apply as nativeTools } from '../dsh/tool.js'
+import { isTransparentAssembly } from '../dsh/tree-semantics.js'
+import { preparedTreeNodes } from '../dsh/prepared-tree.js'
+
+test('transparent assembly proof preserves every image and file block', () => {
+  const image = { type: 'image', source: { kind: 'fixture', data: 'original-image', mimeType: 'image/png' } }
+  const file = { type: 'file', source: { kind: 'fixture', data: 'original-file', mimeType: 'text/plain' } }
+  const blocks = [{ type: 'text', text: 'A' }, image, { type: 'text', text: 'B' }, file]
+  const children = [
+    appendRecallEnvelope(blocks.slice(0, 2), { id: 'proof-child-a' }),
+    appendRecallEnvelope(blocks.slice(2), { id: 'proof-child-b' }),
+  ]
+  const wrap = value => appendRecallEnvelope(value, { id: 'proof-parent', children: ['proof-child-a', 'proof-child-b'] })
+  assert.equal(isTransparentAssembly(wrap(blocks), children), true)
+  assert.equal(isTransparentAssembly(wrap(blocks.filter(block => block !== image)), children), false, 'missing images cannot be hidden by equal text')
+  assert.equal(isTransparentAssembly(wrap(blocks.filter(block => block !== file)), children), false, 'missing files cannot be hidden by equal text')
+  assert.equal(isTransparentAssembly(wrap(blocks.map(block => block === image ? { ...image, source: { ...image.source, data: 'changed-image' } } : block)), children), false)
+  assert.equal(isTransparentAssembly(wrap(blocks.map(block => block === file ? { ...file, source: { ...file.source, data: 'changed-file' } } : block)), children), false)
+})
+
+test('transparent assembly proof does not merge or split text block boundaries', () => {
+  const children = [
+    appendRecallEnvelope([{ type: 'text', text: 'A' }], { id: 'boundary-child-a' }),
+    appendRecallEnvelope([{ type: 'text', text: 'B' }], { id: 'boundary-child-b' }),
+  ]
+  const wrap = blocks => appendRecallEnvelope(blocks, { id: 'boundary-parent', children: ['boundary-child-a', 'boundary-child-b'] })
+  assert.equal(isTransparentAssembly(wrap([{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }]), children), true)
+  assert.equal(isTransparentAssembly(wrap([{ type: 'text', text: 'A\nB' }]), children), false)
+  assert.equal(isTransparentAssembly(wrap([{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }, { type: 'text', text: 'extra' }]), children), false)
+})
+
+test('prepared tree rejects duplicate forest coverage through a reused new draft', () => {
+  const summary = (id, texts, children = []) => appendRecallEnvelope(texts.map(text => ({ type: 'text', text })), { id, children })
+  const a = { nodeId: 'overlap-member-a', summary: summary('overlap-member-a', ['A']), childIds: [], kind: 'leaf' }
+  const b = { nodeId: 'overlap-member-b', summary: summary('overlap-member-b', ['B']), childIds: [], kind: 'leaf' }
+  const checkpoint = { nodeId: 'overlap-checkpoint', summary: summary('overlap-checkpoint', ['A', 'B'], [a.nodeId, b.nodeId]), childIds: [a.nodeId, b.nodeId], kind: 'assembled' }
+  const store = { getNode(session, id) { return [a, b, checkpoint].find(node => node.nodeId === id) ?? null } }
+  const x = { nodeId: 'overlap-draft-x', summary: summary('overlap-draft-x', ['A compressed'], [a.nodeId]), childIds: [a.nodeId], sourceSeqs: [10], kind: 'condensed' }
+  const y = { nodeId: 'overlap-draft-y', summary: summary('overlap-draft-y', ['A and B'], [x.nodeId, b.nodeId]), childIds: [x.nodeId, b.nodeId], sourceSeqs: [10], kind: 'condensed' }
+  const root = { sessionId: 'fixture', nodeId: 'overlap-root', summary: summary('overlap-root', ['A compressed', 'A and B'], [x.nodeId, y.nodeId]), sourceSeqs: [10] }
+  const event = { data: { preparedTree: [x, y], summaryTreeKind: 'assembled' } }
+  const session = { eventAt(seq) { return { seq, type: 'user/message', data: { source: compactCheckpointSource('overlap-compaction'), content: checkpoint.summary } } } }
+  assert.throws(() => preparedTreeNodes(session, event, root, store), /overlap|repeated|reused|multiple/)
+})
 
 const tick = () => new Promise(r => setImmediate(r))
 const config = { minRetainTokens: 1000, foldBatchTokens: 2000, pressureFoldTokens: 1000, softActiveTokens: 26000, hardActiveTokens: 28000 }
@@ -45,6 +88,29 @@ test('doctor accepts every validated committed tree node and still detects a rea
     engine.superLcmStore.upsertNode({ ...root, nodeId: 'synthetic-orphan', childIds: [] })
     const broken = doctorSession(engine.superLcmStore, session)
     assert.equal(broken.ok, false); assert.ok(broken.staleInDb.includes('synthetic-orphan'))
+  })
+})
+
+test('three forest members below the actual checkpoint budget do not buy an early merge', async () => {
+  let calls = 0
+  await host(async () => ++calls <= 3 ? 'a'.repeat(1200) + calls : 'Compact facts.', async ({ engine }) => {
+    engine.applyRuntimeConfig({ auto: false, summarizationProvider: 'local', summarizationModel: 'old',
+      minRetainTokens: 1000, foldBatchTokens: 64000, pressureFoldTokens: 1000,
+      summaryPrefixTargetTokens: 1200, softActiveTokens: 4000, hardActiveTokens: 10000 })
+    const session = engine.ctx.sessions.create('forest-budget-fixture')
+    const agent = { session, options: { provider: 'local', model: 'old' } }, levels = []
+    for (let i = 0; i < 3; i++) {
+      const raw = session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'x'.repeat(24000) + i }] }), { surfaceOp: 'append' })
+      engine.startBackgroundFold(agent, { start: raw.seq, end: raw.seq, activeTokens: 8000, eligibleEnd: raw.seq })
+      await engine.settleBackgroundFold(agent)
+      const state = engine.backgroundFolds.get(agent)
+      assert.ok(engine.ctx.tokenMeter.estimateMessage(state.summarized.checkpointMessage) <= 1200)
+      const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true }); assert.ok(result)
+      await tick()
+      levels.push(nodeLevel(engine.superLcmStore, session.id, markerFromSummary(result.summary).id))
+    }
+    assert.deepEqual(levels, [1, 1, 1], 'three siblings fit in one physical frame and stay on the first level')
+    assert.equal(calls, 3, 'virtual member framing cannot trigger an unnecessary budget merge')
   })
 })
 

@@ -76,6 +76,7 @@ export function apply(ctx,config={}) {
         batch.push(record); bytes += size
       }
       await flush() // Also sync a title or committed summary when there are no new events.
+      reporter.report(id, 'synced', { end: from - 1 })
     } finally { await observation.close() }
   }
   const drain = () => {
@@ -83,7 +84,10 @@ export function apply(ctx,config={}) {
     running = (async () => {
       while (dirty.size && !stopped) {
         const id = dirty.values().next().value; dirty.delete(id)
-        try { await capture(id) } catch (error) { warn(Error(id + ': ' + error.message)) }
+        try { await capture(id) } catch (error) {
+          reporter.report(id, 'failed', { end: (cursors.get(id) ?? 0) - 1 })
+          warn(Error(id + ': ' + error.message))
+        }
       }
     })().finally(() => { running = null; if (dirty.size && !stopped) drain() })
     return running

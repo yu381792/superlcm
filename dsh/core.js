@@ -6,6 +6,7 @@ const {isCompactCheckpointSource}=await import('@deepseek-ai/dsh-compaction').ca
 })
 import { contentBlocksToText, extractMarkers, markerFromSummary, stripRecallMetadata } from './marker.js'
 import { preparedTreeNodes } from './prepared-tree.js'
+import { semanticLevel } from './tree-semantics.js'
 
 function clampInteger(value, fallback, min, max) {
   if (!Number.isSafeInteger(value)) return fallback
@@ -178,7 +179,7 @@ export function nodeFromCompactionEvent(session, event) {
 export function indexCompactionEvent(store, session, event) {
   const node = nodeFromCompactionEvent(session, event)
   if (node === null) return null
-  const tree = preparedTreeNodes(session, event, node)
+  const tree = preparedTreeNodes(session, event, node, store)
   for (const item of tree) store.upsertNode(item)
   return store.getNode(node.sessionId, node.nodeId)
 }
@@ -251,19 +252,7 @@ function requireNode(store, sessionId, nodeId) {
  * 对损坏的索引保持环安全 / Corruption-safe for damaged indexes.
  */
 export function nodeLevel(store, sessionId, nodeId) {
-  const visiting = new Set()
-  const memo = new Map()
-  const levelOf = (id) => {
-    if (memo.has(id)) return memo.get(id)
-    if (visiting.has(id)) return 1
-    visiting.add(id)
-    const children = store.childrenOf(sessionId, id)
-    const level = children.length === 0 ? 1 : 1 + Math.max(...children.map(levelOf))
-    visiting.delete(id)
-    memo.set(id, level)
-    return level
-  }
-  return levelOf(nodeId)
+  return semanticLevel(store, sessionId, nodeId)
 }
 
 export function describeNode(store, session, nodeId) {
@@ -425,7 +414,7 @@ export function doctorSession(store, session) {
     if (markerIds.has(marker.id)) duplicates.push(marker.id)
     try {
       const root = nodeFromCompactionEvent(session, event)
-      for (const node of preparedTreeNodes(session, event, root)) {
+      for (const node of preparedTreeNodes(session, event, root, store)) {
         if (markerIds.has(node.nodeId) && node.nodeId !== marker.id) duplicates.push(node.nodeId)
         markerIds.add(node.nodeId)
       }
