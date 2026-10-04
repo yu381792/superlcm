@@ -105,6 +105,12 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     tailCountRelaxed = boundary.keepFromIdx > firstFoldableIndex
   }
 
+  // Freeze the eligible end at the switch threshold. New messages must not
+  // keep extending an in-flight compression cycle.
+  if (Number.isSafeInteger(options.lastFoldableIndex)) {
+    boundary.keepFromIdx = Math.min(boundary.keepFromIdx, options.lastFoldableIndex + 1)
+  }
+
   if (boundary.keepFromIdx <= firstFoldableIndex) return null
 
   let foldTokens = 0
@@ -146,5 +152,6 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     tailCountRelaxed,
     activeTokens,
     reason,
+    eligibleEnd: surfaceSeqs[boundary.keepFromIdx - 1],
   }
 }

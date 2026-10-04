@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { appendRecallEnvelope, stripRecallMetadata } from './marker.js'
+import { appendRecallEnvelope, stripRecallMetadata, markerFromSummary } from './marker.js'
 
 // Batches are drafts only. Publish one checkpoint covering their contiguous
 // original ranges, with one recall node and no dangling draft node references.
@@ -15,7 +15,7 @@ export function assembleRegions(engine, parts) {
     return text ? [{ ...block, text }] : []
   }))
   const summary = appendRecallEnvelope(blocks, {
-    id: randomUUID(), children: [...new Set(parts.flatMap(part => part.trustedChildNodeIds))],
+    id: randomUUID(), children: [...new Set(parts.map(part => markerFromSummary(part.summary)?.id).filter(Boolean))],
   })
   const checkpointMessage = createUserMessage({
     content: [first.checkpointMessage.content[0], ...summary, first.checkpointMessage.content.at(-1)],

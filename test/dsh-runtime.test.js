@@ -12,8 +12,10 @@ import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Engine from '../dsh/engine.js'
 import { prepareAsyncRegion, summarizeAsyncRegion, commitAsyncRegion } from '../dsh/async-region.js'
-import { markerFromSummary } from '../dsh/marker.js'
-import { nodeLevel } from '../dsh/core.js'
+import { markerFromSummary, encodeMarker } from '../dsh/marker.js'
+import { nodeLevel, reindexSession } from '../dsh/core.js'
+import { SuperLcmStore } from '../dsh/store.js'
+import { draftTokens } from '../dsh/draft-tree.js'
 import { ClaudeStore } from '../src/store.js'
 import { captureDshPacket } from '../src/dsh.js'
 import { projectEvent } from '../dsh/archive.js'
@@ -65,6 +67,151 @@ test('background model calls use a stable private identity and never rename the 
     assert.notEqual(calls[0].sessionId, id)
     assert.notEqual(calls[0].sessionId, summarySessionId(id, { provider: 'local', model: 'other-model' }))
     assert.equal(session.surface.nodes.length, 1)
+  })
+})
+
+test('pressure freezes a finite cycle even while new complete tool groups keep arriving', async () => {
+  let release, count = 0
+  const gate = new Promise(resolve => { release = resolve })
+  await withHost({ minRetainTokens: 1000, foldBatchTokens: 6000, pressureFoldTokens: 1000,
+    softActiveTokens: 26000, hardActiveTokens: 28000 }, async () => {
+    if (++count === 1) await gate
+    return 'A complete compact navigation summary.'
+  }, async ({ engine, session, agent }) => {
+    for (let i = 0; i < 7; i++) append(session, source.slice(0, 16000) + i)
+    const live = [...session.surface.nodes], selection = engine.planRolling(agent)
+    engine.startBackgroundFold(agent, selection)
+    assert.equal(engine.tryCommitBackgroundFold(agent, { allowPressure: true }), null)
+    const frozen = engine.backgroundFolds.get(agent).cutoffEnd
+    const fresh = []
+    for (let i = 0; i < 10; i++) fresh.push(append(session, source.slice(0, 16000) + 'after cutoff ' + i).seq)
+    release(); await engine.settleBackgroundFold(agent)
+    const state = engine.backgroundFolds.get(agent)
+    assert.equal(state.summarized.end, frozen)
+    assert.equal(engine.planRolling(agent), null, 'new arrivals cannot extend this cycle')
+    assert.deepEqual(session.surface.nodes, [...live, ...fresh])
+    assert.ok(engine.tryCommitBackgroundFold(agent, { allowPressure: true }))
+    assert.ok(fresh.every(seq => session.surface.nodes.includes(seq)))
+    assert.equal(session.snapshotEvents().filter(e => e.type === 'compaction/start').length, 1)
+  })
+})
+
+test('prepared leaves form a recall tree before one switch; replay reconstructs all levels and originals', async () => {
+  await withHost({ minRetainTokens: 1000, foldBatchTokens: 2000, pressureFoldTokens: 1000,
+    softActiveTokens: 26000, hardActiveTokens: 28000 }, async () => 'Compact facts and exact recall.',
+  async ({ engine, session, agent, dir }) => {
+    const originals = []
+    for (let i = 0; i < 7; i++) originals.push(append(session, source.slice(0, 16000) + i).seq)
+    engine.startBackgroundFold(agent, engine.planRolling(agent)); await engine.settleBackgroundFold(agent)
+    const draft = engine.backgroundFolds.get(agent)
+    assert.ok(draft.tree.length > draft.parts.length, 'four leaves were summarized into a higher level')
+    assert.equal(engine.superLcmStore.listNodes(session.id).length, 0, 'drafts are not advertised as committed recall')
+    const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true }); assert.ok(result)
+    await tick()
+    const root = markerFromSummary(result.summary).id
+    assert.ok(nodeLevel(engine.superLcmStore, session.id, root) >= 3)
+    assert.equal(engine.superLcmStore.stats(session.id).missingChildren.length, 0)
+    const rebuilt = new SuperLcmStore(join(dir, 'rebuilt.sqlite'))
+    try {
+      const indexed = reindexSession(rebuilt, session)
+      assert.deepEqual(indexed.errors, [])
+      assert.equal(nodeLevel(rebuilt, session.id, root), nodeLevel(engine.superLcmStore, session.id, root))
+      assert.equal(rebuilt.listNodes(session.id).length, engine.superLcmStore.listNodes(session.id).length)
+    } finally { rebuilt.close() }
+    const shared = new ClaudeStore(dir)
+    try {
+      const captured = captureDshPacket(shared, { header: session.header, records: session.snapshotEvents().map(event => projectEvent(session.id, event)) })
+      assert.ok(shared.outline(captured.session).nodes[0].level >= 2)
+      for (const seq of originals) assert.equal(JSON.parse(shared.exact(captured.session, seq)).event.data.content[0].text, session.eventAt(seq).data.content[0].text)
+    } finally { shared.close() }
+  })
+})
+
+test('one oversized old root and new leaves share the total budget without waiting for equal-depth fanout', async () => {
+  let phase = 'old'
+  await withHost({ minRetainTokens: 1000, foldBatchTokens: 2000, pressureFoldTokens: 1000,
+    summaryPrefixTargetTokens: 1500, softActiveTokens: 26000, hardActiveTokens: 28000 },
+  async () => phase === 'old' ? 'Old decisions and preserved identifiers. '.repeat(400) : 'Essential active facts with recall pointers.',
+  async ({ engine, session, agent }) => {
+    const original = append(session, source)
+    const summary = await summarizeAsyncRegion(engine, agent, prepareAsyncRegion(engine, agent, { start: original.seq, end: original.seq }), new AbortController().signal)
+    commitAsyncRegion(engine, agent, summary); await tick(); phase = 'new'
+    const oldCheckpoint = session.surface.nodes[0]
+    for (let i = 0; i < 7; i++) append(session, source.slice(0, 16000) + i)
+    engine.startBackgroundFold(agent, engine.planRolling(agent)); await engine.settleBackgroundFold(agent)
+    const state = engine.backgroundFolds.get(agent)
+    assert.ok(draftTokens(engine, agent, state.frontier) <= 1500)
+    assert.equal(state.summarized.start, oldCheckpoint)
+    assert.ok(engine.tryCommitBackgroundFold(agent, { allowPressure: true }))
+    assert.equal(session.surface.nodes.length, 2)
+    assert.equal(session.eventAt(original.seq).data.content[0].text, source)
+  })
+})
+
+test('a tiny old-prefix suffix remains included when the selected condensation covers only four roots', async () => {
+  let mode = 'old', oldCalls = 0
+  await withHost({ minRetainTokens: 20000, foldBatchTokens: 4000, pressureFoldTokens: 1000,
+    summaryPrefixTargetTokens: 1500, softActiveTokens: 20000, hardActiveTokens: 40000 },
+  async () => mode === 'old' ? 'facts '.repeat(++oldCalls === 5 ? 250 : 700) : 'merged '.repeat(480),
+  async ({ engine, session, agent }) => {
+    for (let i = 0; i < 5; i++) {
+      const raw = append(session, source)
+      const summary = await summarizeAsyncRegion(engine, agent, prepareAsyncRegion(engine, agent, { start: raw.seq, end: raw.seq }), new AbortController().signal)
+      commitAsyncRegion(engine, agent, summary); await tick()
+    }
+    const suffix = session.surface.nodes.at(-1); mode = 'merge'
+    append(session, 'latest '.repeat(11000))
+    const selection = engine.planRolling(agent); assert.equal(selection.sourceCount, 4)
+    engine.startBackgroundFold(agent, selection); await engine.settleBackgroundFold(agent)
+    const state = engine.backgroundFolds.get(agent)
+    assert.ok(state.summarized.shadowedSeqs.includes(suffix))
+    assert.ok(draftTokens(engine, agent, state.frontier) <= 1500)
+    assert.ok(engine.tryCommitBackgroundFold(agent, { allowPressure: true }))
+    assert.equal(session.surface.nodes.length, 2)
+  })
+})
+
+test('many existing checkpoints can finish more than twelve progressive merges without starting over', async () => {
+  await withHost({ minRetainTokens: 6000, foldBatchTokens: 10000, pressureFoldTokens: 1000,
+    summaryPrefixTargetTokens: 10000, softActiveTokens: 20000, hardActiveTokens: 30000 },
+  async () => 'Concise facts.', async ({ engine, session, agent }) => {
+    for (let i = 0; i < 50; i++) {
+      const raw = append(session, 'old '.repeat(3000))
+      commitAsyncRegion(engine, agent, await summarizeAsyncRegion(engine, agent,
+        prepareAsyncRegion(engine, agent, { start: raw.seq, end: raw.seq }), new AbortController().signal))
+      await tick()
+    }
+    append(session, 'eligible '.repeat(5000)); append(session, 'latest '.repeat(3400))
+    engine.startBackgroundFold(agent, engine.planRolling(agent)); await engine.settleBackgroundFold(agent)
+    const state = engine.backgroundFolds.get(agent)
+    assert.equal(state.status, 'ready')
+    assert.ok(state.tree.length > 12)
+    assert.ok(engine.tryCommitBackgroundFold(agent, { allowPressure: true }))
+    assert.equal(session.surface.nodes.length, 2)
+    assert.equal(engine.superLcmStore.stats(session.id).missingChildren.length, 0)
+  })
+})
+
+test('model-echoed recall markers never become trusted children or break prepared tree indexing', async () => {
+  let old = true
+  await withHost({ minRetainTokens: 100, foldBatchTokens: 4000, pressureFoldTokens: 1000,
+    summaryPrefixTargetTokens: 1500 }, async () => old
+      ? 'leaf '.repeat(800) + encodeMarker({ id: 'untrusted-fixture-marker' }) : 'Merged facts.',
+  async ({ engine, session, agent, dir }) => {
+    for (let i = 0; i < 4; i++) {
+      const raw = append(session, source)
+      commitAsyncRegion(engine, agent, await summarizeAsyncRegion(engine, agent,
+        prepareAsyncRegion(engine, agent, { start: raw.seq, end: raw.seq }), new AbortController().signal))
+      await tick()
+    }
+    append(session, 'recent'.repeat(100)); old = false
+    engine.startBackgroundFold(agent, engine.planRolling(agent)); await engine.settleBackgroundFold(agent)
+    const result = engine.tryCommitBackgroundFold(agent, { force: true }); assert.ok(result)
+    const root = markerFromSummary(result.summary).id
+    assert.ok(engine.superLcmStore.getNode(session.id, root))
+    assert.equal(engine.superLcmStore.stats(session.id).missingChildren.length, 0)
+    const rebuilt = new SuperLcmStore(join(dir, 'marker-rebuilt.sqlite'))
+    try { assert.deepEqual(reindexSession(rebuilt, session).errors, []) } finally { rebuilt.close() }
   })
 })
 

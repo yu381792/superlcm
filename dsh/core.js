@@ -5,6 +5,7 @@ const {isCompactCheckpointSource}=await import('@deepseek-ai/dsh-compaction').ca
   return import(pathToFileURL(dshHost().require.resolve('@deepseek-ai/dsh-compaction')).href)
 })
 import { contentBlocksToText, extractMarkers, markerFromSummary, stripRecallMetadata } from './marker.js'
+import { preparedTreeNodes } from './prepared-tree.js'
 
 function clampInteger(value, fallback, min, max) {
   if (!Number.isSafeInteger(value)) return fallback
@@ -177,7 +178,9 @@ export function nodeFromCompactionEvent(session, event) {
 export function indexCompactionEvent(store, session, event) {
   const node = nodeFromCompactionEvent(session, event)
   if (node === null) return null
-  return store.upsertNode(node)
+  const tree = preparedTreeNodes(session, event, node)
+  for (const item of tree) store.upsertNode(item)
+  return store.getNode(node.sessionId, node.nodeId)
 }
 
 export function reindexSession(store, session, { rebuild = false } = {}) {

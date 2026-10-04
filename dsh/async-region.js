@@ -8,7 +8,7 @@ import {
   toolPairingBalancedBefore,
 } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
-import { extractChildNodeIds } from './marker.js'
+import { markerFromSummary } from './marker.js'
 
 const SUMMARY_OPEN_TAG = '<compacted-summary>'
 const SUMMARY_CLOSE_TAG = '</compacted-summary>'
@@ -114,7 +114,8 @@ export function prepareAsyncRegion(engine, agent, selection) {
   const trustedChildNodeIds = [...new Set(shadowedSeqs.flatMap((seq) => {
     const event = session.eventAt(seq)
     if (event?.type !== 'user/message' || !event.data?.source || !isCompactCheckpointSource(event.data.source)) return []
-    return extractChildNodeIds(event.data?.content)
+    const marker = markerFromSummary(event.data?.content)
+    return marker ? [marker.id] : []
   }))]
   if (selectedNodes.length !== shadowedSeqs.length || selectedNodes.some((node, index) => node.seq !== shadowedSeqs[index])) {
     throw new AsyncSurfaceChangedError('token-meter surface does not match the selected compaction span')
@@ -175,6 +176,8 @@ export function commitAsyncRegion(engine, agent, summarized) {
       provider: summarized.provider,
       model: summarized.model,
       ...(summarized.preparedBatchCount === undefined ? {} : { preparedBatchCount: summarized.preparedBatchCount }),
+      ...(summarized.preparedTree === undefined ? {} : { preparedTree: summarized.preparedTree,
+        summaryTreeKind: summarized.summaryTreeKind, summaryTreeDepth: summarized.summaryTreeDepth }),
       ...(summarized.maxTokens === undefined ? {} : { maxTokens: summarized.maxTokens }),
       ...(summarized.usage === undefined ? {} : { usage: summarized.usage }),
     })
