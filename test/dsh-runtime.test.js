@@ -96,6 +96,45 @@ test('pressure freezes a finite cycle even while new complete tool groups keep a
   })
 })
 
+test('a frozen cycle summarizes its final span below the normal batch minimum', async () => {
+  await withHost({ minRetainTokens: 1000, foldBatchTokens: 6000, pressureFoldTokens: 3000,
+    softActiveTokens: 7000, hardActiveTokens: 20000 }, async () => 'Complete compact navigation summary.',
+  async ({ engine, session, agent }) => {
+    for (let i = 0; i < 8; i++) append(session, 'x'.repeat(4000) + i)
+    const original = [...session.surface.nodes]
+    engine.startBackgroundFold(agent, engine.planRolling(agent))
+    await engine.settleBackgroundFold(agent)
+    const draft = engine.backgroundFolds.get(agent)
+    assert.equal(draft.parts.length, 2, 'the small final span also receives a summary')
+    assert.equal(draft.summarized.end, draft.cutoffEnd)
+    assert.deepEqual(session.surface.nodes, original, 'preparation never replaces live context')
+    const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true })
+    assert.ok(result)
+    assert.equal(result.shadowedRange.end, draft.cutoffEnd)
+    assert.ok(!session.surface.nodes.includes(draft.cutoffEnd))
+    assert.equal(session.snapshotEvents().filter(e => e.type === 'compaction/start').length, 1)
+  })
+})
+
+test('a tail smaller than an empty checkpoint stays verbatim without blocking the completed draft', async () => {
+  await withHost({ minRetainTokens: 1000, foldBatchTokens: 6000, pressureFoldTokens: 3000,
+    softActiveTokens: 7000, hardActiveTokens: 20000 }, async () => 'Complete compact navigation summary.',
+  async ({ engine, session, agent, calls }) => {
+    for (let i = 0; i < 6; i++) append(session, 'x'.repeat(4000) + i)
+    const tiny = append(session, 'ok').seq
+    const recent = append(session, 'y'.repeat(4000)).seq
+    engine.startBackgroundFold(agent, engine.planRolling(agent))
+    await engine.settleBackgroundFold(agent)
+    assert.equal(calls.length, 1, 'no model call can shrink the tiny tail into a checkpoint')
+    const draft = engine.backgroundFolds.get(agent)
+    assert.equal(draft.cutoffEnd, draft.summarized.end, 'the committed boundary explicitly excludes retained tokens')
+    assert.ok(engine.tryCommitBackgroundFold(agent, { allowPressure: true }))
+    assert.ok(session.surface.nodes.includes(tiny))
+    assert.ok(session.surface.nodes.includes(recent))
+    assert.equal(session.snapshotEvents().filter(e => e.type === 'compaction/start').length, 1)
+  })
+})
+
 test('prepared leaves form a recall tree before one switch; replay reconstructs all levels and originals', async () => {
   await withHost({ minRetainTokens: 1000, foldBatchTokens: 2000, pressureFoldTokens: 1000,
     softActiveTokens: 26000, hardActiveTokens: 28000 }, async () => 'Compact facts and exact recall.',

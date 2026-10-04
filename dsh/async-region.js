@@ -8,7 +8,7 @@ import {
   toolPairingBalancedBefore,
 } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
-import { markerFromSummary } from './marker.js'
+import { markerFromSummary, appendRecallEnvelope } from './marker.js'
 
 const SUMMARY_OPEN_TAG = '<compacted-summary>'
 const SUMMARY_CLOSE_TAG = '</compacted-summary>'
@@ -41,6 +41,13 @@ function frameSummary(summary) {
     ...summary,
     { type: 'text', text: SUMMARY_CLOSE_TAG },
   ]
+}
+
+export function minimumCheckpointTokens(engine, children = []) {
+  return engine.ctx.tokenMeter.estimateMessage(createUserMessage({
+    content: frameSummary(appendRecallEnvelope([], { id: randomUUID(), children })),
+    source: compactCheckpointSource(CompactionId(randomUUID())),
+  }))
 }
 
 function locateStableSpan(engine, session, prepared) {

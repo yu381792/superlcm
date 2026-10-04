@@ -21,6 +21,7 @@ import {
   commitAsyncRegion,
   prepareAsyncRegion,
   summarizeAsyncRegion,
+  minimumCheckpointTokens,
 } from './async-region.js'
 
 import { DEPRECATED_CONFIG_KEYS, FALLBACK_CONFIG_KEYS, ROLLING_CONFIG_KEYS, ROLLING_DEFAULTS, positiveInteger, nonNegativeInteger, normalizeRolling, cleanRouteValue, cleanRoute, routeIsComplete, routeIsConfigured, routesEqual, SETTINGS_NAMESPACE, SUMMARIZATION_ROUTE_SCHEMA, SETTINGS_SCHEMA, unwrapVolatile, unwrapConfig, splitConfig, systemPrefixEndIndex, isFrozenCheckpoint, firstFoldableSurfaceIndex, reportIndexFailure } from './engine-config.js'
@@ -389,7 +390,12 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     if (staged?.cutoffEnd !== undefined) options.lastFoldableIndex = session.surface.nodes.indexOf(staged.cutoffEnd)
     // Once drafts exist, fill small gaps ahead of the switch rather than
     // waiting for another whole batch while the live request is already full.
-    if (staged?.parts?.length) options.prepareMinimumTokens = this.rollingConfig.pressureFoldTokens
+    if (staged?.parts?.length) {
+      // A frozen cycle must finish its final span even when it is smaller
+      // than the usual background batch minimum. The frozen end still
+      // prevents newly arriving messages from extending this cycle.
+      options.prepareMinimumTokens = staged.cutoffEnd !== undefined ? 1 : this.rollingConfig.pressureFoldTokens
+    }
     const systemEnd = systemPrefixEndIndex(session), prefixEnd = options.firstFoldableIndex
     if (staged?.parts?.length) {
       const endIndex = session.surface.nodes.indexOf(staged.summarized.end)
@@ -414,6 +420,17 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       if (condensed) return condensed
     }
     const selection = selectRollingRange(priced.nodes, session.surface.nodes, options)
+    if (selection && staged?.parts?.length && staged.cutoffEnd !== undefined
+      && selection.end === staged.cutoffEnd) {
+      const prepared = prepareAsyncRegion(this, agent, selection)
+      // A few verbatim tokens cannot fit even an empty framed checkpoint.
+      // Retain them explicitly and close the cycle at the last completed span,
+      // rather than buying an impossible summary and blocking the whole draft.
+      if (prepared.shadowedRouteTokenCount <= minimumCheckpointTokens(this, prepared.trustedChildNodeIds)) {
+        staged.cutoffEnd = staged.summarized.end
+        return null
+      }
+    }
     // At hard pressure, never reselect ranges already present in the assembled
     // draft. Otherwise the fallback blocks its own completed commit forever.
     if (staged?.parts?.length) return selection
