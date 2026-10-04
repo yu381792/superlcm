@@ -110,6 +110,7 @@ test('prepared leaves form a recall tree before one switch; replay reconstructs 
     await tick()
     const root = markerFromSummary(result.summary).id
     assert.ok(nodeLevel(engine.superLcmStore, session.id, root) >= 3)
+    assert.equal(session.eventAt(result.summarySeq).data.summaryTreeDepth, nodeLevel(engine.superLcmStore, session.id, root))
     assert.equal(engine.superLcmStore.stats(session.id).missingChildren.length, 0)
     const rebuilt = new SuperLcmStore(join(dir, 'rebuilt.sqlite'))
     try {

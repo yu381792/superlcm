@@ -89,6 +89,6 @@ export function assembleTree(engine, frontier, tree, batchCount) {
   // The final root can itself be a previously merged draft. Do not index it twice.
   return { ...summarized, preparedTree: tree.filter(node => node.nodeId !== markerFromSummary(summarized.summary).id),
     summaryTreeKind: frontier.length === 1 ? frontier[0].treeKind ?? 'leaf' : 'condensed',
-    preparedBatchCount: batchCount, summaryTreeDepth: Math.max(...frontier.map(part => part.depth)),
+    preparedBatchCount: batchCount, summaryTreeDepth: Math.max(...frontier.map(part => part.depth)) + (frontier.length > 1 ? 1 : 0),
     trustedChildNodeIds: frontier.length === 1 ? frontier[0].trustedChildNodeIds : frontier.map(part => markerFromSummary(part.summary).id) }
 }
