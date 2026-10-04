@@ -175,36 +175,13 @@ async function loadDetail() {
   if (detail.summarizing) loadDetail.timer = setTimeout(() => act(loadDetail), 4000)
 }
 const pct = (x, total) => (x / total * 100).toFixed(3) + '%'
-function laneGaps(d, level, total) {
-  const spans = d.bands.filter(b => b.level === level).sort((a, b) => a.first - b.first)
-  const gaps = []
-  let next = 0
-  for (const b of spans) {
-    if (b.first > next) gaps.push({ from: next, to: b.first - 1 })
-    next = Math.max(next, b.last + 1)
-  }
-  if (next < d.records) gaps.push({ from: next, to: d.records - 1 })
-  const overlaps = (ranges, gap) => (ranges || []).some(r => r.from <= gap.to && r.to >= gap.from)
-  const countIn = (ranges, gap) => (ranges || []).reduce((n, r) => n + Math.max(0, Math.min(r.to, gap.to) - Math.max(r.from, gap.from) + 1), 0)
-  return gaps.map(gap => {
-    const covered = overlaps(d.covered_ranges, gap), pending = overlaps(d.unsummarized_ranges, gap)
-    const kind = covered ? pending ? 'mixed' : 'covered' : pending ? 'pending' : 'records'
-    const cover = kind === 'covered' ? d.bands.filter(b => b.level !== level && countIn(b.source_ranges, gap) === countIn(d.covered_ranges, gap)).sort((a, b) => Math.abs(a.level - level) - Math.abs(b.level - level) || b.level - a.level)[0] : null
-    const wide = gap.to - gap.from + 1 >= total * 0.07
-    const label = cover ? t(wide ? '由第 {n} 层覆盖' : cover.level > level ? '↑{n}层' : '↓{n}层', { n: cover.level + 1 }) : t({ covered: '其他层已覆盖', pending: '待摘要', mixed: '部分覆盖', records: '非摘要记录' }[kind])
-    const explanation = { covered: '消息已由其他层摘要覆盖', pending: '消息尚未摘要，原文已保存', mixed: '部分消息已覆盖，其余原文尚未摘要', records: '运行记录、常驻内容或已替换旧版本，不计待摘要' }[kind]
-    const title = t('第 {n} 层在 #{a}–#{b} 没有单独摘要', { n: level + 1, a: gap.from, b: gap.to }) + ' · ' + (cover ? t('由第 {n} 层覆盖', { n: cover.level + 1 }) : t(explanation))
-    const tag = cover ? 'button' : 'span'
-    return '<' + tag + (cover ? ' type="button" data-cover-node="' + esc(cover.id) + '"' : '') + ' class="seg lane-gap gap-' + kind + '" title="' + esc(title) + '" aria-label="' + esc(title) + '" style="left:' + pct(gap.from, total) + ';width:' + pct(gap.to - gap.from + 1, total) + '">' + (gap.to - gap.from + 1 >= total * 0.03 ? label : '') + '</' + tag + '>'
-  }).join('')
-}
 function stripHtml(d) {
   const selected = d.coverage === 'selected-records'
   const total = Math.max(d.records, 1), tail = selected ? d.latest_tail?.records || 0 : d.records - d.summarized_to
   const maxLevel = d.bands.reduce((m, b) => Math.max(m, b.level), 0)
   let lanes = ''
   for (let level = maxLevel; level >= (selected ? 0 : 1); level--) {
-    lanes += '<span class="lane-label">' + t('第 {n} 层', { n: level + 1 }) + '</span><div class="lane">' + (selected ? laneGaps(d, level, total) : '') + d.bands.filter(b => b.level === level).map(b =>
+    lanes += '<span class="lane-label">' + t('第 {n} 层', { n: level + 1 }) + '</span><div class="lane">' + d.bands.filter(b => b.level === level).map(b =>
       '<button type="button" class="seg ' + (level > 3 ? 'lx' : 'l' + level) + '" data-node="' + esc(b.id) + '" title="' + t('第 {n} 层', { n: level + 1 }) + ' · ' + (selected ? t('阅读范围 #{a}–#{b}；精确选中 {n} 条记录', { a: b.first, b: b.last, n: b.source_records?.length ?? 0 }) : '#' + b.first + '–' + b.last) + '" style="' + (selected ? 'background:var(--l' + Math.min(level, 3) + ');left:' + pct(b.first, total) + ';width:' + pct(b.last - b.first + 1, total) : 'left:calc(' + pct(b.first, total) + ' + 1px);width:calc(' + pct(b.last - b.first + 1, total) + ' - 2px)') + '"></button>').join('') + '</div>'
   }
   if (d.summary_count && !selected) lanes += '<span class="lane-label">' + t('第 {n} 层', { n: 1 }) + '</span><div class="lane l0" style="--p:' + pct(d.summarized_to, total) + '"></div>'
@@ -212,10 +189,7 @@ function stripHtml(d) {
   lanes += '<span class="lane-label">' + t('原文') + '</span><div class="lane raw">' + pending.map(r => '<span class="seg tail" style="left:' + pct(r.from, total) + ';width:' + pct(r.to - r.from + 1, total) + '" title="#' + r.from + '–' + r.to + '"></span>').join('') + '</div>'
   const note = d.summary_count || selected ? '<div class="strip-note">' + (d.bands.length ? '<span><i class="k" style="background:var(--l3)"></i>' + t('层级越高越概括') + '</span>' : '') + (tail > 0 ? '<span><i class="k" style="background:var(--tail)"></i>' + t('最新 {n} 条尚未摘要，原文可查', { n: fmt(tail) }) + '</span>' : '') + '<span style="margin-left:auto">' + t('摘要生成：') + (selected ? t('SuperLcm 插件生成') : writerLabel(d.setting.mode)) + '</span></div>' : ''
   const counts = selected ? '<p class="muted">' + t('有效原文：已覆盖 {a} 条，未覆盖 {b} 条；非消息事件 {c} 条，常驻消息 {d} 条，摘要检查点 {e} 条。全部原始事件均已存档。', { a: fmt(d.summarized_records), b: fmt(d.unsummarized_records), c: fmt(d.non_message_records), d: fmt(d.persistent_records), e: fmt(d.checkpoint_records) }) + (d.superseded_records ? ' ' + t('已替换旧版本 {n} 条，原始数据保留，不计待摘要。', { n: fmt(d.superseded_records) }) : '') + '</p>' : ''
-  const earlier = Math.max(0, (d.unsummarized_records || 0) - tail)
-  const status = !d.summarized_records ? t('尚未生成摘要，{n} 条消息原文已保存', { n: fmt(d.unsummarized_records) }) : earlier ? t('较早 {a} 条、最新 {b} 条消息待摘要，原文已保存', { a: fmt(earlier), b: fmt(tail) }) : tail ? t('历史消息已全部覆盖，最新 {n} 条待摘要', { n: fmt(tail) }) : t('有效消息已全部覆盖，原文完整保留')
-  const coverageNote = selected ? '<p class="coverage-state">' + status + '<span>' + t('斜线区域没有本层摘要，覆盖状态见区域标注') + '</span></p>' : ''
-  return '<div><div class="section-h"><h2>' + t('摘要层级') + '</h2>' + (d.bands.length ? '<span class="aside">' + t('点击色块定位到对应摘要') + '</span>' : '') + '</div><div class="strip"><div class="lanes">' + lanes + '</div><div class="axis"><span>#0</span>' + (d.records > 2 ? '<span>#' + Math.round(d.records / 2) + '</span>' : '') + '<span>#' + Math.max(d.records - 1, 0) + '</span></div>' + note + coverageNote + '</div>' + counts + '</div>'
+  return '<div><div class="section-h"><h2>' + t('摘要层级') + '</h2>' + (d.bands.length ? '<span class="aside">' + t('点击色块定位到对应摘要') + '</span>' : '') + '</div><div class="strip"><div class="lanes">' + lanes + '</div><div class="axis"><span>#0</span>' + (d.records > 2 ? '<span>#' + Math.round(d.records / 2) + '</span>' : '') + '<span>#' + Math.max(d.records - 1, 0) + '</span></div>' + note + '</div>' + counts + '</div>'
 }
 // One clear action; the method (and whose quota it spends) is chosen in a confirmation dialog.
 // Only methods this computer can run are offered: installed CLIs and a saved custom API.
@@ -304,7 +278,6 @@ function bindDetail() {
   })
   for (const b of all('[data-raw]')) b.onclick = () => { const [a, z] = b.dataset.raw.split('-').map(Number); openRaw(a, z) }
   for (const b of all('.seg[data-node]')) b.onclick = () => act(() => revealNode(d.bands.find(x => x.id === b.dataset.node), true))
-  for (const b of all('[data-cover-node]')) b.onclick = () => act(() => revealNode(d.bands.find(x => x.id === b.dataset.coverNode), true))
   for (const b of all('[data-goto]')) b.onclick = () => { show(b.dataset.goto); if (b.dataset.goto === 'settings') settingsSection('summary') }
   for (const b of all('[data-generate]')) b.onclick = openGenerate
 }
