@@ -246,6 +246,11 @@ export class SuperLcmStore {
     `).get(sessionId, nodeId))
   }
 
+  getCompactionNode(sessionId, compactionId) {
+    this.#assertOpen()
+    return rowToNode(this.#db.prepare('SELECT * FROM lcm_nodes WHERE session_id = ? AND compaction_id = ?').get(sessionId,compactionId))
+  }
+
   listNodes(sessionId, { limit = 200, status } = {}) {
     this.#assertOpen()
     const capped = safeLimit(limit, 200, 5000)

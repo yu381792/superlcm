@@ -1,17 +1,14 @@
+import { orderedSummaryBlocks } from './assembly-blocks.js'
 import { randomUUID } from 'node:crypto'
 import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { appendRecallEnvelope, stripRecallMetadata, markerFromSummary } from './marker.js'
+import { appendRecallEnvelope, markerFromSummary } from './marker.js'
 
 export function assembledCheckpointMessage(parts) {
   if (parts.length === 1) return { summary: parts[0].summary, checkpointMessage: parts[0].checkpointMessage, compactionId: parts[0].compactionId }
   const first = parts[0]
   const compactionId = randomUUID()
-  const blocks = parts.flatMap(part => part.summary.flatMap(block => {
-    if (block.type !== 'text') return [block]
-    const text = stripRecallMetadata(block.text)
-    return text ? [{ ...block, text }] : []
-  }))
+  const blocks = orderedSummaryBlocks(parts.map(part=>part.summary))
   const summary = appendRecallEnvelope(blocks, {
     id: randomUUID(), children: [...new Set(parts.map(part => markerFromSummary(part.summary)?.id).filter(Boolean))],
   })

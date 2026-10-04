@@ -2,6 +2,7 @@
 import { ClaudeStore, claudeTranscript } from './store.js'
 import { codexTranscript, codexNativeName, codexSessionKey } from './codex.js'
 import { buildHierarchy, summaryWork, summarySettingsRevision } from './summarize.js'
+import { SUMMARY_SYSTEM, buildSummaryPrompt, checkedSummary } from './summary-policy.js'
 import { summarizeWith, writerTool, WRITER_CLI } from './cli-writers.js'
 import { startServer } from './mcp.js'
 import { claudePluginEnabled } from './runtime.js'
@@ -181,7 +182,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
             const tool=writerTool(store.metadata(rest[0]).harness)
             if (!tool) throw new Error('No installed tool can write summaries')
             const chosen=model||(tool==='claude-code'?process.env.SUPERLCM_CLAUDE_CLI_MODEL:tool==='codex'?process.env.SUPERLCM_CODEX_CLI_MODEL:'')||''
-            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:text=>summarizeWith(tool,text,{model:chosen}),shouldContinue})
+            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:(text,options)=>summarizeWith(tool,text,{model:chosen,summaryTask:options.summaryTask}),shouldContinue})
           })()
         if (!result.busy) store.setStatus(rest[0],'ok')
       }
@@ -236,10 +237,12 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         const work=summaryWork(store,session)
         if(!work)reply={none:'nothing to summarize yet'}
         else if(!store.lease(session,300000,'host'))reply={none:'busy'}
-        else {const {SUMMARY_SYSTEM}=await import('./claude-cli.js');reply={work:{batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:`<conversation_excerpt>\n${work.content}\n</conversation_excerpt>`,model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}}
+        else {reply={work:{batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,work),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}}
       } else {
-        const input=await readHook(),summary=typeof input.summary==='string'?input.summary.trim().slice(0,6000):''
+        const input=await readHook()
         try {
+          if (input.isAnswered === false) throw new Error('Summary generation was incomplete')
+          const summary=checkedSummary(input.summary,{finishReason:input.finishReason})
           const work=summaryWork(store,session)
           if(!store.summarizing(session)||store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner!=='host')throw new Error('no summary claimed in this conversation')
           if(!work||work.batch_id!==input.batch_id)throw new Error('stale summary batch')

@@ -1,14 +1,10 @@
 import { isDeepStrictEqual } from 'node:util'
-import { stripRecallMetadata } from './marker.js'
-
-const withoutEnvelope = blocks => blocks.flatMap(block => {
-  if (block.type !== 'text') return [block]
-  const value = stripRecallMetadata(block.text)
-  return value ? [{ ...block, text: value }] : []
-})
+import { plainSummaryBlocks, orderedSummaryBlocks } from './assembly-blocks.js'
 
 export function isTransparentAssembly(summary, childSummaries) {
-  return isDeepStrictEqual(withoutEnvelope(summary), childSummaries.flatMap(withoutEnvelope))
+  const plain=plainSummaryBlocks(summary)
+  if (isDeepStrictEqual(plain, childSummaries.flatMap(plainSummaryBlocks))) return true // legacy exact concatenation
+  try { return isDeepStrictEqual(plain, orderedSummaryBlocks(childSummaries)) } catch { return false }
 }
 
 // An envelope is not another summarization. Older releases labelled envelopes

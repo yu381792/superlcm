@@ -23,7 +23,7 @@ async function writeSummaries($, id) {
       const use = model || await $.session.model()
       const r = await $.model.complete({ model: use, system, prompt, maxTokens: 2048, timeoutMs: 180000 })
       if (!r.isAnswered) return void await cli($, 'summary-handoff', id)
-      const saved = await cli($, 'summary-save', id, JSON.stringify({ batch_id, summary: r.text, model: use }))
+      const saved = await cli($, 'summary-save', id, JSON.stringify({ batch_id, summary: r.text, model: use, isAnswered: r.isAnswered, finishReason: r.stopReason ?? r.stop_reason ?? r.finishReason ?? r.finish_reason }))
       if (!saved.saved) return void await cli($, 'summary-handoff', id) // refused: the separate worker takes over
       if (!saved.more) return
     }

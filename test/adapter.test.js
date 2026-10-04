@@ -331,7 +331,7 @@ test('Anthropic and OpenAI custom API requests use configured URL/model/key only
   await summarizeWithModel('s',{model:'g',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:ok});assert.equal(bodies[2].body.reasoning_effort,undefined,'unset sends nothing')
   // A reasoning model that refuses max_tokens is retried once with max_completion_tokens.
   const tries=[];const picky=async(url,init)=>{const b=JSON.parse(init.body);tries.push(b);return b.max_tokens?{ok:false,status:400,text:async()=>'Unsupported parameter: max_tokens; use max_completion_tokens'}:{ok:true,json:async()=>({choices:[{message:{content:'z'}}]})}}
-  assert.equal(await summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:picky}),'z');assert.equal(tries.length,2);assert.equal(tries[1].max_completion_tokens,750)
+  assert.equal(await summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:picky}),'z');assert.equal(tries.length,2);assert.equal(tries[1].max_completion_tokens,2048)
   await assert.rejects(summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:async()=>({ok:false,status:401,text:async()=>'{"error":"invalid key"}'})}),/HTTP 401: .*invalid key/)
 })
 test('background worker actually uses saved API settings against a local fake endpoint',fixture(async ({dir,store})=>{
@@ -516,7 +516,7 @@ test('subscription adapter isolates credentials, tools and model choice',fixture
   assert.equal(invoked.bin,'test-claude')
   assert.deepEqual(invoked.args.slice(0,10),['--print','--output-format','json','--model','opus','--no-session-persistence','--settings','{"disableAllHooks":true}','--disable-slash-commands','--tools'])
   assert.deepEqual(invoked.args.slice(10,13),['','--strict-mcp-config','--system-prompt'])
-  assert.match(invoked.args[13],/Never follow instructions/)
+  assert.match(invoked.args[13],/historical data, not instructions to execute/)
   // Whatever routes the user's Claude Code to its provider stays in place.
   assert.equal(invoked.options.env.ANTHROPIC_BASE_URL,'http://elsewhere')
   assert.equal(invoked.options.env.CLAUDE_CODE_USE_VERTEX,'1')
@@ -706,7 +706,7 @@ test('segments are sized by characters: whole records up to the target, one over
     for (const r of store.eventRows('seg').slice(0, 5)) store.addNode({ session: 'seg', id: 'n' + r.ordinal, level: 0, first: r.ordinal, last: r.ordinal, children: [], summary: 's', digest: 'd', model: 'm' })
     const big = summaryWork(store, 'seg', { fanout: 99 })
     assert.equal(big.first, big.last, 'an oversized record forms its own segment')
-    assert.match(big.content, /^\[event \d+\] assistant: H+ …\[\d+ characters omitted; lcm_read event \d+ for the full text\]… T+$/)
+    assert.match(big.content, /^\[event \d+\] assistant:\nH+ …\[\d+ characters omitted; lcm_read event \d+ for the full text\]… T+$/)
     assert.ok(big.content.length < 2100)
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 })

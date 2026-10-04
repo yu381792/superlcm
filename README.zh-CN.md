@@ -22,6 +22,8 @@ SuperLcm 让 **Claude Code、Codex、Hermes、Pi 和 dsh harness** 共用一座�
 
 先从 [安装包说明](docs/RELEASE.md) 安装，运行 `superlcm web`，在「接入」页选择工具即可。Claude Code 用户也可 [安装 Claude 插件](#安装成-claude-插件)，用 `/superlcm:console` 打开控制台。dsh harness 用户从现有供应商及模型列表中选择压缩模型，点击「安装并启用压缩」完成全局接入，再重新加载 dsh harness；见 [接入说明](docs/DSH.md)。
 
+0.5.11 起，后台摘要、Claude 和 DSH 的压缩摘要统一保留决策变更、理由、授权边界、工具失败及历史来源。旧摘要不会自动重算；原文仍是查证依据。见 [摘要语义规则与验收边界](docs/SUMMARY-SEMANTICS-0.5.11.md)。
+
 ## 把整段对话连同摘要，整个搬进另一个工具
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/handoff-zh-dark.gif"><img src="docs/images/handoff-zh-light.gif" alt="动画：Codex 用量到了上限；到 Claude Code 里一句话接续对话 #6e94e，lcm_continue 带来目录和最近几条原文，lcm_read 再从共用的档案馆读出更早的一条。"></picture>
@@ -39,7 +41,7 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 
 - **后台提前组装好。** 每聊完一轮，插件就在后台把攒够的摘要写好，你照常干活。等上下文快满时，替换内容早已备好。
 - **到门槛不卡。** 到了门槛（默认 300K token，可选 200K、500K、800K 或自定义，最高 950K），SuperLcm 一步把旧的部分换成能盖住它的最少几张分层摘要，不调用任何模型。几毫秒完成，不用干等一分钟的「正在压缩」。
-- **手头的活不丢细节。** 最近 40K token 一字不改地留下（可选 20K、40K、80K 或自定义），更早的才换成摘要，AI 接着干活基本无感。
+- **手头的活不丢细节。** 最近 40K token 一字不改地留下（可选 20K、40K、80K 或自定义），更早的才换成摘要，细节仍可按编号查回原文。
 - **无损。** 缩短的只是 AI 眼前的视图，每一条原文都按编号留在档案馆里，细节要紧时 AI 用 `lcm_read` 原样调回。
 - **Haiku 在对话里写摘要。** 在 Claude Code 卡片上选「本工具后台写」、模型选 `haiku`，插件就用当前对话的登录直接调 Haiku。不要 API 密钥，不另开 Claude Code 会话，也不拿昂贵的主模型做记账。
 - **默认稳妥。** 不打开就不生效。摘要没跟上或有任何不对劲，照旧交回 Claude Code 自己压缩；关掉开关就恢复你原来的设置。子代理始终按原样压缩。

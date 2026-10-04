@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { markerFromSummary } from './marker.js'
+import { CHECKPOINT_OPENINGS } from './checkpoint-frame.js'
 
-const checkpointPreamble = 'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.'
 export function checkpointMatches(summary, content) {
   if (!Array.isArray(summary) || !summary.length || !Array.isArray(content)) return false
   if (isDeepStrictEqual(summary, content)) return true
   // dsh-compaction-basic frames the exact summary blocks, without rewriting
   // their text or accepting an arbitrary prefix/suffix supplied by a model.
   return content.length === summary.length + 2
-    && isDeepStrictEqual(content[0], { type: 'text', text: checkpointPreamble + '\n\n<compacted-summary>' })
+    && CHECKPOINT_OPENINGS.some(text=>isDeepStrictEqual(content[0], {type:'text',text}))
     && isDeepStrictEqual(content.at(-1), { type: 'text', text: '</compacted-summary>' })
     && isDeepStrictEqual(content.slice(1, -1), summary)
 }
@@ -27,4 +27,3 @@ export function legacyIdentities(store, sessionId, records) {
   }
   return identities
 }
-

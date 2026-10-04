@@ -3,6 +3,7 @@
 // written replace the part they cover, everything newer stays word for word, and no model is called.
 // When the summaries do not cover enough, the caller hands the compaction back to Claude Code.
 export const PACKET_TAG = 'superlcm-context'
+import { RECALL_POLICY } from './summary-policy.js'
 export const takeoverDefaults = { enabled: false, window: 300000, keep: 40000 } // keep: newest tokens left word for word
 export const takeoverLimits = { window: [100000, 950000], keep: [5000, 200000] }
 const MAX_PACKET_CHARS = 120000
@@ -97,6 +98,7 @@ export function renderPacket({ meta, summaries, through, keep, instructions, rec
   const head = `<${PACKET_TAG} conversation="#${code}" keep="${keep}" through="${through}">\n` +
     `This session is being continued from a previous conversation that ran out of context. The summaries below cover the earlier portion of the conversation (records 0-${through}), written by SuperLcm, the user's conversation-memory plugin, as the conversation went; the messages after this one continue it word for word. ` +
     `The complete original of the earlier portion is preserved: summaries are navigation, not proof, so before relying on a detail call lcm_read {"conversation":"#${code}","from":<first>,"to":<last>} with a summary's record range (or lcm_find / lcm_outline) and quote the original.\n` +
+    RECALL_POLICY+'\n'+
     (instructions ? `The person asked this compaction to keep in mind: ${instructions.slice(0, 2000)}\n` : '')
   let body = '', omitted = 0
   for (const n of summaries) {

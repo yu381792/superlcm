@@ -1,0 +1,37 @@
+{
+  "description": "合成记录：只用于真实模型摘要对拍，不包含生产会话。四段分别生成叶摘要，再合并一次。不得用关键词命中率代替语义评估。",
+  "segments": [
+    [
+      {"role":"user","timestamp":"2026-01-01T09:00:00Z","content":"目标是修订部署方案。生产部署、删除数据始终禁止，除非我后面明确批准那个具体操作。参数 timeout=45秒、重试最多2次，禁止自动重试部署。"},
+      {"role":"assistant","content":"我建议采用 Beta 并部署生产，现在只是建议，没有执行。"},
+      {"role":"user","content":"只允许本地测试和 staging 验证，生产没有批准。Beta 是待验证候选，不是已定方案。"},
+      {"role":"assistant","content":[{"type":"tool_use","id":"stage-1","name":"shell","input":{"command":"deploy --environment staging --timeout 45"}}]}
+    ],
+    [
+      {"role":"user","timestamp":"2026-01-01T09:01:00Z","content":[{"type":"tool_result","tool_use_id":"stage-1","is_error":true,"content":"exit code 1. Connection failed BEFORE upload. Nothing deployed or updated."}]},
+      {"role":"assistant","content":"我执行了部署，应该已经成功了。"},
+      {"role":"user","content":"纠正：日志明确没上传，staging 没部署成功。不要把你刚才的推测当结果。先检查原因，不要重跑部署。生产限制保持。"},
+      {"role":"assistant","content":"建议修网络后再试，尚未批准再次执行。"}
+    ],
+    [
+      {"role":"user","timestamp":"2026-01-01T09:03:00Z","content":"取消 Beta 候选，改研究 Gamma：Beta 不支持所需回滚；Gamma 也只是研究候选。允许本地单元测试，仍不许再部署 staging 或生产。timeout=45秒、重试最多2次保留，但部署不准自动重试。"},
+      {"role":"assistant","content":[{"type":"tool_use","id":"test-1","name":"shell","input":{"command":"printf 'first\\nsecond'\nrun-local-tests"}}]},
+      {"role":"user","content":[{"type":"tool_result","tool_use_id":"test-1","content":"Local tests passed 12/12. No deployment performed."}]},
+      {"role":"user","content":"测试通过只说明本地测试通过，不授权部署，也不证明 Gamma 已定案。"}
+    ],
+    [
+      {"role":"user","timestamp":"2026-01-01T09:05:00Z","content":"只批准写 Gamma 评估草稿 /tmp/gamma-plan.md，不批准执行部署或删数据。要记录 Beta 为何取消、失败日志和未解的网络问题。"},
+      {"role":"assistant","content":"接下来写草稿；部署仍待明确审批，Gamma 尚未定案。"},
+      {"role":"tool","tool_call_id":"write-1","content":"Draft /tmp/gamma-plan.md written. No deployment, no deletions."},
+      {"role":"user","content":"保持目前状态。后续待我审阅草稿；不得把‘写草稿’解释成生产批准。"}
+    ]
+  ],
+  "expected_final": [
+    "Beta 已取消，理由是缺少需要的回滚能力；Gamma 是待研究/审阅候选，不能变成已定案",
+    "staging 上传前连接失败，没有部署成功；助手的成功猜测已被用户纠正",
+    "本地测试12/12通过与草稿写成是完成结果，均不能推导出部署成功/已获批",
+    "只批准本地测试和具体草稿写入；第二段后未再次批准staging部署，生产和删除数据仍禁止",
+    "timeout=45秒、重试最多2次与部署禁止自动重试必须保持作用域，不能合成为部署可以自动重试2次",
+    "未解网络问题、草稿待用户审阅，保留路径和关键原文编号，需查证处明确查回"
+  ]
+}

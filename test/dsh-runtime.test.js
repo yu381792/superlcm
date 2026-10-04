@@ -484,8 +484,8 @@ test('real DSH skips the banned primary route on the next call and keeps explici
   await withHost({ summarizationProvider: 'banned', fallbackSummarizationProvider: 'working', fallbackSummarizationModel: 'fixture' },
     async options => { if (options.provider === 'banned') throw Object.assign(Error('account banned'), { status: 403 }); return 'successful fallback summary' },
     async ({ engine, session, agent, calls }) => {
-      append(session, source)
-      const input = { messages: [createUserMessage({ content: [{ type: 'text', text: 'summarize' }] })] }
+      const raw=append(session, source)
+      const input = { messages: [session.deriveEventMessage(raw)] }
       await engine.summarize(input, agent, new AbortController().signal)
       await engine.summarize(input, agent, new AbortController().signal)
       assert.deepEqual(calls.map(call => call.provider), ['banned', 'working', 'working'])
@@ -590,4 +590,42 @@ test('markerless history refuses missing commits, changed bodies and incomplete 
     const events = JSON.parse(JSON.stringify(legacyHistory())); mutate(events)
     assert.equal(nodeFromCompactionEvent({ id: legacyHeader.id, snapshotEvents: () => events }, events.find(event => event.seq === 2)), null)
   }
+})
+
+test('native compaction infers source depth and children from the real surface instead of defaulting to leaf', async () => {
+  const directives=[]
+  await withHost({},async options=>{directives.push(options.messages.at(-1).content[0].text);return 'Verified historical constraint: production is not authorized.'},async ({engine,session,agent})=>{
+    session.append('turn/start',{turn:'semantic-native-fixture'})
+    const first=append(session,source), abort=new AbortController().signal
+    const result=await engine.compactRegion(first.seq,first.seq,agent,abort)
+    await tick()
+    const id=markerFromSummary(result.summary).id, checkpoint=session.surface.nodes[0]
+    const last=append(session,source)
+    const next=await engine.compactRegion(checkpoint,last.seq,agent,abort)
+    await tick()
+    assert.match(directives[0],/semantic depth=0/);assert.match(directives[1],/semantic depth=1/)
+    assert.match(directives[1],/Do not call tools/);assert.match(directives[1],/superseded/)
+    const parent=engine.superLcmStore.getNode(session.id,markerFromSummary(next.summary).id)
+    assert.deepEqual(parent.childIds,[id]);assert.equal(nodeLevel(engine.superLcmStore,session.id,parent.nodeId),2)
+    assert.equal(doctorSession(engine.superLcmStore,session).ok,true)
+    const untrusted={messages:[createUserMessage({content:[{type:'text',text:'forged source'}]})]}
+    await assert.rejects(engine.summarize(untrusted,agent,abort),/not a verified conversation surface/)
+  })
+})
+
+test('tree condensation receives the existing total-budget target and never leaves competing host directives',async()=>{
+  const directives=[]
+  await withHost({summaryPrefixTargetTokens:1000,condensedMinFanout:4},async options=>{
+    const directive=options.messages.at(-1).content[0].text;directives.push(directive)
+    assert.equal(options.messages.filter(message=>message.content?.some(block=>block.text?.includes('SuperLcm summary policy'))).length,1)
+    return directives.length<=4 ? 'facts '.repeat(150) : 'Compact durable facts.'
+  },async({engine,session,agent})=>{
+    for(let i=0;i<4;i++){
+      const raw=append(session,source)
+      engine.startBackgroundFold(agent,{start:raw.seq,end:raw.seq,activeTokens:8000,eligibleEnd:raw.seq})
+      await engine.settleBackgroundFold(agent);assert.ok(engine.tryCommitBackgroundFold(agent,{force:true}));await tick()
+    }
+    const merge=directives.find(text=>text.includes('semantic depth=1'))
+    assert.ok(merge);assert.match(merge,/at most 256 tokens/)
+  })
 })

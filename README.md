@@ -8,6 +8,8 @@
 
 SuperLcm gives **Claude Code, Codex, Hermes, Pi and dsh harness** a shared conversation archive on your own computer. Original records stay available word for word; layered summaries help you find what matters. Switch tools and continue the same task with one short handoff, then read any earlier detail directly from its source.
 
+From 0.5.11, background writers and Claude/DSH compaction share rules for chronology, decisions and rationale, authorization scope, failed tools and source recall. Existing summaries are retained, not automatically regenerated. See [summary semantics and validation limits](docs/SUMMARY-SEMANTICS-0.5.11.md).
+
 ## Five harnesses, one archive
 
 | Harness | Archive, summaries and continuation | Compaction integration | How to connect |

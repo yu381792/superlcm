@@ -1,6 +1,6 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness: layered summaries, exact-source recall and cross-harness continuation, with compaction integration for Claude Code and dsh harness.",
   "type": "module",
   "publishConfig": {
@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "check": "node scripts/check.mjs",
-    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js test/dsh-policy.test.js test/dsh-console.test.js test/event-counts.test.js test/reliability.test.js",
+    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js test/dsh-policy.test.js test/dsh-console.test.js test/event-counts.test.js test/reliability.test.js test/summary-policy.test.js",
     "test:dsh-runtime": "node --experimental-loader ./scripts/dsh-runtime-loader.mjs --test test/dsh-runtime.test.js test/dsh-history.test.js test/dsh-reliability.test.js",
     "validate": "npm run check && npm test"
   },

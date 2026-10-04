@@ -161,7 +161,7 @@ test('three forest members below the actual checkpoint budget do not buy an earl
   await host(async () => ++calls <= 3 ? 'a'.repeat(1200) + calls : 'Compact facts.', async ({ engine }) => {
     engine.applyRuntimeConfig({ auto: false, summarizationProvider: 'local', summarizationModel: 'old',
       minRetainTokens: 1000, foldBatchTokens: 64000, pressureFoldTokens: 1000,
-      summaryPrefixTargetTokens: 1200, softActiveTokens: 4000, hardActiveTokens: 10000 })
+      summaryPrefixTargetTokens: 1400, softActiveTokens: 4000, hardActiveTokens: 10000 })
     const session = engine.ctx.sessions.create('forest-budget-fixture')
     const agent = { session, options: { provider: 'local', model: 'old' } }, levels = []
     for (let i = 0; i < 3; i++) {
@@ -169,7 +169,7 @@ test('three forest members below the actual checkpoint budget do not buy an earl
       engine.startBackgroundFold(agent, { start: raw.seq, end: raw.seq, activeTokens: 8000, eligibleEnd: raw.seq })
       await engine.settleBackgroundFold(agent)
       const state = engine.backgroundFolds.get(agent)
-      assert.ok(engine.ctx.tokenMeter.estimateMessage(state.summarized.checkpointMessage) <= 1200)
+      assert.ok(engine.ctx.tokenMeter.estimateMessage(state.summarized.checkpointMessage) <= 1400)
       const result = engine.tryCommitBackgroundFold(agent, { allowPressure: true }); assert.ok(result)
       await tick()
       levels.push(nodeLevel(engine.superLcmStore, session.id, markerFromSummary(result.summary).id))

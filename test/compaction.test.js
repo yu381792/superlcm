@@ -226,11 +226,15 @@ test('Claude Code writes its own summaries through summary-claim / summary-save,
   const run = (cmd, input = '') => { const r = spawnSync(process.execPath, ['src/cli.js', cmd, 's3'], { input, env, encoding: 'utf8' }); try { return JSON.parse(r.stdout) } catch { throw new Error(cmd + ' failed: ' + r.stderr.slice(-600)) } }
   const claim = run('summary-claim')
   assert.equal(claim.work.model, 'haiku')
-  assert.match(claim.work.prompt, /^<conversation_excerpt>\n\[event 0\] user: one please/)
+  assert.match(claim.work.prompt, /semantic depth=0/)
+  assert.match(claim.work.prompt, /<conversation_excerpt>\n\[event 0\] user:\none please/)
   assert.deepEqual(run('summary-claim'), { none: 'busy' }) // one writer at a time
   assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: 'nope', summary: 'x'.repeat(30) })), { error: 'stale summary batch' })
   const again = run('summary-claim') // the failed save released the piece
-  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: again.work.batch_id, summary: 'The user asked for one; it was done.', model: 'haiku' })), { saved: true, more: true })
+  assert.match(run('summary-save', JSON.stringify({batch_id:again.work.batch_id,summary:'A plausible partial summary.',isAnswered:true,finishReason:'max_tokens'})).error,/incomplete/)
+  {const check=new ClaudeStore(home);assert.equal(check.nodeRows('s3',0).length,0);check.close()}
+  const retry=run('summary-claim')
+  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: retry.work.batch_id, summary: 'The user asked for one; it was done.', model: 'haiku' })), { saved: true, more: true })
   const s = new ClaudeStore(home)
   assert.equal(s.hostWriter('s3'), true)
   assert.deepEqual(s.nodeRows('s3', 0).map(n => [n.first, n.last, n.model]), [[0, 1, 'claude-code-host:haiku']])

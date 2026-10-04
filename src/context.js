@@ -1,5 +1,6 @@
 // Handoff packet for continuing a conversation elsewhere: outline + recent originals + how to dig.
 // Bounded on purpose; complete summaries and exact originals stay one tool call away.
+import { RECALL_POLICY } from './summary-policy.js'
 const clip = (text, max) => text.length > max ? text.slice(0, max - 1) + '…' : text
 export function continuePacket(store, session, { maxChars = 12000 } = {}) {
   if (!Number.isSafeInteger(maxChars) || maxChars < 2000 || maxChars > 30000) throw new Error('max_chars must be 2000–30000')
@@ -25,7 +26,7 @@ export function continuePacket(store, session, { maxChars = 12000 } = {}) {
     `- Exact originals: lcm_read {"conversation":"${ref}","from":N,"to":M}`,
     `- Expand a summary: lcm_outline {"conversation":"${ref}","node":"<node id>"}`,
     `- Search this conversation: lcm_find {"conversation":"${ref}","query":"..."}`,
-    'Quote originals rather than summaries when a detail matters.')
+    RECALL_POLICY)
   const content = lines.join('\n')
   return { source, ...stats, content: content.slice(0, maxChars), truncated: content.length > maxChars }
 }
