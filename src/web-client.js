@@ -190,9 +190,10 @@ function laneGaps(d, level, total) {
     const covered = overlaps(d.covered_ranges, gap), pending = overlaps(d.unsummarized_ranges, gap)
     const kind = covered ? pending ? 'mixed' : 'covered' : pending ? 'pending' : 'records'
     const cover = kind === 'covered' ? d.bands.filter(b => b.level !== level && countIn(b.source_ranges, gap) === countIn(d.covered_ranges, gap)).sort((a, b) => Math.abs(a.level - level) - Math.abs(b.level - level) || b.level - a.level)[0] : null
-    const label = cover ? t('由第 {n} 层覆盖', { n: cover.level + 1 }) : t({ covered: '其他层已覆盖', pending: '待摘要', mixed: '部分覆盖', records: '非摘要记录' }[kind])
+    const wide = gap.to - gap.from + 1 >= total * 0.07
+    const label = cover ? t(wide ? '由第 {n} 层覆盖' : cover.level > level ? '↑{n}层' : '↓{n}层', { n: cover.level + 1 }) : t({ covered: '其他层已覆盖', pending: '待摘要', mixed: '部分覆盖', records: '非摘要记录' }[kind])
     const explanation = { covered: '消息已由其他层摘要覆盖', pending: '消息尚未摘要，原文已保存', mixed: '部分消息已覆盖，其余原文尚未摘要', records: '运行记录、常驻内容或已替换旧版本，不计待摘要' }[kind]
-    const title = t('第 {n} 层在 #{a}–#{b} 没有单独摘要', { n: level + 1, a: gap.from, b: gap.to }) + ' · ' + t(explanation)
+    const title = t('第 {n} 层在 #{a}–#{b} 没有单独摘要', { n: level + 1, a: gap.from, b: gap.to }) + ' · ' + (cover ? t('由第 {n} 层覆盖', { n: cover.level + 1 }) : t(explanation))
     const tag = cover ? 'button' : 'span'
     return '<' + tag + (cover ? ' type="button" data-cover-node="' + esc(cover.id) + '"' : '') + ' class="seg lane-gap gap-' + kind + '" title="' + esc(title) + '" aria-label="' + esc(title) + '" style="left:' + pct(gap.from, total) + ';width:' + pct(gap.to - gap.from + 1, total) + '">' + (gap.to - gap.from + 1 >= total * 0.03 ? label : '') + '</' + tag + '>'
   }).join('')

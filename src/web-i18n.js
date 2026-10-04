@@ -7,6 +7,8 @@ const LANGS = {
     '第 {n} 层在 #{a}–#{b} 没有单独摘要': 'No separate level {n} summary for #{a}–#{b}',
     '其他层已覆盖': 'Covered elsewhere',
     '由第 {n} 层覆盖': 'Covered by level {n}',
+    '↑{n}层': '↑L{n}',
+    '↓{n}层': '↓L{n}',
     '待摘要': 'Pending',
     '部分覆盖': 'Partly covered',
     '非摘要记录': 'Other records',
