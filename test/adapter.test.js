@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, appendFileSync, rmSync, mkdirSync, chmodSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ClaudeStore, importFile } from '../src/store.js'
+import { ClaudeStore, importFile, maxRecord } from '../src/store.js'
 import { buildHierarchy, summarizeWithModel, summaryEstimate } from '../src/summarize.js'
 import { saveApiKey } from '../src/api-credentials.js'
 import { normalizeApiEndpoint } from '../src/api-endpoint.js'
@@ -59,6 +59,39 @@ test('incremental ingest, layered nodes, exact pagination and idempotence',fixtu
   assert.equal(store.ingest('session1',source).added,1)
   assert.equal(store.exact('session1',16),'{"type":"assistant"}\n')
   assert.equal((await call(store,'lcm_read',{conversation:'session1',from:16})).chunks[0].content,'{"type":"assistant"}\n')
+}))
+test('large compacted records retain exact bytes and do not block later dialogue or partial append recovery',fixture(async ({dir,store})=>{
+  const file=join(dir,'large.jsonl'),first=JSON.stringify({role:'user',content:'Before compression'})+'\n'
+  const compacted=JSON.stringify({type:'compacted',replacement_history:[{role:'user',content:'x'.repeat(5*1024*1024)}]})+'\n'
+  const tail=JSON.stringify({role:'assistant',content:'New decision after compression'})+'\n'
+  writeFileSync(file,first+compacted.slice(0,-10))
+  assert.equal(store.ingest('large',file).added,1)
+  assert.equal(store.source('large').offset,Buffer.byteLength(first))
+  assert.equal(readFileSync(store.archivePath('large'),'utf8'),first,'partial large record is not committed')
+  appendFileSync(file,compacted.slice(-10)+tail)
+  assert.equal(store.ingest('large',file).added,2)
+  assert.equal(store.exact('large',1),compacted)
+  assert.equal(store.eventRows('large')[1].preview,'','replacement history is not counted as new dialogue')
+  assert.match(store.eventRows('large')[2].preview,/New decision/)
+  assert.equal(readFileSync(store.archivePath('large'),'utf8'),first+compacted+tail)
+  assert.equal(store.ingest('large',file).added,0)
+  assert.deepEqual(store.doctor('large').issues,[])
+  const oversized=join(dir,'oversized.jsonl');writeFileSync(oversized,'x'.repeat(maxRecord+1))
+  assert.throws(()=>store.ingest('oversized',oversized),/32 MiB/)
+  assert.equal(store.source('oversized').offset,0,'oversized bytes are not falsely committed')
+}))
+test('Codex submission and Stop hooks succeed past a compaction record larger than four MiB',fixture(async ({dir})=>{
+  const config=join(dir,'codex-large'),sessions=join(config,'sessions'),dbPath=join(dir,'codex-large-store'),file=join(sessions,'rollout.jsonl')
+  mkdirSync(sessions,{recursive:true})
+  const large=JSON.stringify({type:'compacted',replacement_history:['x'.repeat(5*1024*1024)]})+'\n'
+  writeFileSync(file,large+JSON.stringify({type:'event_msg',payload:{type:'user_message',message:'A new real decision'}})+'\n')
+  const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),env={...process.env,CODEX_HOME:config,SUPERLCM_HOME:dbPath,SUPERLCM_SUMMARY_MODE:'off'}
+  for(const event of ['UserPromptSubmit','Stop']){
+    const r=spawnSync(process.execPath,[cli,'codex-hook'],{input:JSON.stringify({hook_event_name:event,session_id:'large-hook',transcript_path:file,cwd:dir}),encoding:'utf8',env,timeout:15000})
+    assert.equal(r.status,0,r.stderr);if(event==='Stop')assert.equal(r.stdout,'{}\n')
+  }
+  const saved=new ClaudeStore(dbPath)
+  try{assert.equal(saved.stats('codex-large-hook').records,2);assert.equal(saved.exact('codex-large-hook',0),large);assert.match(saved.eventRows('codex-large-hook')[1].preview,/new real decision/)}finally{saved.close()}
 }))
 test('reject source changes, enforce private exact source, import text',fixture(async ({dir,store})=>{
   const src=join(dir,'conversation.txt')

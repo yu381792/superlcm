@@ -13,6 +13,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
 export const maxFile = 4 * 1024 * 1024 * 1024 // read in 64 KiB pieces, so the size costs disk (the private copy), not memory
+export const maxRecord = 32 * 1024 * 1024 // Codex compacted records can contain an entire replacement history.
 // Preserve the existing index path; both Claude and Codex must point at the same home.
 export const home = () => resolve(process.env.SUPERLCM_HOME || process.env.SUPERLCM_CLAUDE_HOME || join(homedir(), '.superlcm-claude'))
 function ensurePrivate(path) { mkdirSync(path, { recursive: true, mode: 0o700 }) }
@@ -438,25 +439,29 @@ export class ClaudeStore {
         this.db.prepare("UPDATE sources SET status='changed' WHERE session=?").run(session)
         throw new Error('Source history changed or was truncated; existing pointers may be stale; do not silently rebuild')
       }
-      let offset = src.offset, ordinal = last ? last.ordinal + 1 : 0, pending = Buffer.alloc(0), added = 0
+      let offset = src.offset, readAt = offset, ordinal = last ? last.ordinal + 1 : 0, parts = [], pendingBytes = 0, added = 0
       const chunk = Buffer.alloc(64 * 1024)
-      while (offset + pending.length < size) {
-        const n = readSync(fd, chunk, 0, Math.min(chunk.length, size - offset - pending.length), offset + pending.length)
+      while (readAt < size) {
+        const n = readSync(fd, chunk, 0, Math.min(chunk.length, size - readAt), readAt)
         if (!n) break
-        pending = Buffer.concat([pending, chunk.subarray(0, n)])
-        let cut
-        while ((cut = pending.indexOf(10)) >= 0) {
-          const raw = pending.subarray(0, cut + 1)
-          if (raw.length > 4 * 1024 * 1024) throw new Error('Individual JSONL line exceeds 4 MiB')
+        readAt += n
+        const data = chunk.subarray(0, n)
+        for (let from = 0; from < n;) {
+          const cut = data.indexOf(10, from), end = cut < 0 ? n : cut + 1
+          parts.push(Buffer.from(data.subarray(from, end))); pendingBytes += end - from; from = end
+          if (pendingBytes > maxRecord) throw new Error('Individual JSONL line exceeds 32 MiB')
+          if (cut < 0) break
+          // Copy fragments once per complete record, rather than repeatedly copying
+          // the growing line for every 64 KiB read (large compaction records).
+          const raw = Buffer.concat(parts, pendingBytes)
           if (kind === 'jsonl') { try { JSON.parse(raw.toString('utf8')) } catch { return { session, added, offset, warning: 'Incomplete or invalid JSONL line; waiting for a complete record' } } }
           if (copy !== null) writeSync(copy, raw, 0, raw.length, offset)
           this.#addEvent(session, ordinal++, offset, offset + raw.length, raw, kind)
-          added++; offset += raw.length; pending = pending.subarray(cut + 1)
+          added++; offset += raw.length; parts = []; pendingBytes = 0
         }
-        if (pending.length > 4 * 1024 * 1024) throw new Error('Individual JSONL line exceeds 4 MiB')
       }
-      if (kind === 'text' && pending.length) { if (copy !== null) writeSync(copy, pending, 0, pending.length, offset); this.#addEvent(session,ordinal,offset,offset+pending.length,pending,kind);added++;offset+=pending.length }
-      return { session, added, offset, ...(pending.length && kind==='jsonl' ? { warning: 'Trailing partial line not indexed yet' } : {}) }
+      if (kind === 'text' && pendingBytes) { const pending = Buffer.concat(parts, pendingBytes); if (copy !== null) writeSync(copy, pending, 0, pending.length, offset); this.#addEvent(session,ordinal,offset,offset+pending.length,pending,kind);added++;offset+=pending.length }
+      return { session, added, offset, ...(pendingBytes && kind==='jsonl' ? { warning: 'Trailing partial line not indexed yet' } : {}) }
     } finally { closeSync(fd); if (copy !== null) closeSync(copy) }
   }
   // Private copy of every indexed byte, so originals survive the host moving or deleting its transcript.
@@ -704,7 +709,7 @@ export function importFile(store, path, label, origin = 'import', name) {
     if (!content.endsWith('\n')) throw new Error('JSONL imports require a final newline')
     let visibleCount=0
     for (const line of content.split('\n').slice(0,-1)) {
-      if (Buffer.byteLength(line)>4*1024*1024) throw new Error('Individual JSONL line exceeds 4 MiB')
+      if (Buffer.byteLength(line)+1>maxRecord) throw new Error('Individual JSONL line exceeds 32 MiB')
       try { JSON.parse(line) } catch { throw new Error('Invalid JSONL import; use portable {role,content} records or a UTF-8 .txt export') }
       if (extract(Buffer.from(line), 'jsonl')) visibleCount++
     }
