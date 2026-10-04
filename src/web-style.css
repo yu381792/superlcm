@@ -140,6 +140,12 @@ button:disabled { cursor: default }
 .seg.l3, .seg.lx { background: var(--l3) }
 .seg:hover, .seg[aria-pressed="true"] { outline: 2px solid var(--ink); z-index: 1 }
 .seg.tail { background: repeating-linear-gradient(45deg, var(--tail) 0 3px, transparent 3px 6px); cursor: default; outline: 0 }
+.seg.lane-gap { background: repeating-linear-gradient(135deg, var(--raw) 0 2px, transparent 2px 7px); color: var(--ink3); font-size: 9px; line-height: 16px; text-align: center; white-space: nowrap; overflow: hidden; cursor: help; outline: 0 }
+.seg.gap-covered { color: #24674c }
+.seg.lane-gap[data-cover-node] { cursor: pointer }
+.seg.lane-gap[data-cover-node]:hover { outline: 1px solid var(--ink3) }
+.coverage-state { margin: 10px 0 0; font-size: 12px; color: var(--ink2); display: flex; flex-wrap: wrap; gap: 4px 16px }
+.coverage-state span { color: var(--ink3); font-size: 11px }
 .axis { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--ink3); margin-top: 6px; padding-left: 62px }
 .strip-note { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink2); margin-top: 10px; align-items: center }
 .strip-note .k { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 5px }
