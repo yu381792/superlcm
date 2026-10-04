@@ -28,6 +28,7 @@ export function apply(ctx,config={}) {
     enabled: true, routeReady: true, onError: () => ctx.logger?.warn?.('SuperLcm 归档状态写入失败') })
   const migrated = migrateLegacyIndex(native)
   if (migrated.added) ctx.logger?.info?.(`SuperLcm 已迁入 ${migrated.added} 条旧 DSH 摘要`)
+  for (const conflict of migrated.conflicts) ctx.logger?.warn?.(`SuperLcm 旧摘要迁入冲突：${conflict.sessionId}/${conflict.nodeId}（${conflict.fields.join(', ')}）；共享索引与旧档案均保留，未覆盖`)
   const warn = error => ctx.logger?.warn?.('SuperLcm 归档：' + (error?.message || error))
   const dirty = new Set(), cursors = new Map(), observed = new Set()
   let stopped = false, running = null

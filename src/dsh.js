@@ -92,16 +92,20 @@ export function captureDshPacket(store, packet, {clientKind='hook'}={}) {
     store.ingest(session, file)
     // Importing or replaying history is not new conversation activity. Keep
     // the list ordered by the native last event, rather than archive time.
-    const count = store.db.prepare('SELECT records FROM session_event_counts WHERE session=?').get(session)?.records ?? 0
-    if (count) {
-      const last = records.find(item => item.record.event.seq === count - 1)?.record.event
-      const saved = store.db.prepare('SELECT records,time_ms FROM dsh_activity WHERE session=?').get(session)
-      const time = last?.time ?? (saved?.records === count ? saved.time_ms : JSON.parse(store.exact(session, count - 1)).event?.time)
-      if (Number.isFinite(time) && time >= 0) {
-        store.db.prepare('INSERT INTO dsh_activity VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET records=excluded.records,time_ms=excluded.time_ms').run(session, count, Math.round(time))
-        store.db.prepare('UPDATE sources SET updated_ms=? WHERE session=?').run(Math.round(time), session)
+    store.db.exec('BEGIN IMMEDIATE')
+    try {
+      const count = store.db.prepare('SELECT records FROM session_event_counts WHERE session=?').get(session)?.records ?? 0
+      if (count) {
+        const last = records.find(item => item.record.event.seq === count - 1)?.record.event
+        const saved = store.db.prepare('SELECT records,time_ms FROM dsh_activity WHERE session=?').get(session)
+        const time = last?.time ?? (saved?.records === count ? saved.time_ms : JSON.parse(store.exact(session, count - 1)).event?.time)
+        if (Number.isFinite(time) && time >= 0) {
+          store.db.prepare('INSERT INTO dsh_activity VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET records=excluded.records,time_ms=excluded.time_ms').run(session, count, Math.round(time))
+          store.db.prepare('UPDATE sources SET updated_ms=? WHERE session=?').run(Math.round(time), session)
+        }
       }
-    }
+      store.db.exec('COMMIT')
+    } catch (error) { store.db.exec('ROLLBACK'); throw error }
     const first = store.db.prepare("SELECT preview FROM events WHERE session=? AND preview LIKE 'user:%' ORDER BY ordinal LIMIT 1").get(session)
     store.setMetadata(session, { harness: 'dsh', externalId: id, name: packet.title || first?.preview.replace(/^user:\s*/, '').slice(0, 100) || id, nameSource: packet.title ? 'native' : 'derived' })
     // DSH owns summary generation. Archive capture never launches another model.

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, appendFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { ClaudeStore } from '../src/store.js'
 import { captureDshPacket } from '../src/dsh.js'
 import { SuperLcmStore } from '../dsh/store.js'
@@ -30,6 +31,31 @@ test('historical replay keeps native activity time and does not bury active conv
     assert.equal(store.source(older.session).updated_ms, 101)
     assert.equal(store.listSessions(2, 0, 'dsh').sessions[0].session, active.session)
   } finally { store.close() }
+})
+
+test('activity cursor and timestamp are protected against a concurrent writer', () => {
+  const store = fixture(), other = new DatabaseSync(join(store.dir, 'lcm.sqlite'))
+  try {
+    const { session } = captureDshPacket(store, packet([record(0)]))
+    const prepare = store.db.prepare.bind(store.db)
+    let protectedWrite = false
+    store.db.prepare = sql => {
+      const statement = prepare(sql)
+      if (!protectedWrite && sql === 'SELECT records FROM session_event_counts WHERE session=?') {
+        const get = statement.get.bind(statement)
+        statement.get = (...args) => {
+          assert.throws(() => other.prepare('UPDATE dsh_activity SET time_ms=9999 WHERE session=?').run(session), /locked/)
+          protectedWrite = true
+          return get(...args)
+        }
+      }
+      return statement
+    }
+    captureDshPacket(store, packet([record(1)]))
+    assert.equal(protectedWrite, true)
+    assert.equal(store.source(session).updated_ms, 101)
+    assert.equal(prepare('SELECT records FROM dsh_activity WHERE session=?').get(session).records, 2)
+  } finally { other.close(); store.close() }
 })
 
 test('cold capture reads raw persistence and excludes synthetic interrupted-turn closers', async () => {
@@ -214,6 +240,31 @@ test('legacy summaries migrate idempotently without modifying the legacy databas
     assert.equal(migrateLegacyIndex(target, env).added, 1)
     assert.equal(migrateLegacyIndex(target, env).added, 0)
     assert.deepEqual(readFileSync(path), before)
+  } finally { target.close() }
+})
+
+test('legacy provenance and body conflicts retain both archives and do not block other migrations', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'superlcm-dsh-conflict-')), path = join(dir, 'old.sqlite')
+  const old = new SuperLcmStore(path), target = new SuperLcmStore(join(dir, 'new.sqlite'))
+  const base = { sessionId: header.id, nodeId: 'same-body', compactionId: 'historical', summarySeq: 100, summary: [{ type: 'text', text: 'Immutable summary' }], summaryText: 'Immutable summary', sourceSeqs: [13, 14, 12993], childIds: [], status: 'ready' }
+  try {
+    old.upsertNode(base)
+    old.upsertNode({ ...base, nodeId: 'different-body' })
+    old.upsertNode({ ...base, nodeId: 'new-node' })
+    target.upsertNode({ ...base, summarySeq: 10, sourceSeqs: [14, 15, 387] })
+    target.upsertNode({ ...base, nodeId: 'different-body', summary: [{ type: 'text', text: 'Current verified body' }], summaryText: 'Current verified body' })
+  } finally { old.close() }
+  const before = readFileSync(path), current = target.getNode(header.id, 'same-body'), body = target.getNode(header.id, 'different-body')
+  try {
+    const env = { DSH_HOME: join(dir, 'empty'), DSH_SUPERLCM_LEGACY_DB: path }
+    const result = migrateLegacyIndex(target, env)
+    assert.equal(result.added, 1); assert.equal(result.conflicts.length, 2)
+    assert.deepEqual(result.conflicts.find(c => c.nodeId === 'same-body').fields, ['sourceSeqs', 'summarySeq'])
+    assert.deepEqual(target.getNode(header.id, 'same-body'), current)
+    assert.deepEqual(target.getNode(header.id, 'different-body'), body)
+    assert.deepEqual(readFileSync(path), before)
+    assert.equal(migrateLegacyIndex(target, env).added, 0)
+    assert.equal(migrateLegacyIndex(target, env).conflicts.length, 2, 'conflicts remain explicit on the next startup')
   } finally { target.close() }
 })
 
