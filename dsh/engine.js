@@ -139,7 +139,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
 
   _registerAutomaticCompaction() {
     if (this.rollingConfig === undefined) {
-      queueMicrotask(() => this._registerAutomaticCompaction())
+      if (!this.registrationDeferred) {
+        this.registrationDeferred = true
+        queueMicrotask(() => this._registerAutomaticCompaction())
+      }
       return
     }
     if(this.automaticRegistered)return
