@@ -16,7 +16,7 @@ import { prepareAsyncRegion, summarizeAsyncRegion } from '../dsh/async-region.js
 import { controlsConfig } from '../dsh/controls-config.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
-async function fixture(run, response = async () => 'Current task and exact facts retained.') {
+async function fixture(run, response = async () => 'Current task and exact facts retained.', ownerConfig = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'superlcm-native-owner-')), ctx = new Context(), calls = [], warnings = []
   const file = join(dir, 'controls.json')
   const config = controlsConfig({auto:false,summarizationProvider:'plugin-provider',summarizationModel:'plugin-model',summaryAdapter:{plugin:'unused'}})
@@ -30,7 +30,7 @@ async function fixture(run, response = async () => 'Current task and exact facts
       yield {type:'text-delta',index:0,text}
     }, resolveModelInfo:async()=>({context:{contextWindow:262144},defaultMaxTokens:65536}), imageRequestPricing() {}, fileRequestText() {}})
     new TokenMeter(ctx)
-    const owner = await mountCompactionOwner(ctx,{controlFile:file,archiveHome:dir})
+    const owner = await mountCompactionOwner(ctx,{controlFile:file,archiveHome:dir,...ownerConfig})
     const session = ctx.sessions.create('native-restoration'), signal = new AbortController().signal
     session.append('turn/start',{turn:'native-owner-turn'})
     session.append('request/header',{header:{config:{provider:'chat-provider',model:'chat-model'}},reason:'initial'})
@@ -161,4 +161,32 @@ test('disabling takeover drains a cancelled pending draft without waiting for a 
     assert.deepEqual(session.surface.nodes,before)
     assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/summary').length,0)
   })
+})
+
+test('native owner restores captured policy and model route after optional takeover',async()=>{
+  await fixture(async({ctx,owner,publish})=>{
+    assert.equal(ctx.compaction.config.thresholdRatio,0.72);assert.equal(ctx.compaction.config.retainTokens,24000)
+    assert.equal(ctx.compaction.config.summarizationModel,'native-model')
+    publish('takeover-policy',{auto:true,summaryAdapter:adapter});await owner.reload();assert.equal(owner.mode,'superlcm')
+    publish('restore-policy');await owner.reload();assert.equal(owner.mode,'dsh-native')
+    assert.equal(ctx.compaction.config.thresholdRatio,0.72);assert.equal(ctx.compaction.config.retainTokens,24000)
+    assert.equal(ctx.compaction.config.summarizationModel,'native-model')
+  },undefined,{archiveOnly:false,nativeConfigs:{undefined:{auto:true,thresholdRatio:0.72,retainTokens:24000,summarizationProvider:'native-provider',summarizationModel:'native-model'}}})
+})
+
+test('malformed controls at boot or reload retain native protection without acknowledging takeover',async()=>{
+  await fixture(async({ctx,owner,publish,warnings})=>{
+    publish('on-before-corruption',{auto:true,summaryAdapter:adapter});await owner.reload();assert.equal(owner.mode,'superlcm')
+    publish('invalid',{softActiveTokens:-1});await owner.reload();assert.equal(owner.mode,'dsh-native');assert.ok(ctx.compaction instanceof Basic)
+    assert.match(warnings.join('\n'),/读取失败/)
+    publish('good-off');await owner.reload();assert.equal(owner.mode,'dsh-native')
+  })
+  const dir=mkdtempSync(join(tmpdir(),'slcm-corrupt-owner-')),ctx=new Context(),file=join(dir,'invalid.json')
+  writeFileSync(file,'{broken json')
+  try {
+    new SessionStore(ctx);new SessionProjections(ctx);ctx.reflect.provide('llm',{stream:async function*(){},resolveModelInfo:async()=>({context:{contextWindow:262144}}) });new TokenMeter(ctx)
+    const owner=await mountCompactionOwner(ctx,{controlFile:file,archiveHome:dir,nativeConfigs:{undefined:{retainTokens:24000}}})
+    assert.equal(owner.mode,'dsh-native');assert.ok(ctx.compaction instanceof Basic);assert.equal(ctx.compaction.config.retainTokens,24000)
+    assert.notEqual(ctx.compaction.compressionReporter?.revision,'invalid-controls')
+  }finally{await ctx.fiber.dispose()}
 })

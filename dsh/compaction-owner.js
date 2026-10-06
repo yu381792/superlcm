@@ -64,8 +64,18 @@ const Takeover = owned(Engine), Native = owned(Basic)
 
 export async function mountCompactionOwner(ctx, config = {}) {
   let fiber, engine, handlers = new Map(), reporter, store, revision, closed = false, pending
-  const current = () => readControls(config.controlFile) || { revision: '', config }
+  let invalidControls=false
+  const current = () => {
+    try {const document=readControls(config.controlFile);invalidControls=false;return document||(config.controlFile?{revision:'missing-controls',config:{auto:false},invalid:true}:{revision:'',config})}
+    catch {
+      if(!invalidControls)ctx.logger?.warn?.('压缩设置读取失败，保留 DSH 原生压缩保护')
+      invalidControls=true
+      return {revision:'invalid-controls',config:{auto:false},invalid:true}
+    }
+  }
   const initial = current()
+  const nativeOptions = { summarizationProvider: '', summarizationModel: '', ...config.nativeConfigs?.[ctx.get?.('profileContext')?.name], auto: true }
+  const {nativeConfigs,archiveOnly,...takeoverConfig}=config
   let enabled
   // Stable listeners dispatch to the current owner after a switch. Cordis
   // snapshots a waterfall's listeners before awaiting them, so registering
@@ -112,17 +122,13 @@ export async function mountCompactionOwner(ctx, config = {}) {
     if (closed) return
     enabled = document.config.auto !== false
     const selected = enabled ? Takeover : Native
-    const options = enabled ? { ...config, ...document.config, controlFile: '' } : {
-      auto: true,
-      // Empty route deliberately selects the conversation's routed model.
-      summarizationProvider: '', summarizationModel: '',
-    }
+    const options = enabled ? { ...takeoverConfig, ...document.config, controlFile: '' } : nativeOptions
     engine = null
     try { await mount(selected, options) }
     catch (error) {
       await fiber?.dispose()
       engine = null
-      await mount(Native, { auto: true })
+      await mount(Native, nativeOptions)
       enabled = false
       ctx.logger?.warn?.('所选压缩引擎启动失败，已恢复 DSH 原生压缩')
       if (!document.config.auto) throw error
@@ -131,7 +137,7 @@ export async function mountCompactionOwner(ctx, config = {}) {
       store = new SuperLcmStore(config.archiveHome ? join(config.archiveHome, 'lcm.sqlite') : resolveDatabasePath())
       reporter = store.compressionReporter({ kind: 'engine', profile: ctx.get?.('profileContext')?.name || null,
         enabled: false, routeReady: true, onError: () => ctx.logger?.warn?.('DSH 原生压缩状态写入失败') })
-      if (document.config.auto === false) reporter.applied(document.revision)
+      if (document.config.auto === false&&!document.invalid) reporter.applied(document.revision)
     }
     if (enabled) engine.compressionReporter.applied(document.revision)
     // Remember failed documents too, without acknowledging them as applied.

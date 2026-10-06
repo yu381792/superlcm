@@ -72,7 +72,7 @@ function renderTools() {
   for (const b of $('#tools').querySelectorAll('[data-manage]')) b.onclick = () => openConnectionManager(b.dataset.manage)
   for (const b of $('#tools').querySelectorAll('[data-import]')) b.onclick = () => openImport(b.dataset.import)
   for (const b of $('#tools').querySelectorAll('[data-plugin]')) b.onclick = () => pluginAct(b.dataset.plugin, b)
-  for (const b of $('#tools').querySelectorAll('[data-goto-compact]')) b.onclick = () => { show('settings'); settingsSection('compact') }
+  for (const b of $('#tools').querySelectorAll('[data-goto-compact]')) b.onclick = () => show('compression/claude-code')
   for (const select of $('#tools').querySelectorAll('select[data-tool]')) select.onchange = () => {
     const harness = select.dataset.tool, x = admin.settings.settings.find(y => y.harness === harness), models = admin.settings.api_models
     // Custom API picks one of the models added in Settings; with none yet, go add one first.
@@ -342,6 +342,7 @@ function markSize(group, key, value) {
   if (preset) $(group + 'Custom').hidden = true
 }
 function renderTakeover(x) {
+  if(x)renderCompressionOwner('#claudeCompressionOwner',x.enabled)
   if (!x) return
   $('#takeoverOn').checked = x.enabled
   markSize('#takeoverWindow', 'w', x.window); markSize('#takeoverKeep', 'k', x.keep)
@@ -456,7 +457,7 @@ function boot() {
 }
 let compressionPolling = false
 setInterval(async () => {
-  if (document.hidden || compressionPolling || (state.view !== 'connect' && state.view !== 'settings')) return
+  if (document.hidden || compressionPolling || !['connect','settings','compression'].includes(state.view)) return
   compressionPolling = true
-  try { await loadCompression() } catch {} finally { compressionPolling = false }
+  try { await loadCompression();if(state.view==='compression'&&state.compressionTool==='dsh')dshSettingsStatus() } catch {} finally { compressionPolling = false }
 }, 5000)

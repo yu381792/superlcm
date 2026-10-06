@@ -25,10 +25,11 @@ import { writerTool } from './cli-writers.js'
 import { openInTerminal } from './open-terminal.js'
 import { compressionSnapshot, compressionCapabilities, runtimeVersion } from './compression-status.js'
 import { dshCompressionSettings,publicCompressionSettings,saveDshCompression } from './dsh-controls.js'
+import {defaultConsolePort,recordConsoleLocation} from './console-location.js'
 export { probeMcp } from './mcp-probe.js'
 
 const nonce = () => randomBytes(18).toString('hex')
-export const defaultPort = 8791
+export const defaultPort = defaultConsolePort
 const cliScript = fileURLToPath(new URL('./cli.js', import.meta.url))
 const securityHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...securityHeaders }); res.end(JSON.stringify(data)) }
@@ -196,5 +197,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     } catch (error) { json(res, 400, { error: error.message }) }
   })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve) })
+  try {recordConsoleLocation(store, server.address().port)}
+  catch(error){await new Promise(resolve=>server.close(resolve));throw error}
   return { server, url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise(resolve => server.close(() => { store.close(); resolve() })) }
 }

@@ -1,44 +1,28 @@
-// DSH's supported package configuration slot. The branded bundle card and
-// icon are supplied by DSH from this package's locale and icon metadata.
+// DSH provides the branded card; all settings have one console owner.
 window.__ModuleLoader__.load({id:'superlcm',factory:require=>{
   const R=require('react'),h=R.createElement
-  const fields=['revision','enabled','provider_ref','model','softActiveTokens','hardActiveTokens','minRetainTokens','tailCount','foldBatchTokens','pressureFoldTokens','summaryPrefixTargetTokens','condensedMinFanout','summaryTimeoutMs','summaryRetryCooldownMs']
-  const advanced=[['tailCount','近期消息至少保留（条）',1],['hardActiveTokens','强制压缩门槛（K）',1000],['foldBatchTokens','每批处理量（K）',1000],['pressureFoldTokens','最小压缩批量（K）',1000],['summaryPrefixTargetTokens','摘要总预算（K，0 为自动）',1000],['condensedMinFanout','每组摘要升层的段数',1],['summaryTimeoutMs','压缩超时（秒）',1000],['summaryRetryCooldownMs','失败后等待（秒）',1000]]
-  const css=`.slcm-settings{max-width:760px;color:var(--dsw-alias-label-primary);font:14px/1.5 system-ui,sans-serif}.slcm-settings *{box-sizing:border-box}.slcm-settings h3{font-size:15px;margin:24px 0 8px}.slcm-settings p{margin:8px 0 16px}.slcm-help{color:var(--dsw-alias-label-secondary);font-size:13px}.slcm-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 20px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-l2,rgba(128,128,128,.05));margin-bottom:20px}.slcm-toggle b{display:block}.slcm-toggle small{display:block;color:var(--dsw-alias-label-secondary);margin-top:4px}.slcm-switch{width:42px;height:24px;appearance:none;border-radius:20px;background:#dcd9d4;cursor:pointer;position:relative;flex:none}.slcm-switch:after{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:white;left:3px;top:3px;box-shadow:0 1px 3px #0002;transition:transform .15s}.slcm-switch:checked{background:#C96442}.slcm-switch:checked:after{transform:translateX(18px)}.slcm-fields{display:grid;grid-template-columns:1fr 1fr;gap:16px 24px;margin-bottom:12px}.slcm-field{display:flex;flex-direction:column;gap:7px;font-size:13px;min-width:0}.slcm-field select,.slcm-field input{font:inherit;color:inherit;background:var(--dsw-alias-bg-l2,rgba(128,128,128,.05));width:100%;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;min-height:42px}.slcm-choice{display:flex;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;overflow:hidden;margin:12px 0 16px}.slcm-choice button{flex:1;padding:12px 10px;color:inherit;font:inherit;cursor:pointer;border:0;background:var(--dsw-alias-bg-l2,rgba(128,128,128,.05));border-right:1px solid var(--dsw-alias-border-l2)}.slcm-choice button:last-child{border-right:0}.slcm-choice button[aria-checked=true]{background:#C964421b;color:#C96442;box-shadow:inset 0 0 0 1px #C96442}.slcm-actions{display:flex;align-items:center;gap:12px;margin:20px 0}.slcm-btn{color:inherit;background:transparent;padding:10px 18px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;font:inherit;cursor:pointer}.slcm-btn.primary{color:white;background:#C96442;border-color:#C96442;font-weight:600}.slcm-status{padding:12px 16px;border-radius:10px;background:var(--dsw-alias-bg-l2,rgba(128,128,128,.05))}.slcm-settings details{margin-top:24px}.slcm-settings summary{cursor:pointer;margin-bottom:16px;font-weight:600}.slcm-settings :disabled{opacity:.55;cursor:default}.slcm-error{color:var(--dsw-alias-state-error-primary,#bd4133)}@media(max-width:600px){.slcm-fields{grid-template-columns:1fr}.slcm-choice button{padding:10px 5px}}`
   function Form({connection}) {
-    const [saved,setSaved]=R.useState(null),[draft,setDraft]=R.useState(null),[busy,setBusy]=R.useState(false),[error,setError]=R.useState(''),dirty=R.useRef(false)
-    const call=async(endpoint,payload)=>{const result=await connection.rpc.call('/api','superlcm/'+endpoint,payload);if(!result.ok)throw Error(result.error.message);return result.value}
-    const read=async(reset=false)=>{try{const next=await call('read',null);setSaved(next);if(reset||!dirty.current)setDraft(next);setError('')}catch(e){setError(e.message)}}
-    R.useEffect(()=>{let stopped=false;read(true);const timer=setInterval(()=>{if(!stopped)read()},5000);return()=>{stopped=true;clearInterval(timer)}},[])
-    const change=(key,value)=>{dirty.current=true;setDraft(d=>({...d,[key]:value}))}
-    const save=async()=>{setBusy(true);setError('');try{const next=await call('save',draft.archive_only?{revision:draft.revision,mode:draft.setting.mode,api_ref:draft.setting.api_ref}:Object.fromEntries(fields.map(k=>[k,draft[k]])));dirty.current=false;setSaved(next);setDraft(next)}catch(e){setError(e.message)}finally{setBusy(false)}}
-    if(!draft)return h('div',{className:'slcm-settings'},h('p',{role:error?'alert':'status'},error||'正在读取 SuperLcm 设置…'),h('button',{className:'slcm-btn',onClick:()=>read(true)},'重新读取'))
-    if(draft.archive_only)return h('div',{className:'slcm-settings','data-superlcm-settings':true},
-      h('p',{className:'slcm-status'},'自动归档、后台摘要和查询'),
-      h('p',{className:'slcm-help'},'上下文压缩由 dsh harness 自身负责。SuperLcm 的后台摘要只保存到档案，不替换聊天上下文。'),
-      h('div',{className:'slcm-fields'},h('label',{className:'slcm-field'},'摘要生成',h('select',{value:draft.setting.mode,disabled:busy,onChange:e=>{dirty.current=true;setDraft(d=>({...d,setting:{...d.setting,mode:e.target.value,api_ref:d.setting.api_ref||d.models[0]?.id}}))}},h('option',{value:'api'},'自定义 API'),h('option',{value:'off'},'关闭（摘要方式）'))),
-      draft.setting.mode==='api'?h('label',{className:'slcm-field'},'模型',h('select',{value:draft.setting.api_ref||'',disabled:busy,onChange:e=>{dirty.current=true;setDraft(d=>({...d,setting:{...d.setting,api_ref:e.target.value}}))}},h('option',{value:'',disabled:true},'选择已保存的摘要模型'),...draft.models.map(m=>h('option',{key:m.id,value:m.id},m.label)))):null),
-      !draft.models.length?h('p',{className:'slcm-help'},'请先在 SuperLcm 后台设置里添加摘要 API 模型。'):null,
-      h('p',{className:'slcm-help'},'每段摘要原文目标约 '+(draft.target_tokens!=null?draft.target_tokens.toLocaleString()+' token（估算）':draft.target_chars.toLocaleString()+' 字符（旧设置）')+'，原文完整保留。'),
-      error?h('p',{className:'slcm-error',role:'alert'},error):null,
-      h('div',{className:'slcm-actions'},h('button',{type:'button',className:'slcm-btn primary','data-superlcm-save':true,disabled:busy||draft.setting.mode==='api'&&!draft.setting.api_ref,onClick:save},busy?'保存中…':'保存'),h('button',{type:'button',className:'slcm-btn',disabled:busy,onClick:()=>{dirty.current=false;read(true)}},'重新读取')))
-    const provider=draft.catalog.providers.find(p=>p.ref===draft.provider_ref),disabled=busy||!saved.controls_installed
-    const numeric=(key,label,scale=1000)=>h('label',{className:'slcm-field',key},label,h('input',{type:'number','data-superlcm-field':key,value:draft[key]/scale,step:scale===1000?'0.001':'1',min:0,disabled,onChange:e=>change(key,Math.round(Number(e.target.value)*scale))}))
-    const presets=(key,values)=>h('div',{className:'slcm-choice',role:'radiogroup','aria-label':key==='softActiveTokens'?'压缩门槛':'最近原文保留'},...values.map(value=>h('button',{type:'button',role:'radio','aria-checked':draft[key]===value,key:value,disabled,onClick:()=>{dirty.current=true;setDraft(d=>({...d,[key]:value,...key==='softActiveTokens'&&d.hardActiveTokens<=value?{hardActiveTokens:Math.round(value*1.4)}:{}}))}},value/1000+'K')))
-    const status=saved.status==='applied'?'设置已生效':saved.status==='pending'?'设置已保存，等待插件应用':saved.status==='needs-update'?'请先更新 SuperLcm 接入':'设置已保存，插件启动后自动应用'
-    return h('div',{className:'slcm-settings','data-superlcm-settings':true},
-      h('label',{className:'slcm-toggle'},h('span',null,h('b',null,'由 SuperLcm 接管压缩'),h('small',null,'开启后由 SuperLcm 压缩；关闭后由 DSH 使用当前会话模型自动压缩，SuperLcm 继续存档')),h('input',{className:'slcm-switch',type:'checkbox',role:'switch','aria-label':'由 SuperLcm 接管压缩',checked:draft.enabled,disabled,onChange:e=>change('enabled',e.target.checked)})),
-      !draft.enabled?h('p',{className:'slcm-help'},'接管关闭时使用 DSH 原生压缩策略；下方模型、门槛和原文保留设置仅用于 SuperLcm 接管。'):null,
-      h('div',{className:'slcm-fields'},h('label',{className:'slcm-field'},'压缩模型供应商',h('select',{'data-superlcm-provider':true,value:draft.provider_ref||'',disabled,onChange:e=>{dirty.current=true;setDraft(d=>({...d,provider_ref:e.target.value,model:''}))}},h('option',{value:''},'选择供应商'),...draft.catalog.providers.map(p=>h('option',{value:p.ref,key:p.ref,disabled:!p.models.length},p.label)))),h('label',{className:'slcm-field'},'压缩模型',h('select',{'data-superlcm-model':true,value:draft.model||'',disabled,onChange:e=>change('model',e.target.value)},h('option',{value:''},'选择模型'),...(provider?.models||[]).map(m=>h('option',{value:m.id,key:m.id},m.label))))),
-      h('p',{className:'slcm-help'},'使用 DSH 已配置的模型和账号，生成摘要消耗所选模型额度。这里的设置全局生效，聊天模型保持原样。'),
-      h('h3',null,'压缩门槛'),h('p',{className:'slcm-help'},'上下文达到门槛时，SuperLcm 用分层摘要替换旧内容。K 表示一千个词元，即模型计量文字长度的单位。'),presets('softActiveTokens',[200000,300000,500000,800000]),h('div',{className:'slcm-fields'},numeric('softActiveTokens','自定义压缩门槛（K）')),
-      h('h3',null,'最近原文保留'),h('p',{className:'slcm-help'},'近期这么多原文原样保留，更早的内容才换成摘要。近期消息和完整工具调用也会被保护。'),presets('minRetainTokens',[20000,40000,80000]),h('div',{className:'slcm-fields'},numeric('minRetainTokens','自定义最近原文保留（K）')),h('p',{className:'slcm-help'},'按当前门槛计算，原文保留量占 '+(Math.round(draft.minRetainTokens/draft.softActiveTokens*10000)/100)+'%。'),
-      h('details',null,h('summary',null,'高级设置'),h('p',{className:'slcm-help'},'摘要总预算同时约束旧摘要和本次新摘要。0 为自动：取每批处理量与压缩门槛一半中的较小值；超预算会在后台继续合并。'),h('div',{className:'slcm-fields'},...advanced.map(([key,label,scale])=>numeric(key,label,scale)))),
-      h('p',{className:'slcm-status',role:'status'},status),error?h('p',{className:'slcm-error',role:'alert'},error):null,
-      h('div',{className:'slcm-actions'},h('button',{type:'button',className:'slcm-btn primary','data-superlcm-save':true,disabled,onClick:save},busy?'保存中…':'保存'),h('button',{type:'button',className:'slcm-btn',disabled:busy,onClick:()=>{dirty.current=false;read(true)}},'重新读取'),dirty.current?h('span',{className:'slcm-help'},'有未保存的修改'):null))
+    const [url,setUrl]=R.useState(''),[error,setError]=R.useState('')
+    const read=async()=>{
+      try {
+        const result=await connection.rpc.call('/api','superlcm/read',null)
+        if(!result.ok)throw Error(result.error.message)
+        const location=result.value.console
+        const target=new URL(location.url||window.location.href)
+        if(!location.url){target.port=String(location.port);target.pathname='/'}
+        if(!['http:','https:'].includes(target.protocol))throw Error('后台地址无效')
+        target.username='';target.password='';target.search='';target.hash='compression/dsh'
+        setUrl(target.href);setError('')
+      }catch(e){setError(e.message)}
+    }
+    R.useEffect(()=>{read()},[])
+    return h('div',{'data-superlcm-settings':true,style:{padding:'8px 0'}},
+      h('p',{style:{color:'var(--dsw-alias-label-secondary)',margin:'0 0 16px'}},'摘要和压缩设置统一在 SuperLcm 后台管理。'),
+      error?h('p',{role:'alert'},error):null,
+      url?h('a',{href:url,target:'_blank',rel:'noopener noreferrer',style:{display:'inline-block',background:'#C96442',color:'#fff',borderRadius:10,padding:'10px 20px',textDecoration:'none',fontWeight:600}},'后台设置'):
+        h('button',{type:'button',onClick:read,disabled:!error},error?'重新读取':'正在读取后台地址…'))
   }
   function apply(ctx) {
-    ctx.effect(()=>{const style=document.createElement('style');style.dataset.plugin='superlcm';style.textContent=css;document.head.appendChild(style);return()=>style.remove()})
     ctx.slots.inject('plugins.bundle.config',()=>ctx.slots.register({name:'plugins.bundle.config',key:'superlcm',inject:()=>({connection:ctx.connection})},Form))
   }
   return {inject:['slots','connection'],apply}

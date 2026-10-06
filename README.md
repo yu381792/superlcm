@@ -20,9 +20,9 @@ From 0.5.11, background writers and Claude/DSH compaction share rules for chrono
 | Pi | Supported | Native host compaction | Console: auto-discovered extension |
 | dsh harness | Supported | Native host compaction, shared archive and background summaries | Console: connect globally and choose a summary API |
 
-All five connections default to archiving, background summaries and recall, with compaction owned by the host. Claude Code takeover remains an explicit optional setting; installing or updating its connection turns it off. The default DSH component never mounts a compaction engine.
+All five connections default to archiving, background summaries and recall, with compaction owned by the host. Claude Code and DSH takeover remain explicit optional settings on separate tabs in Compaction; installing or updating its connection turns it off. The default DSH component never mounts a compaction engine.
 
-Start with the [installation package](docs/RELEASE.md), run `superlcm web`, and choose your tool under **Connect**. Claude Code users can also [install the Claude plugin](#install-as-a-claude-plugin) and open `/superlcm:console`. For dsh harness, choose its configured provider and model, connect once globally, then reload dsh harness; see [dsh harness setup](docs/DSH.md).
+Start with the [installation package](docs/RELEASE.md), run `superlcm web`, and choose your tool under **Connect**. Claude Code users can also [install the Claude plugin](#install-as-a-claude-plugin) and open `/superlcm:console`. For dsh harness, connect once globally and reload dsh harness; see [dsh harness setup](docs/DSH.md).
 
 ## Move a whole conversation, summaries and all, into another tool
 
@@ -57,7 +57,7 @@ What a swap looks like on a real conversation of about 12,000 records: the older
 | Plugin module | Compaction takeover and in-conversation summaries (Claude Code 2.1.286+) |
 | `/superlcm:console` | Opens the local console: settings, conversations, connecting other tools |
 
-The module runs in the terminal `claude` and in the Claude desktop app's Code tab from Claude Code 2.1.286. Older versions still get capture and lookup; the takeover starts working when they update. Settings › Compaction in the console shows what this computer supports.
+The module runs in the terminal `claude` and in the Claude desktop app's Code tab from Claude Code 2.1.286. Older versions still get capture and lookup; the takeover starts working when they update. Compaction in the console shows what this computer supports.
 
 ## Compaction throws pages away. SuperLcm files them.
 
@@ -81,7 +81,7 @@ Both sides start with the same 18 messages and a context window that holds six. 
 
 ## Who writes the summaries
 
-**dsh harness owns compaction; SuperLcm writes independent background summaries.** Select a saved API on its connection card or under Plugins → SuperLcm in DSH. Summaries enter the archive without replacing the active context. Migration and disconnect verify native compaction and preserve configured chat models.
+**dsh harness owns compaction; SuperLcm writes independent background summaries.** Select a saved API on its connection card. Independent Claude and DSH takeover settings live on the dedicated Compaction page, off by default. The DSH plugin shows only a link to the console. Summaries enter the archive without replacing the active context. Migration and disconnect verify native compaction and preserve configured chat models.
 
 Import existing DSH sessions under Connect → dsh harness → Import past conversations. Complete tool records are retained, no model is called, and repeated imports are deduplicated.
 
@@ -105,7 +105,7 @@ In Claude Code:
     /plugin marketplace add yu381792/superlcm
     /plugin install superlcm@superlcm
 
-The plugin brings everything listed above for Claude Code; to use the compaction takeover, open the console and turn it on under Settings › Compaction. `/superlcm:console` opens the console, where Codex, Hermes, Pi and dsh harness are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
+The plugin brings everything listed above for Claude Code; to use the compaction takeover, open the console and turn it on under Compaction. `/superlcm:console` opens the console, where Codex, Hermes, Pi and dsh harness are connected to the same archive. It runs wherever Claude can start local programs (Claude Code, and Cowork on your own computer), not in claude.ai web or mobile chat. Needs Node.js 22.16 or newer on PATH; an older `node` hands over to a newer one if one is installed.
 
 Plugin updates replace the plugin folder, so tools connected from the plugin's console are pointed at a fixed entry file in the SuperLcm folder (`~/.superlcm-claude/superlcm.js`) that follows updates. If Claude Code was connected from the console before, the older hooks in Claude's settings stay quiet once the plugin is enabled, and the console's Claude card offers to remove them and the older `superlcm` MCP entry (backed up first). The same card installs and updates the plugin.
 
@@ -115,11 +115,12 @@ Plugin updates replace the plugin folder, so tools connected from the plugin's c
 
 Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then:
 
-1. **接入 (Connect)** — pick Claude Code, Codex, Hermes, Pi or dsh harness and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. For dsh harness, choose its configured provider and model; the integration is global. Reload dsh harness after installation. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
+1. **接入 (Connect)** — pick Claude Code, Codex, Hermes, Pi or dsh harness and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. For dsh harness, the summary-only integration is global and needs no compression model. Reload dsh harness after installation. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
 2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **换个工具继续** to get the one-line handoff for another tool.
-3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (optional), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width, and turn on the Claude Code compaction takeover under Compaction.
+3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (optional), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width.
+4. **压缩 (Compaction)** — configure optional Claude Code and DSH takeover independently, off by default.
 
-Terminal equivalents: `superlcm setup dsh --provider <provider> --model <model> --apply`, `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
+Terminal equivalents: `superlcm setup dsh --apply`, `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
 Hermes keeps its transcripts in a SQLite database and rewrites them on compression, so SuperLcm keeps its own append-only copy of every message row and joins a compression chain into one conversation. Pi session files are append-only and are indexed byte for byte, all branches included.
 

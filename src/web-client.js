@@ -46,19 +46,24 @@ function overlay(html, bind) {
 }
 
 /* ---------- navigation ---------- */
-const views = ['conversations', 'connect', 'settings']
+const views = ['conversations', 'connect', 'compression', 'settings']
 function show(view, updateHash = true) {
+  const parts=String(view).split('/')
+  view=parts[0]
+  if(view==='settings'&&parts[1]==='compact')view='compression'
   if (!views.includes(view)) view = 'conversations'
   state.view = view
   for (const b of document.querySelectorAll('.nav button')) b.dataset.view === view ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')
   for (const v of views) $('#view-' + v).hidden = v !== view
-  if (updateHash) history.replaceState(null, '', '#' + view)
+  if(view==='compression')compressionSection(parts[1]==='dsh'?'dsh':parts[1]==='claude-code'?'claude-code':state.compressionTool||'claude-code',false)
+  if (updateHash) history.replaceState(null, '', '#' + view+(view==='compression'?'/'+state.compressionTool:''))
 }
 for (const b of document.querySelectorAll('.nav button')) b.onclick = () => show(b.dataset.view)
 // The brand always returns to the conversation list (also leaving the phone detail view).
 $('#brand').onclick = event => { event.preventDefault(); $('#conv').classList.remove('show-detail'); show('conversations') }
 // Settings show one section at a time, picked from the side list.
 function settingsSection(sec) {
+  if(sec==='compact'){show('compression/claude-code');return}
   for (const x of document.querySelectorAll('#setNav button')) x.dataset.sec === sec ? x.setAttribute('aria-current', 'true') : x.removeAttribute('aria-current')
   for (const p of document.querySelectorAll('.set-body .panel')) p.hidden = p.dataset.sec !== sec
 }

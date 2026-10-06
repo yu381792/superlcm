@@ -15,7 +15,7 @@ const block=name=>['# BEGIN SuperLcm '+name,'# END SuperLcm '+name]
 export const ownDsh=e=>(isDshEngine(e)&&e.name!=='@deepseek-ai/dsh-compaction-basic')||isDshArchive(e)
 export function stripDshIntegration(raw,profile=false) {
   let text=raw||''
-  for(const name of [profile?'managed DSH integration':'global DSH integration',...(profile?['preset compaction inheritance']:[])]) {
+  for(const name of [profile?'managed DSH integration':'global DSH integration',...(profile?['preset compaction inheritance','optional DSH takeover']:[])]) {
     const [begin,end]=block(name)
     // A user-edited profile can retain only our closing comment. Removing that
     // comment preserves every remaining user row; never guess a missing start.

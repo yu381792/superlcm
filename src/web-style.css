@@ -149,6 +149,20 @@ button:disabled { cursor: default }
 .notice b { font-weight: 500 }
 
 /* Outline tree */
+.compression-inner { max-width: 860px }
+.compression-tabs { display:flex;gap:8px;padding:5px;background:var(--sunk);border-radius:12px;margin-bottom:22px }
+.compression-tabs button { flex:1;border:0;border-radius:8px;padding:11px 18px;background:transparent;color:var(--ink2);font-weight:500 }
+.compression-tabs button[aria-selected="true"] { background:var(--surface);color:var(--ink);box-shadow:0 1px 5px #0001 }
+.compression-card { background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:28px }
+.compression-card-head { display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px }
+.compression-card-head h2 { margin:4px 0 0;font-size:23px }
+.eyebrow { color:var(--ink3);font-size:12px;letter-spacing:.03em }
+.compression-card h3 { margin-top:24px }
+.compression-card .checks { padding-left:20px }
+.compression-card .desc { color:var(--ink2);line-height:1.7 }
+@media(max-width:600px) { .compression-card { padding:20px 16px }.compression-card-head { align-items:flex-start }.compression-card-head h2 { font-size:21px } }
+
+/* Outline tree */
 .tree { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden }
 .node { border-bottom: 1px solid var(--line) }
 .node:last-child { border-bottom: 0 }

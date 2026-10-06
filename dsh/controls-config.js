@@ -19,8 +19,8 @@ export function controlsConfig(raw) {
   if(out.hardActiveTokens<=out.softActiveTokens)throw Error('强制压缩门槛必须大于开始压缩门槛')
   if(out.minRetainTokens>=out.softActiveTokens)throw Error('原文保留量必须小于开始压缩门槛')
   if(out.pressureFoldTokens>out.foldBatchTokens)throw Error('最小压缩批量不能超过每批处理量')
-  if(typeof raw.summarizationProvider!=='string'||!raw.summarizationProvider||typeof raw.summarizationModel!=='string'||!raw.summarizationModel||!raw.summaryAdapter?.plugin)throw Error('请选择 DSH 已配置的压缩模型')
-  return {...out,summarizationProvider:raw.summarizationProvider,summarizationModel:raw.summarizationModel,summaryAdapter:raw.summaryAdapter}
+  if(raw.auto&&(typeof raw.summarizationProvider!=='string'||!raw.summarizationProvider||typeof raw.summarizationModel!=='string'||!raw.summarizationModel||!raw.summaryAdapter?.plugin))throw Error('请选择 DSH 已配置的压缩模型')
+  return {...out,summarizationProvider:raw.summarizationProvider||'',summarizationModel:raw.summarizationModel||'',summaryAdapter:raw.summaryAdapter||null}
 }
 export function readControls(file) {
   if(!file||!existsSync(file))return null

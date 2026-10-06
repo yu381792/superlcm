@@ -1,6 +1,6 @@
 {
   "name": "superlcm",
-  "version": "0.5.15",
+  "version": "0.5.16",
   "private": true,
   "superlcmBridge": true,
   "type": "module",

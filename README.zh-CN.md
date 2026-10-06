@@ -57,7 +57,7 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 | 插件模块 | 接管压缩、在对话里写摘要（Claude Code 2.1.286+） |
 | `/superlcm:console` | 打开本机控制台：设置、浏览对话、接入其他工具 |
 
-插件模块从 Claude Code 2.1.286 起可用，终端里的 `claude` 和 Claude 桌面 App 的 Code 标签页都行。更早的版本照样能记录和查档，等它更新后接管压缩自动生效。控制台 设置 › 压缩 会显示这台电脑支持到哪一步。
+插件模块从 Claude Code 2.1.286 起可用，终端里的 `claude` 和 Claude 桌面 App 的 Code 标签页都行。更早的版本照样能记录和查档，等它更新后接管压缩自动生效。控制台 压缩 会显示这台电脑支持到哪一步。
 
 ## 普通压缩把原文扔掉，SuperLcm 把原文归档
 
@@ -81,7 +81,7 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 
 ## 摘要谁来写
 
-**dsh harness 自身负责压缩，SuperLcm 只生成后台摘要。** 在接入卡片或 DSH「插件 → SuperLcm」选择已保存的自定义 API，摘要进入共享档案，不替换当前上下文。旧接入迁移和取消时都会恢复并验证原生压缩，原有聊天模型保留。
+**dsh harness 自身负责压缩，SuperLcm 只生成后台摘要。** 在接入卡片选择已保存的自定义 API，摘要进入共享档案，不替换当前上下文。独立「压缩」页分别管理 Claude 与 DSH 的可选接管，默认关闭。DSH「插件 → SuperLcm」只提供「后台设置」链接。旧接入迁移和取消时都会恢复并验证原生压缩，原有聊天模型保留。
 
 DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话」中选择导入，包含完整工具记录，不调用模型，重复导入自动去重。
 
@@ -105,7 +105,7 @@ DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话�
     /plugin marketplace add yu381792/superlcm
     /plugin install superlcm@superlcm
 
-插件自带上面列出的全部功能；要用接管压缩，打开控制台在 设置 › 压缩 里打开开关。`/superlcm:console` 打开控制台，在那里把 Codex、Hermes、Pi、dsh harness 接进同一座档案馆。能用的地方是 Claude 能启动本机程序的地方：Claude Code，以及在你自己电脑上运行的 Cowork；claude.ai 网页版和手机聊天用不了。需要 PATH 里有 Node.js 22.16 或更新版本；如果默认的 `node` 太旧，而电脑上装有更新的版本，会自动换用新的。
+插件自带上面列出的全部功能；要用接管压缩，打开控制台在 压缩 里打开开关。`/superlcm:console` 打开控制台，在那里把 Codex、Hermes、Pi、dsh harness 接进同一座档案馆。能用的地方是 Claude 能启动本机程序的地方：Claude Code，以及在你自己电脑上运行的 Cowork；claude.ai 网页版和手机聊天用不了。需要 PATH 里有 Node.js 22.16 或更新版本；如果默认的 `node` 太旧，而电脑上装有更新的版本，会自动换用新的。
 
 插件更新会替换插件文件夹，所以从插件控制台接入的其他工具会连到 SuperLcm 文件夹里一个固定的入口文件（`~/.superlcm-claude/superlcm.js`），它会跟着插件更新走。如果之前已经从控制台接入过 Claude Code，启用插件后设置里的旧钩子会自动静默；控制台的 Claude 卡片可以一键清掉旧钩子和旧的 `superlcm` MCP 条目（先备份）。安装和更新插件也在这张卡片上。
 

@@ -3,10 +3,11 @@ import { join,dirname } from 'node:path'
 import { fileURLToPath,pathToFileURL } from 'node:url'
 import { randomUUID,createHash } from 'node:crypto'
 import { ClaudeStore } from '../../src/store.js'
-import { dshCompressionSettings,publicCompressionSettings,saveDshCompression,controlsPath } from '../../src/dsh-controls.js'
+import { controlsPath } from '../../src/dsh-controls.js'
 import { readControls } from '../controls-config.js'
 import { dshHome,dshHost } from '../../src/dsh-connection.js'
 import { uiManifest,linkUi } from '../../src/dsh-ui-install.js'
+import {consoleLocation} from '../../src/console-location.js'
 export const name='superlcm-settings'
 export async function apply(ctx,config={}) {
   const store=new ClaudeStore(config.archiveHome)
@@ -29,16 +30,8 @@ export async function apply(ctx,config={}) {
         let result
         try {
           request.signal.throwIfAborted()
-          let value
-          if(config.archiveOnly) {
-            if(endpoint==='save') {
-              const x=message.payload,current=summaryState()
-              if(x.revision!==current.revision)throw Error('摘要设置已变化，请重新读取')
-              if(!['off','api'].includes(x.mode))throw Error('后台摘要请选择自定义 API 或关闭')
-              store.setHarnessSetting('dsh',x.mode,null,null,null,x.mode==='api'?x.api_ref:null)
-            }
-            value=summaryState()
-          } else value=endpoint==='read'?publicCompressionSettings(await dshCompressionSettings(store)):await saveDshCompression(store,message.payload)
+          if(endpoint==='save')throw Error('请在 SuperLcm 后台设置中修改配置')
+          const value={...summaryState(),console:consoleLocation(store)}
           result={ok:true,value}
         }catch(error){result={ok:false,error:{code:'SUPERLCM_SETTINGS',message:error.message,details:{}}}}
         return Response.json({type:'server-response',rpcId:message.rpcId,result})
@@ -65,11 +58,13 @@ export async function apply(ctx,config={}) {
   const timer=setInterval(()=>{
     try {
       const active=selected();if(active===prior)return
-      if(config.archiveOnly){store.setIntegrationEnabled('dsh',active);prior=active;return}
+      store.setIntegrationEnabled('dsh',active)
+      // Enabling the bundle resumes archiving, never opt-in compaction.
+      if(config.archiveOnly||active){prior=active;return}
       const document=readControls(controlsPath(store));if(!document)return
       store.db.exec('BEGIN IMMEDIATE')
       try {
-        const document=readControls(controlsPath(store));document.config.auto=active;document.revision=randomUUID()
+        const document=readControls(controlsPath(store));document.config.auto=false;document.revision=randomUUID()
         const temp=controlsPath(store)+'.'+randomUUID();writeFileSync(temp,JSON.stringify(document,null,2)+'\n',{flag:'wx',mode:0o600});renameSync(temp,controlsPath(store));store.db.exec('COMMIT');prior=active
       }catch(e){store.db.exec('ROLLBACK');throw e}
     } catch {ctx.logger?.warn?.('SuperLcm 插件开关未能同步，保留原压缩设置')}
