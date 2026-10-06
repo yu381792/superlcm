@@ -8,18 +8,16 @@
 用户先安装 Node.js 22.16 或更新版本，然后在安装包所在目录运行：
 
 ```sh
-npm install -g ./superlcm-mcp-0.5.6.tgz
+npm install -g ./superlcm-mcp-0.5.16.tgz
 superlcm web
 ```
 
-浏览器打开命令输出的本机地址，在「接入」中选择载体。dsh harness 用户先按
-[官方说明](https://github.com/deepseek-ai/deepseek-harness) 安装并启动 dsh harness，
-再点击它的「接入」。供应商和模型从 dsh harness 当前配置读取，直接用下拉列表
-选择压缩模型，点击「安装并启用压缩」完成全局接入，首次接入或升级插件后重新加载 dsh harness。「设置 → 压缩」仅包含 Claude Code 的设置；DSH 接入在「接入」页，日常压缩设置在 DSH 的「插件 → SuperLcm」。
-不需要旧的 dsh-superlcm 插件，也不需要区分 web、acp 等内部启动方式。
+浏览器打开命令输出的本机地址，在「接入」中选择载体。默认接入归档、后台摘要和查询，上下文由各工具自身压缩。dsh harness 用户先按
+[官方说明](https://github.com/deepseek-ai/deepseek-harness) 安装并启动 dsh harness，再完成全局接入并重新加载。后台摘要在接入卡片选择已保存的自定义 API；默认接入不需要压缩模型，也不需要旧的 dsh-superlcm 插件。
 
-安装器写入 dsh harness 全局配置，现有和之后新增的启动方式共用同一套插件及
-会话档案。原供应商、账号和聊天模型设置保持原样；SuperLcm 压缩插件通过 DSH 的模型服务调用用户选定的模型。压缩会使用该模型的调用额度，读取模型目录本身不调用生成模型。
+控制台导航为「对话 → 接入 → 压缩 → 设置」。独立「压缩」页分开管理 Claude Code 和 DSH 的可选 SuperLcm 接管，默认关闭。DSH「插件 → SuperLcm」仅显示「后台设置」，点击进入后台 DSH 压缩页。需要接管时在该页明确开启并保存，首次开启后重新加载 DSH；原聊天模型与原生压缩政策保留，所选压缩模型的调用额度只在生成压缩摘要时使用。详见 [DSH 接入与压缩](DSH.md)。
+
+安装器写入 DSH 全局配置，所有启动方式共用同一套归档。之后新增的启动方式默认保留原生压缩；需要接管时先重新接入以捕获原生政策。供应商、账号和聊天模型配置保留，读取模型目录本身不调用生成模型。
 原配置先备份，验证失败会恢复；旧插件和旧索引保留，不删除原文。
 
 `package.json` 已移除 `private` 发布限制并设置公开包访问方式。维护者拥有

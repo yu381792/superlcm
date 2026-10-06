@@ -12,15 +12,17 @@ SuperLcm 让 **Claude Code、Codex、Hermes、Pi 和 dsh harness** 共用一座�
 
 | 载体 | 原文存档、分层摘要、跨载体接续 | 压缩接入 | 怎么接入 |
 |---|---|---|---|
-| Claude Code | 支持 | SuperLcm 接管，需明确开启 | Claude 插件或控制台 |
+| Claude Code | 支持 | 默认工具自身压缩；SuperLcm 接管可选 | Claude 插件或控制台 |
 | Codex | 支持 | 工具自身压缩 | 控制台：查档工具和记录钩子 |
 | Hermes | 支持 | 工具自身压缩 | 控制台：通过 Hermes 自身配置接入 |
 | Pi | 支持 | 工具自身压缩 | 控制台：自动加载的扩展 |
-| dsh harness | 支持 | 工具自身压缩，后台摘要和原文共享归档 | 控制台：全局接入，卡片上选择摘要 API |
+| dsh harness | 支持 | 默认工具自身压缩；SuperLcm 接管可选 | 控制台：全局接入，卡片上选择摘要模型接口 |
 
-五种载体默认都只接入归档、后台摘要和查询，当前上下文由各工具自身压缩。Claude Code 的 SuperLcm 接管是设置里的独立可选项；每次安装或更新接入恢复为默认关闭。DSH 的 SuperLcm 组件不再挂载压缩引擎。
+五种载体默认都接入归档、后台摘要和查询，当前上下文由各工具自身压缩。后台摘要进入共享档案，供需要时查阅。Claude Code 与 dsh harness 的接管开关分别放在独立「压缩」页，默认关闭；安装或更新接入也恢复为关闭。DSH 默认组件只运行归档和后台设置入口。
 
-先从 [安装包说明](docs/RELEASE.md) 安装，运行 `superlcm web`，在「接入」页选择工具即可。Claude Code 用户也可 [安装 Claude 插件](#安装成-claude-插件)，用 `/superlcm:console` 打开控制台。dsh harness 用户从现有供应商及模型列表中选择压缩模型，点击「安装并启用压缩」完成全局接入，再重新加载 dsh harness；见 [接入说明](docs/DSH.md)。
+控制台导航为 **对话 → 接入 → 压缩 → 设置**。摘要模型在接入卡片选择，粒度在设置页调整；默认每段原文目标约 20,000 个估算 token（模型计量文字长度的单位），每四段合并为更高层摘要。DSH 插件内只显示「后台设置」，点击直接进入后台的 DSH 压缩页。粒度借鉴 Lossless Claw，按中英文和符号权重估算，与供应商实际计费量分开；已有字符设置保留。详见 [设计对照](docs/LOSSLESSCLAW-SUMMARY-REVIEW-20261006.md)。
+
+先从 [安装包说明](docs/RELEASE.md) 安装，运行 `superlcm web`，在「接入」页选择工具即可。Claude Code 用户也可 [安装 Claude 插件](#安装成-claude-插件)，用 `/superlcm:console` 打开控制台。dsh harness 用户完成全局接入后重新加载 dsh harness，并在接入卡片选择后台摘要 API；默认接入无需选择压缩模型。见 [接入说明](docs/DSH.md)。
 
 0.5.11 起，后台摘要、Claude 和 DSH 的压缩摘要统一保留决策变更、理由、授权边界、工具失败及历史来源。旧摘要不会自动重算；原文仍是查证依据。见 [摘要语义规则与验收边界](docs/SUMMARY-SEMANTICS-0.5.11.md)。
 
@@ -33,20 +35,20 @@ SuperLcm 让 **Claude Code、Codex、Hermes、Pi 和 dsh harness** 共用一座�
 - **每个细节随时一查就有。** 整段对话都在档案馆里。早先的某个决定要紧时，新的 AI 用 `lcm_read` 按编号把那条原文一字不差地读出来。
 - **任意方向，来回都行。** Claude Code、Codex、Hermes、Pi、dsh harness 读写的是同一座档案馆，接着干的内容也会存进去，以后可以用同样的办法再交还回去。
 
-## 给 Claude Code 用：压缩不用等
+## Claude Code 的可选压缩接管
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/takeover-zh-dark.gif"><img src="docs/images/takeover-zh-light.gif" alt="动画：两段对话都涨到 Claude Code 的 300K 压缩门槛。左边 Claude Code 停下来压缩 46 秒，原文丢失；右边 Haiku 早已在后台写好 L0、L1 摘要，到门槛时 SuperLcm 用 0.07 秒把旧的部分换成摘要，最近 40K 原样保留，对话接着往下走。"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/takeover-zh-dark.gif"><img src="docs/images/takeover-zh-light.gif" alt="动画：两段对话都涨到 Claude Code 的 300K 压缩门槛。左边 Claude Code 停下来压缩 46 秒，旧原文移出上下文；右边 Haiku 早已在后台写好 L0、L1 摘要，到门槛时 SuperLcm 用 0.07 秒把旧的部分换成摘要，最近 40K 原样保留，对话接着往下走。"></picture>
 
-Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把所有内容挤成一段摘要，原文随之丢掉。SuperLcm 装成 Claude 插件后，把这件事反过来做：
+Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把所有内容挤成一段摘要，旧原文从当前上下文移出。安装 SuperLcm 插件并明确开启接管后，可以使用事先生成的分层摘要：
 
 - **后台提前组装好。** 每聊完一轮，插件就在后台把攒够的摘要写好，你照常干活。等上下文快满时，替换内容早已备好。
-- **到门槛不卡。** 到了门槛（默认 300K token，可选 200K、500K、800K 或自定义，最高 950K），SuperLcm 一步把旧的部分换成能盖住它的最少几张分层摘要，不调用任何模型。几毫秒完成，不用干等一分钟的「正在压缩」。
+- **摘要就绪后一次替换。** 到了门槛（默认 300K token，可选 200K、500K、800K 或自定义，最高 950K），SuperLcm 一步把旧的部分换成能盖住它的最少几张分层摘要，替换步骤不再调用摘要模型。摘要覆盖或边界不满足要求时，交回 Claude Code 原生压缩。
 - **手头的活不丢细节。** 最近 40K token 一字不改地留下（可选 20K、40K、80K 或自定义），更早的才换成摘要，细节仍可按编号查回原文。
-- **无损。** 缩短的只是 AI 眼前的视图，每一条原文都按编号留在档案馆里，细节要紧时 AI 用 `lcm_read` 原样调回。
+- **原文完整保留。** 缩短的只是 AI 眼前的视图，每一条原文都按编号留在档案馆里，细节要紧时 AI 用 `lcm_read` 原样调回。
 - **Haiku 在对话里写摘要。** 在 Claude Code 卡片上选「本工具后台写」、模型选 `haiku`，插件就用当前对话的登录直接调 Haiku。不要 API 密钥，不另开 Claude Code 会话，也不拿昂贵的主模型做记账。
 - **默认稳妥。** 不打开就不生效。摘要没跟上或有任何不对劲，照旧交回 Claude Code 自己压缩；关掉开关就恢复你原来的设置。子代理始终按原样压缩。
 
-拿一段约 12000 条记录的真实对话算：旧的部分换成 3 张摘要，约 8000 字（几千 token），最近一段原样保留，300K 的上下文降到七万左右，其中大头是 Claude Code 自己的系统提示和工具说明。
+此前一段约 12,000 条记录的对话示例：旧的部分换成 3 张摘要，约 8000 字（几千 token），最近一段原样保留，300K 的上下文降到七万左右，其中大头是 Claude Code 自己的系统提示和工具说明。
 
 **Claude 插件里有什么**
 
@@ -57,13 +59,13 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 | 插件模块 | 接管压缩、在对话里写摘要（Claude Code 2.1.286+） |
 | `/superlcm:console` | 打开本机控制台：设置、浏览对话、接入其他工具 |
 
-插件模块从 Claude Code 2.1.286 起可用，终端里的 `claude` 和 Claude 桌面 App 的 Code 标签页都行。更早的版本照样能记录和查档，等它更新后接管压缩自动生效。控制台 压缩 会显示这台电脑支持到哪一步。
+插件模块从 Claude Code 2.1.286 起可用，终端里的 `claude` 和 Claude 桌面 App 的 Code 标签页都行。更早的版本照样能记录和查档，更新后可在「压缩 → Claude Code」明确开启接管。控制台会显示本机支持的能力。
 
-## 普通压缩把原文扔掉，SuperLcm 把原文归档
+## 压缩缩短上下文，SuperLcm 保存原文
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/compare-zh-dark.gif"><img src="docs/images/compare-zh-light.gif" alt="动画：普通压缩把 18 条消息挤成越来越短的摘要，端口号丢了；SuperLcm 把每条消息完整存档，建起 L1、L2 摘要卡，并把第 005 条原文一字不差地读回来。"></picture>
 
-两边是同样的 18 条消息，上下文窗口都只装得下 6 条。普通压缩每次都把所有内容挤成一段更短的摘要，原文就此没了。SuperLcm 把每一组消息完整存档，写一张摘要卡指回原文，卡片再装订成上一层。很多轮之后问“控制台端口定的是多少”，AI 用 `lcm_find` 找、`lcm_outline` 翻目录、`lcm_read` 读原文，一路查下去把原话引出来。
+两边是同样的 18 条消息，上下文窗口都只装得下 6 条。普通压缩每次都把所有内容挤成一段更短的摘要，早先的细节能否直接回答取决于摘要保留了什么。SuperLcm 把每一组消息完整存档，写一张摘要卡指回原文，卡片再装订成上一层。很多轮之后问“控制台端口定的是多少”，AI 用 `lcm_find` 找、`lcm_outline` 翻目录、`lcm_read` 读原文，一路查下去把原话引出来。
 
 ## 怎么做到的
 
@@ -71,7 +73,7 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig1-zh-dark.png"><img src="docs/images/fig1-zh-light.png" alt="记录落进档案馆的样子（示例），编号 #1841 到 #1845" width="560"></picture>
 
-**摘要分层，每一层都指回原文页码。** 一段消息（约 12,000 字，可调）写成一条短摘要，相邻摘要再合成更高一层。树顶读起来就像整段对话的目录，每一条都带着它来自哪些记录的编号。摘要只是路标，不是替代品。
+**摘要分层，每一层都指回原文页码。** 一段消息（默认约 20,000 个估算 token，可调）写成一条摘要，默认每四段相邻摘要再合成更高一层。树顶读起来就像整段对话的目录，每一条都带着它来自哪些记录的编号。摘要帮助定位历史，关键结论和精确细节按来源编号查回原文。
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/fig2-zh-dark.png"><img src="docs/images/fig2-zh-light.png" alt="摘要树：一个 L2 卷，下面三个 L1 章，再下面是原始记录" width="560"></picture>
 
@@ -81,11 +83,11 @@ Claude Code 自带的压缩，到门槛时会让对话停下来，叫模型把�
 
 ## 摘要谁来写
 
-**dsh harness 自身负责压缩，SuperLcm 只生成后台摘要。** 在接入卡片选择已保存的自定义 API，摘要进入共享档案，不替换当前上下文。独立「压缩」页分别管理 Claude 与 DSH 的可选接管，默认关闭。DSH「插件 → SuperLcm」只提供「后台设置」链接。旧接入迁移和取消时都会恢复并验证原生压缩，原有聊天模型保留。
+**默认由 dsh harness 自身压缩，SuperLcm 生成独立后台摘要。** 在接入卡片选择已保存的自定义 API，摘要进入共享档案，不替换当前上下文。独立「压缩」页分别管理 Claude 与 DSH 的可选接管，默认关闭。DSH「插件 → SuperLcm」只提供「后台设置」链接。旧接入迁移和取消时都会恢复并验证原生压缩，原有聊天模型保留。
 
-DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话」中选择导入，包含完整工具记录，不调用模型，重复导入自动去重。
+DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话」中选择导入，包含完整工具记录，不调用模型，重复导入自动去重。「管理接入 → 取消接入」停止自动归档和摘要，撤销查询入口，保留全部档案；已有会话重新加载后生效。
 
-在控制台里按工具分别选：**对话里的 AI 自己写**（可选）、**本工具后台写**（默认，单独起一次该工具的命令行，用你已经配好的账号和模型；插件配 Claude Code 2.1.286+ 时改为在对话内部直接调用模型，选 Haiku 就很合适）、**自定义 API**（任何兼容 Anthropic 或 OpenAI 的地址，包括你电脑上自己跑的网关），或者**关闭**（照样全部存下、能搜）。
+在控制台里按工具分别选：**对话里的 AI 自己写**（可选）、**本工具后台写**（支持它的工具默认使用此方式，单独起一次该工具的命令行，用你已经配好的账号和模型；插件配 Claude Code 2.1.286+ 时改为在对话内部直接调用模型，选 Haiku 就很合适）、**自定义 API**（任何兼容 Anthropic 或 OpenAI 的地址，包括你电脑上自己跑的网关），或者**关闭**（照样全部存下、能搜）。DSH 的后台摘要使用已保存的自定义 API；没有配置可用 API 时，先归档原文，选择摘要 API 后再生成。
 
 ## 压缩 vs 档案馆
 
@@ -94,7 +96,7 @@ DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话�
 | 原话 | 压缩后 AI 就够不着了 | 完整保存，按编号随时读 |
 | 摘要形态 | 一段扁平摘要，每压一次更短 | 像书一样分层，每层指回页码 |
 | 300 轮前的一个细节 | 摘要碰巧留下了才有 | 搜得到，原样引用 |
-| 上下文满了（Claude Code） | 停下来等模型总结 | 摘要提前备好，到点直接换上 |
+| 上下文满了（Claude Code，可选接管） | 停下来等模型总结 | 摘要就绪时一次替换；否则由 Claude 原生压缩 |
 | 换个工具接着干 | 从头再讲一遍 | 一句话，带着目录和最近原文 |
 | 存在哪 | — | 你电脑上的一个文件 |
 
@@ -105,7 +107,7 @@ DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话�
     /plugin marketplace add yu381792/superlcm
     /plugin install superlcm@superlcm
 
-插件自带上面列出的全部功能；要用接管压缩，打开控制台在 压缩 里打开开关。`/superlcm:console` 打开控制台，在那里把 Codex、Hermes、Pi、dsh harness 接进同一座档案馆。能用的地方是 Claude 能启动本机程序的地方：Claude Code，以及在你自己电脑上运行的 Cowork；claude.ai 网页版和手机聊天用不了。需要 PATH 里有 Node.js 22.16 或更新版本；如果默认的 `node` 太旧，而电脑上装有更新的版本，会自动换用新的。
+插件自带上面列出的全部功能；要用接管压缩，打开控制台在「压缩 → Claude Code」打开开关。`/superlcm:console` 打开控制台，在那里把 Codex、Hermes、Pi、dsh harness 接进同一座档案馆。能用的地方是 Claude 能启动本机程序的地方：Claude Code，以及在你自己电脑上运行的 Cowork；claude.ai 网页版和手机聊天用不了。需要 PATH 里有 Node.js 22.16 或更新版本；如果默认的 `node` 太旧，而电脑上装有更新的版本，会自动换用新的。
 
 插件更新会替换插件文件夹，所以从插件控制台接入的其他工具会连到 SuperLcm 文件夹里一个固定的入口文件（`~/.superlcm-claude/superlcm.js`），它会跟着插件更新走。如果之前已经从控制台接入过 Claude Code，启用插件后设置里的旧钩子会自动静默；控制台的 Claude 卡片可以一键清掉旧钩子和旧的 `superlcm` MCP 条目（先备份）。安装和更新插件也在这张卡片上。
 
@@ -120,5 +122,3 @@ DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话�
 [MIT](LICENSE)，版权所有 2026 ygc381792 及贡献者。可以自由使用、修改和再发布（包括商用），保留版权声明即可。本项目由个人维护、刻意保持精简：欢迎提 [issue](https://github.com/yu381792/superlcm/issues) 反馈问题和需求，但不保证每条都采纳，一般不合并代码请求（PR）。
 
 Claude、Claude Code、Codex、Hermes、Pi 的名称和标志归各自所有者，这里只用来说明兼容的工具；SuperLcm 是独立项目，与它们没有隶属或背书关系。
-
-默认每段原文目标约 20,000 token、每 4 段合并为更高层级。借鉴 Lossless Claw，按中英文与符号权重估算 token，供应商实际计费量可能不同；已有字符设置保留，修改时可切换 token 粒度。原文和工具结果完整归档。管理接入中的「取消接入」停止自动归档和摘要，撤销查询入口，保留全部已存档案；旧会话需要重新加载。导入和启动历史追溯只归档，不自动调用摘要模型。
