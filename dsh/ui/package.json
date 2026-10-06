@@ -1,10 +1,10 @@
 {
   "name": "superlcm",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "private": true,
   "superlcmBridge": true,
   "type": "module",
-  "description": "SuperLcm compaction and shared conversation archive settings",
+  "description": "SuperLcm background summaries and shared conversation archive settings",
   "icon": "./icon.svg",
   "exports": {
     ".": "./runtime.js",

@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({id:'superlcm',factory:require=>{
       h('div',{className:'slcm-fields'},h('label',{className:'slcm-field'},'摘要生成',h('select',{value:draft.setting.mode,disabled:busy,onChange:e=>{dirty.current=true;setDraft(d=>({...d,setting:{...d.setting,mode:e.target.value,api_ref:d.setting.api_ref||d.models[0]?.id}}))}},h('option',{value:'api'},'自定义 API'),h('option',{value:'off'},'关闭（摘要方式）'))),
       draft.setting.mode==='api'?h('label',{className:'slcm-field'},'模型',h('select',{value:draft.setting.api_ref||'',disabled:busy,onChange:e=>{dirty.current=true;setDraft(d=>({...d,setting:{...d.setting,api_ref:e.target.value}}))}},h('option',{value:'',disabled:true},'选择已保存的摘要模型'),...draft.models.map(m=>h('option',{key:m.id,value:m.id},m.label)))):null),
       !draft.models.length?h('p',{className:'slcm-help'},'请先在 SuperLcm 后台设置里添加摘要 API 模型。'):null,
-      h('p',{className:'slcm-help'},'每段摘要约 '+draft.target_chars.toLocaleString()+' 字符，原文完整保留。'),
+      h('p',{className:'slcm-help'},'每段摘要原文目标约 '+(draft.target_tokens!=null?draft.target_tokens.toLocaleString()+' token（估算）':draft.target_chars.toLocaleString()+' 字符（旧设置）')+'，原文完整保留。'),
       error?h('p',{className:'slcm-error',role:'alert'},error):null,
       h('div',{className:'slcm-actions'},h('button',{type:'button',className:'slcm-btn primary','data-superlcm-save':true,disabled:busy||draft.setting.mode==='api'&&!draft.setting.api_ref,onClick:save},busy?'保存中…':'保存'),h('button',{type:'button',className:'slcm-btn',disabled:busy,onClick:()=>{dirty.current=false;read(true)}},'重新读取')))
     const provider=draft.catalog.providers.find(p=>p.ref===draft.provider_ref),disabled=busy||!saved.controls_installed

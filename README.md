@@ -145,4 +145,4 @@ Every tool is marked with MCP annotations: the four lookups are read-only, the t
 
 Claude, Claude Code, Codex, Hermes and Pi names and logos belong to their respective owners and are used only to identify compatible tools. SuperLcm is an independent project and is not affiliated with or endorsed by them.
 
-Segments default to about 48,000 characters, with four children per condensed summary. Manage connection → Disconnect stops automatic capture and summaries, removes recall registration and keeps all stored originals and summaries. Reload existing sessions afterwards. Import and startup history replay never start model calls.
+Segments default to 20,000 estimated source tokens, with four children per condensed summary. Token budgeting follows Lossless Claw's Unicode-aware approach; estimates differ from providers' billed usage. Existing character settings are kept until changed. Manage connection → Disconnect stops automatic capture and summaries, removes recall registration and keeps all stored originals and summaries. Reload existing sessions afterwards. Import and startup history replay never start model calls.

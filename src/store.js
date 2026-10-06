@@ -81,7 +81,7 @@ export class ClaudeStore {
       CREATE INDEX IF NOT EXISTS deliveries_target ON deliveries(target_harness,target_session,issued_at);
       CREATE TABLE IF NOT EXISTS client_seen(client TEXT NOT NULL, seen_at TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(client,kind));
       CREATE TABLE IF NOT EXISTS global_summary_settings(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
-      CREATE TABLE IF NOT EXISTS summary_tuning(id INTEGER PRIMARY KEY CHECK(id=1), target_chars INTEGER NOT NULL, batch_size INTEGER NOT NULL, fanout INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS summary_tuning(id INTEGER PRIMARY KEY CHECK(id=1), target_chars INTEGER NOT NULL, target_tokens INTEGER, batch_size INTEGER NOT NULL, fanout INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS integrations(harness TEXT PRIMARY KEY,enabled INTEGER NOT NULL,revision INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS deleted_sessions(session TEXT PRIMARY KEY, deleted_ms INTEGER NOT NULL);
@@ -110,6 +110,7 @@ export class ClaudeStore {
     for(const table of ['global_summary_settings','harness_summary_settings']){const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name));for(const column of ['api_provider','api_url'])if(!names.has(column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)}
     if(!new Set(this.db.prepare('PRAGMA table_info(harness_summary_settings)').all().map(c=>c.name)).has('api_ref'))this.db.exec('ALTER TABLE harness_summary_settings ADD COLUMN api_ref TEXT')
     // Custom API models are added once in Settings and picked per tool; each keeps its own key ('model:<id>').
+    if(!this.db.prepare('PRAGMA table_info(summary_tuning)').all().some(c=>c.name==='target_tokens'))this.db.exec('ALTER TABLE summary_tuning ADD COLUMN target_tokens INTEGER')
     const hadModels=!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_models'").get()
     this.db.exec('CREATE TABLE IF NOT EXISTS api_models(id TEXT PRIMARY KEY, provider TEXT, url TEXT, model TEXT NOT NULL, created_ms INTEGER NOT NULL)')
     {const names=new Set(this.db.prepare('PRAGMA table_info(api_models)').all().map(c=>c.name));for(const column of ['label','effort'])if(!names.has(column))this.db.exec(`ALTER TABLE api_models ADD COLUMN ${column} TEXT`)}
@@ -156,11 +157,14 @@ export class ClaudeStore {
     return {api_provider:null,api_url:null}
   }
   // Granularity applies to batches planned from now on; saved nodes keep their original ranges.
-  tuning() { return this.db.prepare('SELECT target_chars,batch_size,fanout FROM summary_tuning WHERE id=1').get() || {target_chars:48000,batch_size:32,fanout:4} }
-  setTuning({target_chars,batch_size=this.tuning().batch_size,fanout}) {
+  tuning() { return this.db.prepare('SELECT target_chars,target_tokens,batch_size,fanout FROM summary_tuning WHERE id=1').get() || {target_chars:80000,target_tokens:20000,batch_size:32,fanout:4} }
+  setTuning({target_chars,target_tokens,batch_size=this.tuning().batch_size,fanout=this.tuning().fanout}) {
     const within=(n,lo,hi)=>Number.isSafeInteger(n)&&n>=lo&&n<=hi
-    if (!within(target_chars,2000,48000) || !within(batch_size,2,64) || !within(fanout,2,8)) throw new Error('Unsupported summary granularity')
-    this.db.prepare('INSERT INTO summary_tuning(id,target_chars,batch_size,fanout) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET target_chars=excluded.target_chars,batch_size=excluded.batch_size,fanout=excluded.fanout').run(target_chars,batch_size,fanout)
+    const tokenMode=target_tokens!=null
+    if (!(tokenMode?within(target_tokens,2000,64000):within(target_chars,2000,48000)) || !within(batch_size,2,64) || !within(fanout,2,8)) throw new Error('Unsupported summary granularity')
+    // Keep a character ceiling for old readers; current planners always use
+    // target_tokens when present. Explicit old character settings remain valid.
+    this.db.prepare('INSERT INTO summary_tuning(id,target_chars,target_tokens,batch_size,fanout) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET target_chars=excluded.target_chars,target_tokens=excluded.target_tokens,batch_size=excluded.batch_size,fanout=excluded.fanout').run(tokenMode?target_tokens*4:target_chars,tokenMode?target_tokens:null,batch_size,fanout)
     return this.tuning()
   }
   // Where the host tool last compacted this conversation: records from this ordinal on were seen by the

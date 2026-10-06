@@ -61,7 +61,7 @@ test('cancel or tuning change fences a pending background result',async t=>{
   const result=await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=>{calls++;store.setIntegrationEnabled('codex',false);return 'Late result that must not be saved.'}})
   assert.equal(result.stopped,'settings-changed');assert.equal(calls,1);assert.equal(store.nodeRows('s',0).length,0)
   store.setIntegrationEnabled('codex',true)
-  const changed=await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=>{store.setTuning({...store.tuning(),target_chars:24000});return 'Old granularity must not continue its backlog.'}})
+  const changed=await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=>{store.setTuning({...store.tuning(),target_tokens:null,target_chars:24000});return 'Old granularity must not continue its backlog.'}})
   assert.equal(changed.stopped,'settings-changed');assert.equal(store.nodeRows('s',0).length,0)
 })
 

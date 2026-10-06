@@ -8,6 +8,7 @@ import { paths, findCli, runCommand as run, commandOptions } from './runtime.js'
 import { compressionSnapshot } from './compression-status.js'
 import { readControls } from '../dsh/controls-config.js'
 import { presetCompactionLeaks } from './dsh-preset-compaction.js'
+import { dshRuntimeState,dshGlobalState } from './dsh-live-state.js'
 export function dshHome(env = process.env) { return resolve(env.DSH_HOME || join(paths(env).home, '.dsh')) }
 export function dshHost(env = process.env) {
   const bin = findCli('dsh',env)
@@ -75,16 +76,13 @@ export async function inspectDsh(store, { env = process.env, runCommand = run, p
         if(['superlcm','superlcm/runtime'].includes(globalEngine.name))installed=JSON.parse(readFileSync(join(root,'node_modules/superlcm/package.json'),'utf8')).version
         else {const path=globalEngine.name.startsWith('file:')?fileURLToPath(globalEngine.name):globalEngine.name;installed=JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).version}
       }catch{}
-      const live = snapshot.runtimes.filter(r => r.profile === name && r.live)
-      const engine = live.find(r => r.kind === 'engine'), archive = live.find(r => r.kind === 'archive' && (config.archive_only||r.pid === engine?.pid))
-      const running = !!installed && config.configured && !!archive && archive.version===installed && (config.archive_only||!!engine&&engine.version===installed)
-      const state = !config.configured ? 'misconfigured' : !config.enabled ? 'disabled' : !config.route_ready ? 'missing-route' : !running ? 'awaiting-runtime' : !engine.enabled || !engine.route_ready ? 'runtime-mismatch' : 'enabled'
-      profiles.push({ profile: name, connected:connected||!!globalEngine, global:!!globalEngine, ...config, installed_version: installed, running, state:connected||globalEngine?state:'not-connected', runtime_version: engine?.version || null })
+      const runtime=dshRuntimeState({...config,profile:name},snapshot.runtimes,installed)
+      profiles.push({ profile: name, connected:connected||!!globalEngine, global:!!globalEngine, ...config, installed_version: installed, ...runtime, state:connected||globalEngine?runtime.state:'not-connected' })
     } catch { profiles.push({ profile: name, configured: false, state: 'misconfigured', error: 'DSH 配置读取失败；请在该界面检查插件配置' }) }
   }))
   profiles.sort((a,b) => a.profile.localeCompare(b.profile))
   const globalConfigured=profiles.length>0&&profiles.every(p=>p.global&&p.configured)
-  const global={configured:globalConfigured,state:!globalConfigured?'not-connected':profiles.some(p=>p.state==='enabled')?'enabled':profiles.some(p=>p.state==='disabled')?'disabled':'awaiting-runtime'}
+  const global={configured:globalConfigured,state:!globalConfigured?'not-connected':dshGlobalState(profiles)}
   return { root, files, global,detected: !!bin || names.length > 0, configured: profiles.some(p => p.configured),
     configuration_matches: profiles.some(p=>p.connected) && profiles.filter(p=>p.connected).every(p => p.configured), profiles, ...snapshot }
 }

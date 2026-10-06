@@ -8,7 +8,7 @@ const WRITERS = [
 const writerLabel = mode => WRITERS.find(w => w[0] === mode)?.[1] || mode
 const kfmt=n=>Math.round(n/1000)+'K'
 const admin = { settings: null, catalog: {}, modelEdit: null, compression: { runtimes: [], jobs: [] }, outdated: false }
-const DSH_STATES = { enabled: '已启用 · SuperLcm 接管压缩', disabled: '自动压缩已关闭', 'missing-route': '未配置压缩模型', 'awaiting-runtime': '已配置 · 待加载或重启', 'runtime-mismatch': '运行设置与保存配置不同', misconfigured: '压缩配置不完整或有冲突', 'not-connected':'尚未接入' }
+const DSH_STATES = { 'summary-only':'自动归档与后台摘要已接入',enabled: '已启用 · SuperLcm 接管压缩', disabled: '自动压缩已关闭', 'missing-route': '未配置压缩模型', 'awaiting-runtime': '已配置 · 待加载或重启', 'runtime-mismatch': '运行设置与保存配置不同', misconfigured: '压缩配置不完整或有冲突', 'not-connected':'尚未接入' }
 function dshCompressionLabel(h) {
   const global=h.dsh?.global
   if(global?.configured)return t(DSH_STATES[global.state]||'未核实运行状态')+' · '+t('全局接入')
@@ -318,10 +318,15 @@ function writerRows(h) {
   return rows
 }
 function renderTuning(tuning) {
-  for (const [id, value, label] of [['#segSize', tuning.target_chars, v => t('约 {n} 字', { n: fmt(v) })], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {
+  const tokenMode=tuning.target_tokens!=null,size=tokenMode?tuning.target_tokens:'chars:'+tuning.target_chars
+  for (const [id, value, label] of [['#segSize', size, v => tokenMode?t('约 {n} token', { n: fmt(v) }):t('约 {n} 字（旧设置）',{n:fmt(tuning.target_chars)})], ['#fanout', tuning.fanout, v => t('每 {n} 段合并为上一层', { n: v })]]) {
     const select = $(id)
     if (![...select.options].some(o => o.value === String(value))) select.add(new Option(label(value) + ' · ' + t('当前'), String(value)))
     select.value = String(value)
+  }
+  if(tokenMode) {
+    $('#granEst').textContent=t('每段第 1 层原文目标约 {n} token，每 {f} 段合并为上一层。token 按中英文与符号估算。',{n:fmt(tuning.target_tokens),f:tuning.fanout})
+    return
   }
   const perL1 = tuning.target_chars, perL2 = perL1 * tuning.fanout, perL3 = perL2 * tuning.fanout
   const big = n => LANG === 'zh' ? (n >= 10000 ? (n / 10000).toFixed(n % 10000 ? 1 : 0) + ' 万' : fmt(n)) : (n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + 'k' : fmt(n))
@@ -360,12 +365,9 @@ async function loadCompression() {
     const before = JSON.stringify(dsh.dsh.profiles)
     for (const p of dsh.dsh.profiles) {
       if (!p.configured) continue
-      const live = admin.compression.runtimes.filter(r => r.live && r.profile === p.profile)
-      const engine = live.find(r => r.kind === 'engine'), archive = live.find(r => r.kind === 'archive' && r.pid === engine?.pid)
-      p.running = !!p.installed_version && !!engine && !!archive && engine.version === p.installed_version && archive.version === p.installed_version
-      p.state = !p.enabled ? 'disabled' : !p.route_ready ? 'missing-route' : !p.running ? 'awaiting-runtime' : !engine.enabled || !engine.route_ready ? 'runtime-mismatch' : 'enabled'
+      Object.assign(p,dshRuntimeState(p,admin.compression.runtimes))
     }
-    if(dsh.dsh.global?.configured)dsh.dsh.global.state=dsh.dsh.profiles.some(p=>p.state==='enabled')?'enabled':dsh.dsh.profiles.some(p=>p.state==='disabled')?'disabled':'awaiting-runtime'
+    if(dsh.dsh.global?.configured)dsh.dsh.global.state=dshGlobalState(dsh.dsh.profiles)
     if (before !== JSON.stringify(dsh.dsh.profiles)) { renderTools(); renderStatus() }
   }
 }
@@ -389,7 +391,7 @@ for (const [group, field] of [['#takeoverWindow', 'window'], ['#takeoverKeep', '
   save.onclick = submit
   input.onkeydown = e => { if (e.key === 'Enter') submit() }
 }
-const pickedTuning = () => ({ target_chars: Number($('#segSize').value), fanout: Number($('#fanout').value) })
+const pickedTuning = () => ({...($('#segSize').value.startsWith('chars:')?{target_chars:Number($('#segSize').value.slice(6))}:{target_tokens:Number($('#segSize').value)}), fanout: Number($('#fanout').value) })
 for (const id of ['#segSize', '#fanout']) $(id).onchange = () => { renderTuning(pickedTuning()); $('#writerSaved').textContent = t('有未保存的修改') }
 
 /* ---------- storage ---------- */

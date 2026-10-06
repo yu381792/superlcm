@@ -13,7 +13,7 @@ export async function apply(ctx,config={}) {
   ctx.effect(()=>()=>store.close())
   const summaryState=()=>({archive_only:true,enabled:store.integrationEnabled('dsh'),setting:store.harnessSetting('dsh')||store.globalSetting()||{mode:'off'},
     revision:createHash('sha256').update(JSON.stringify([store.harnessSetting('dsh'),store.globalSetting(),store.integrationRevision('dsh'),store.apiModels()])).digest('hex'),
-    models:store.apiModels().map(m=>({id:m.id,label:m.label||m.model,model:m.model})),target_chars:store.tuning().target_chars})
+    models:store.apiModels().map(m=>({id:m.id,label:m.label||m.model,model:m.model})),target_chars:store.tuning().target_chars,target_tokens:store.tuning().target_tokens??null})
   // Exact routes use DSH's authenticated /api carrier. Its admission checks
   // run before this handler; no separate server or second credentials store.
   const host=dshHost()

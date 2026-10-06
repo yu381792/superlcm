@@ -4,6 +4,7 @@ import { nodeId } from './store.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS } from './api-endpoint.js'
 import { MAX_SUMMARY_INPUT } from './runtime.js'
 import { SUMMARY_POLICY_VERSION, SUMMARY_SYSTEM, SUMMARY_OUTPUT_TOKENS, buildSummaryPrompt, summaryInstructions, checkedSummary } from './summary-policy.js'
+import { estimateSummaryTokens,takeTokenPrefix,takeTokenSuffix } from './summary-tokens.js'
 const hash = value => createHash('sha256').update(value).digest('hex')
 const head = (text, chars) => String(text || '').replace(/\s+/g,' ').slice(0,chars)
 // 思考程度: sent as OpenAI's reasoning_effort, or as an Anthropic thinking budget; the output cap grows with
@@ -37,28 +38,43 @@ export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL,
 // Deterministic work planner shared by background workers and in-conversation agents.
 // Merges come first so the layered outline grows while the conversation is still running.
 const visibleEvent = e => e.summaryText.trim()
-// Segments are sized by characters only; the message cap is a wide safety net, not a user setting.
+// Token budgets include the rendered record labels; saved character settings
+// remain supported. The message cap is only a wide safety net, not a trigger
+// for lots of small summaries.
 // SUPERLCM_SEGMENT_MESSAGES lowers it for tests with tiny fixtures.
-export const segmentMessages = (env = process.env) => { const n = Number(env.SUPERLCM_SEGMENT_MESSAGES); return Number.isSafeInteger(n) && n >= 2 && n <= 200 ? n : 200 }
-export const summaryLimits = { targetChars: 12000, fanout: 4 }
+export const segmentMessages = (env = process.env) => { const n = Number(env.SUPERLCM_SEGMENT_MESSAGES); return Number.isSafeInteger(n) && n >= 2 && n <= 10000 ? n : 10000 }
+export const summaryLimits = { targetTokens: 20000, fanout: 4 }
 const textLength = e => e.summaryText.length
+const eventPrefix=e=>`[event ${e.ordinal}] `
+const budgetFor=(saved,options={})=>{
+  const tokens=options.targetTokens===undefined?(options.targetChars===undefined?saved.target_tokens:null):options.targetTokens
+  return tokens!=null?{target:tokens,tokens:true}:{target:options.targetChars??saved.target_chars,tokens:false}
+}
 // Index of the last event in the segment starting at `from`, or -1 while the segment is still open.
 // A segment closes before the message that would push it past the target, so it never exceeds the
 // target unless one message alone is longer (that message then forms its own segment).
-function segmentEnd(events, from, targetChars, batchSize) {
-  let chars = 0, count = 0
+function segmentEnd(events, from, budget, batchSize) {
+  let size = 0, count = 0
   for (let i = from; i < events.length; i++) {
     if (!visibleEvent(events[i])) continue
-    const len = textLength(events[i])
-    if (count && chars + len > targetChars) return i - 1
-    chars += len; count++
-    if (chars >= targetChars || count >= batchSize) return i
+    const len = budget.tokens?estimateSummaryTokens(eventPrefix(events[i])+events[i].summaryText+'\n'):textLength(events[i])
+    if (count && size + len > budget.target) return i - 1
+    size += len; count++
+    if (size >= budget.target || count >= batchSize) return i
   }
   return -1
 }
 // Full text of one record; only a record longer than the whole segment keeps its head and tail.
-function recordText(e, targetChars) {
+function recordText(e, budget) {
   const text = e.summaryText
+  if(budget.tokens) {
+    const target=budget.target-estimateSummaryTokens(eventPrefix(e)+'\n')
+    if(estimateSummaryTokens(text)<=target)return text
+    const marker=` …[middle omitted; lcm_read event ${e.ordinal} for the full text]… `
+    const room=target-estimateSummaryTokens(marker),headBudget=Math.floor(room*0.6)
+    return takeTokenPrefix(text,headBudget)+marker+takeTokenSuffix(text,room-headBudget)
+  }
+  const targetChars=budget.target
   if (text.length <= targetChars) return text
   const keep = targetChars - 200, headLen = Math.ceil(keep * 0.6)
   return text.slice(0, headLen) + ` …[${text.length - keep} characters omitted; lcm_read event ${e.ordinal} for the full text]… ` + text.slice(text.length - (keep - headLen))
@@ -66,7 +82,8 @@ function recordText(e, targetChars) {
 export function summaryWork(store, session, options = {}) {
   if (!store.source(session)) throw new Error('Unknown session')
   const saved = store.tuning()
-  const { batchSize = segmentMessages(), targetChars = saved.target_chars, fanout = saved.fanout } = options
+  const { batchSize = segmentMessages(), fanout = saved.fanout } = options
+  const budget=budgetFor(saved,options)
   for (let level = 1; level <= 12; level++) {
     const lower = store.nodeRows(session, level - 1)
     if (lower.length < fanout) break
@@ -84,7 +101,7 @@ export function summaryWork(store, session, options = {}) {
   const done = store.nodeRows(session, 0)
   const start = done.length ? Math.max(...done.map(n => n.last)) + 1 : 0
   const events = summaryEvents(store, session, start)
-  const end = segmentEnd(events, 0, targetChars, batchSize)
+  const end = segmentEnd(events, 0, budget, batchSize)
   if (end < 0) return null // wait for a complete batch; the unsummarized tail stays readable as raw events
   const batch = events.slice(0, end + 1), digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,...batch.map(e => e.digest)]))
   const base = { session, batch_id: nodeId(session, 0, batch[0].ordinal, batch.at(-1).ordinal, digest), level: 0, first: batch[0].ordinal, last: batch.at(-1).ordinal, children: [], digest,
@@ -100,17 +117,17 @@ export function summaryWork(store, session, options = {}) {
       notice: summaryInstructions(task)+'\nFrom memory: use only this source range in your own context, identified by starts and ends. If any required detail is uncertain or absent, use lcm_read instead of guessing.' }
   }
   return { ...task,
-    content: batch.filter(visibleEvent).map(e => `[event ${e.ordinal}] ${recordText(e, targetChars)}`).join('\n'),
+    content: batch.filter(visibleEvent).map(e => eventPrefix(e)+recordText(e, budget)).join('\n'),
     notice: summaryInstructions(task)+'\nUse lcm_read when a truncated excerpt needs verification.' }
 }
 // Dry-run estimate of a background pass: how many records it covers and how many model calls it makes.
-export function summaryEstimate(store, session) {
-  const { target_chars: targetChars, fanout } = store.tuning()
+export function summaryEstimate(store, session, options={}) {
+  const tuning=store.tuning(),{fanout}=tuning,budget=budgetFor(tuning,options)
   const done = store.nodeRows(session, 0)
   const start = done.length ? Math.max(...done.map(n => n.last)) + 1 : 0
   const events = summaryEvents(store, session, start)
   let segments = 0, from = 0
-  for (let end; (end = segmentEnd(events, from, targetChars, segmentMessages())) >= 0; from = end + 1) segments++
+  for (let end; (end = segmentEnd(events, from, budget, options.batchSize??segmentMessages())) >= 0; from = end + 1) segments++
   const pending = events.length - from, chars = events.slice(from).filter(visibleEvent).reduce((a, e) => a + textLength(e), 0), records = from
   let calls = segments, below = done.length + segments
   for (let level = 1; level <= 12 && below >= fanout; level++) {
@@ -118,15 +135,16 @@ export function summaryEstimate(store, session) {
     calls += Math.max(0, total - store.nodeRows(session, level).length)
     below = total
   }
-  return { records, segments, calls, tail: pending, tail_chars: chars, target_chars: targetChars }
+  const tokens=events.slice(from).filter(visibleEvent).reduce((a,e)=>a+estimateSummaryTokens(eventPrefix(e)+e.summaryText+'\n'),0)
+  return { records, segments, calls, tail: pending, tail_chars: chars, tail_tokens:tokens, target_chars:tuning.target_chars,target_tokens:tuning.target_tokens??null,tokens_estimated:true }
 }
 export function summarySettingsRevision(store, session, env = process.env) {
   const setting = store.effectiveSetting(session, env)
   return hash(JSON.stringify([setting,store.tuning(),store.integrationRevision(setting.harness), setting.mode === 'api' ? store.apiCredential(session, env) : null]))
 }
-export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars = store.tuning().target_chars, fanout = store.tuning().fanout, summarize = summarizeWithModel, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000 } = {}) {
+export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000 } = {}) {
   if (!model || (apiKey == null && summarize === summarizeWithModel)) throw new Error('Explicit summarizer model and API key required')
-  if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 200) throw new Error('batchSize must be 2–200')
+  if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 10000) throw new Error('batchSize must be 2–10000')
   if (!Number.isSafeInteger(fanout) || fanout < 2 || fanout > 8) throw new Error('fanout must be 2–8')
   if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 20 || !Number.isSafeInteger(leaseHeartbeatMs) || leaseHeartbeatMs < 1 || leaseHeartbeatMs >= leaseDurationMs) throw new Error('Invalid summary lease timing')
   const owner = `worker:${process.pid}:${randomUUID()}`
@@ -142,7 +160,7 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
   }, leaseHeartbeatMs)
   timer.unref()
   try {
-    for (let work; (work = summaryWork(store, session, { batchSize, targetChars, fanout })); ) {
+    for (let work; (work = summaryWork(store, session, { batchSize, targetChars,targetTokens, fanout })); ) {
       if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
       checkLease()
       // Fail closed if the on-disk original changed after indexing or during model execution.

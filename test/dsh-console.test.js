@@ -1,12 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync,readFileSync } from 'node:fs'
+import {runInNewContext} from 'node:vm'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClaudeStore } from '../src/store.js'
 import { CompressionReporter, compressionSnapshot, compressionCapabilities } from '../src/compression-status.js'
 import { inspectDshTree, inspectDsh } from '../src/dsh-connection.js'
 import { startWeb } from '../src/web.js'
+import {dshRuntimeState,dshGlobalState} from '../src/dsh-live-state.js'
 const fixture = () => new ClaudeStore(mkdtempSync(join(tmpdir(), 'superlcm-compression-console-')))
 const tree = () => [
   { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic', disabled: true },
@@ -64,6 +66,30 @@ test('DSH connection needs matching live engine and archive, not old summary rec
     opts.runCommand = async () => { throw Error('provider secret must not escape') }
     assert.ok(!(JSON.stringify(await inspectDsh(store,opts))).includes('secret'))
   } finally { version.close(); archive.close(); store.close() }
+})
+test('archive-only discovery and real console polling require the archive and reject a lingering takeover owner',async()=>{
+  const store=fixture(),env={...process.env,DSH_HOME:join(store.dir,'dsh'),SUPERLCM_DSH_BIN:process.execPath}
+  const dir=join(env.DSH_HOME,'profiles/web');mkdirSync(dir,{recursive:true});mkdirSync(join(env.DSH_HOME,'node_modules/superlcm'),{recursive:true})
+  writeFileSync(join(dir,'package.json'),JSON.stringify({dsh:{profile:{bundles:['superlcm']}}}))
+  const archive=new CompressionReporter(store.db,{kind:'archive',profile:'web',enabled:true,routeReady:true})
+  try {
+    const runtime=compressionSnapshot(store).runtimes[0]
+    writeFileSync(join(env.DSH_HOME,'node_modules/superlcm/package.json'),JSON.stringify({version:runtime.version}))
+    const rows=[{id:'native',name:'@deepseek-ai/dsh-compaction-basic',config:{auto:true}},{id:'superlcm-global',name:'superlcm',config:{archiveOnly:true}}]
+    const report=await inspectDsh(store,{env,parse:JSON.parse,runCommand:async()=>({stdout:JSON.stringify(rows)})})
+    assert.equal(report.profiles[0].running,true);assert.equal(report.profiles[0].state,'summary-only');assert.equal(report.global.state,'summary-only')
+    const source=readFileSync(new URL('../src/web-admin.js',import.meta.url),'utf8'),refresh=source.slice(source.indexOf('async function loadCompression()'),source.indexOf('const saveTakeover'))
+    const dsh={dsh:{profiles:report.profiles,global:report.global}},admin={outdated:false},context={admin,state:{harnesses:[{harness:'dsh',...dsh}]},api:async()=>({runtimes:[runtime]}),renderTools(){},renderStatus(){}}
+    const program=dshRuntimeState.toString()+'\n'+dshGlobalState.toString()+'\n'+refresh+'\nloadCompression()'
+    await runInNewContext(program,context)
+    assert.equal(dsh.dsh.profiles[0].running,true,'live polling must not demand a SuperLcm engine')
+    context.api=async()=>({runtimes:[{...runtime,version:'old'}]});await runInNewContext(program,context)
+    assert.equal(dsh.dsh.profiles[0].running,false);assert.equal(dsh.dsh.profiles[0].state,'awaiting-runtime')
+    context.api=async()=>({runtimes:[runtime,{...runtime,kind:'engine',enabled:true}]});await runInNewContext(program,context)
+    assert.equal(dsh.dsh.profiles[0].running,false);assert.equal(dsh.dsh.profiles[0].state,'runtime-mismatch')
+    context.api=async()=>({runtimes:[{...runtime,live:false}]});await runInNewContext(program,context)
+    assert.equal(dsh.dsh.profiles[0].running,false)
+  } finally {archive.close();store.close()}
 })
 test('console exposes compression status without spawning models and supports independent DSH background settings', async () => {
   const store = fixture(), web = await startWeb({ store, discovery: async () => [], catalog: async () => [], spawnWorker: () => { throw Error('must not spawn') } })

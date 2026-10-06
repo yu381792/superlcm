@@ -201,7 +201,7 @@ function generateButton(label, cls = 'btn small') {
   const d = state.detail
   if (d.setting.scope === 'compaction-plugin') return '<span class="muted">' + t('摘要由 SuperLcm 插件生成，最近原文完整保留。') + '</span>'
   if (!(d.backends || []).length) return '<span class="muted">' + t('本机没有可用的摘要生成方式。') + '</span><button type="button" class="' + cls + '" data-goto="settings">' + t('配置自定义 API') + '</button>'
-  if (!d.estimate?.calls) return '<span class="muted">' + t('未摘要的对话文字约 {a} 字，还不到一段摘要（{b} 字），暂不需要生成。', { a: fmt(d.estimate.tail_chars), b: fmt(d.estimate.target_chars) }) + '</span>'
+  if (!d.estimate?.calls) return '<span class="muted">' + (d.estimate.target_tokens!=null?t('未摘要原文约 {a} token，未达到每段 {b} token 的目标，暂时保留原文。',{a:fmt(d.estimate.tail_tokens),b:fmt(d.estimate.target_tokens)}):t('未摘要的对话文字约 {a} 字，还不到一段摘要（{b} 字），暂不需要生成。', { a: fmt(d.estimate.tail_chars), b: fmt(d.estimate.target_chars) })) + '</span>'
   return '<button type="button" class="' + cls + '" data-generate>' + t(label) + '</button>'
 }
 function openGenerate() {
@@ -210,7 +210,7 @@ function openGenerate() {
   const opts = () => list.map(b => '<button type="button" class="target" data-b="' + b + '" aria-pressed="' + (b === pick) + '"><span class="t1">' + t(BACKENDS[b][0], { tool: toolName(d.writer_tool) }) + '</span><span class="t2">' + t(BACKENDS[b][1], { tool: toolName(d.writer_tool) }) + '</span></button>').join('')
   overlay('<div class="modal" role="dialog" aria-labelledby="gtitle"><div class="card" style="width:min(520px,100%)"><div class="card-h"><h3 id="gtitle">' + t('生成摘要') + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
     '<p style="margin:0">' + t('把尚未摘要的 {n} 条原文整理成分层摘要，方便浏览和接续。原文不会改动。', { n: fmt(e.records) }) + '</p>' +
-    '<p class="muted" style="margin:0">' + t('预计调用模型约 {c} 次，在后台运行，可以关掉此页。', { c: fmt(e.calls) }) + (e.tail_chars ? t('最后约 {n} 字还不够一段，暂时只保留原文。', { n: fmt(e.tail_chars) }) : '') + '</p>' +
+    '<p class="muted" style="margin:0">' + t('预计调用模型约 {c} 次，在后台运行，可以关掉此页。', { c: fmt(e.calls) }) + (e.tail_chars ? e.target_tokens!=null?t('最后约 {n} token 未达到一段目标，暂时只保留原文。',{n:fmt(e.tail_tokens)}):t('最后约 {n} 字还不够一段，暂时只保留原文。', { n: fmt(e.tail_chars) }) : '') + '</p>' +
     '<div class="section-h"><h2>' + t('用哪种方式生成') + '</h2></div><div class="targets" id="genOpts">' + opts() + '</div>' +
     '<div class="actions"><button type="button" class="btn primary" id="genGo">' + t('开始生成') + '</button><button type="button" class="btn" data-close>' + t('取消') + '</button></div></div></div></div>', root => {
     const bind = () => { for (const b of root.querySelectorAll('[data-b]')) b.onclick = () => { pick = b.dataset.b; root.querySelector('#genOpts').innerHTML = opts(); bind() } }

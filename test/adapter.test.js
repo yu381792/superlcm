@@ -32,7 +32,7 @@ import { codexTranscript, codexSessionKey } from '../src/codex.js'
 const fixture = fn => async t => {
   const dir=mkdtempSync(join(tmpdir(),'superlcm-claude-'))
   const store=new ClaudeStore(join(dir,'private'))
-  store.db.prepare('INSERT INTO summary_tuning VALUES(1,12000,8,4)').run()
+  store.db.prepare('INSERT INTO summary_tuning(id,target_chars,batch_size,fanout) VALUES(1,12000,8,4)').run()
   t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true})})
   await fn({dir,store,t})
 }

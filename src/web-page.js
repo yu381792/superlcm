@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { icons } from './web-icons.js'
+import { dshRuntimeState,dshGlobalState } from './dsh-live-state.js'
 const asset = name => readFileSync(new URL(name, import.meta.url), 'utf8')
 const logo = asset('../dsh/ui/icon.svg').trim().replace('<svg ', '<svg width="20" height="20" aria-hidden="true" ').replace('#B5532F', 'var(--l3)').replace('#CF7A56', 'var(--l2)').replace('#E6AE93', 'var(--l1)')
 const swatches = [['orange', '陶橙', '#C96442'], ['teal', '松石', '#1E6B57'], ['indigo', '靛青', '#3A4FB0'], ['graphite', '石墨', '#2E2E2C']]
@@ -87,7 +88,7 @@ export function page(nonce) {
         <h3>粒度</h3>
         <p class="desc">只影响之后新生成的摘要，已有摘要保持不变。</p>
         <div class="fields">
-          <label class="field">第 1 层每段原文<select id="segSize"><option value="6000">约 6,000 字 · 更细</option><option value="12000">约 12,000 字 · 推荐</option><option value="24000">约 24,000 字 · 更省</option></select></label>
+          <label class="field">第 1 层每段原文<select id="segSize"><option value="10000">约 10,000 token · 更细</option><option value="20000">约 20,000 token · 推荐</option><option value="40000">约 40,000 token · 更省</option></select></label>
           <label class="field">合并方式<select id="fanout"><option value="3">每 3 段合并为上一层</option><option value="4">每 4 段合并为上一层 · 推荐</option><option value="6">每 6 段合并为上一层</option></select></label>
         </div>
         <div class="notice calm"><span id="granEst"></span></div>
@@ -132,6 +133,8 @@ export function page(nonce) {
 const ICONS = ${JSON.stringify(icons)};
 ${asset('web-i18n.js')}
 ${asset('web-client.js')}
+${dshRuntimeState.toString()}
+${dshGlobalState.toString()}
 ${asset('web-admin.js')}
 ${asset('web-dsh.js')}
 boot();
