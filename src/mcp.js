@@ -92,6 +92,12 @@ export function startServer(store = new ClaudeStore(), input = process.stdin, ou
         default: throw Object.assign(new Error('Method not found'),{code:-32601})
       }
       if (modern && ['tools/list','tools/call'].includes(msg.method)) result.resultType='complete'
+      // The 2026-07-28 protocol requires cache hints on discovery/list results.
+      // Tool visibility depends on local settings, so never share or cache the list.
+      if (modern && ['server/discover','tools/list'].includes(msg.method)) {
+        result.ttlMs=0
+        result.cacheScope='private'
+      }
       send({jsonrpc:'2.0',id:msg.id,result})
     } catch(error) { send({jsonrpc:'2.0',id:msg.id,error:{code:error.code||-32603,message:error.message}}) }
   })

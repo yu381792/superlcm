@@ -129,14 +129,23 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   const server=startServer(new ClaudeStore(join(dir,'server')),input,output)
   const send=async msg=>{input.write(JSON.stringify(msg)+'\n');for(let n=0;n<30;n++){if(received.some(x=>x.id===msg.id))return received.find(x=>x.id===msg.id);await new Promise(r=>setTimeout(r,5))}throw Error('no response')}
   const meta={'io.modelcontextprotocol/protocolVersion':'2026-07-28','io.modelcontextprotocol/clientInfo':{name:'test',version:'1'},'io.modelcontextprotocol/clientCapabilities':{}}
-  assert.ok((await send({jsonrpc:'2.0',id:1,method:'server/discover',params:{_meta:meta}})).result.supportedVersions.includes('2026-07-28'))
+  const discovered=(await send({jsonrpc:'2.0',id:1,method:'server/discover',params:{_meta:meta}})).result
+  assert.ok(discovered.supportedVersions.includes('2026-07-28'))
+  assert.equal(discovered.ttlMs,0)
+  assert.equal(discovered.cacheScope,'private')
   assert.equal((await send({jsonrpc:'2.0',id:2,method:'initialize',params:{protocolVersion:'2025-11-25'}})).result.protocolVersion,'2025-11-25')
-  assert.equal((await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result.resultType,'complete')
+  const listed=(await send({jsonrpc:'2.0',id:3,method:'tools/list',params:{_meta:meta}})).result
+  assert.equal(listed.resultType,'complete')
+  assert.equal(listed.ttlMs,0)
+  assert.equal(listed.cacheScope,'private')
   assert.equal((await send({jsonrpc:'2.0',id:4,method:'tools/call',params:{_meta:meta,name:'lcm_find',arguments:{}}})).result.isError,undefined)
   assert.equal((await send({jsonrpc:'2.0',id:5,method:'tools/list',params:{_meta:{...meta,'io.modelcontextprotocol/protocolVersion':'2039-01-01'}}})).error.code,-32022)
   assert.equal(tools.length,6)
   assert.deepEqual(tools.map(t=>t.annotations.readOnlyHint),[true,true,true,true,false,false]);assert.ok(tools.every(t=>t.annotations.destructiveHint===false&&t.annotations.openWorldHint===false))
-  assert.deepEqual((await send({jsonrpc:'2.0',id:6,method:'tools/list',params:{}})).result.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read','lcm_summary_task','lcm_summary_submit'],'in-conversation summaries are the default')
+  const legacyListed=(await send({jsonrpc:'2.0',id:6,method:'tools/list',params:{}})).result
+  assert.deepEqual(legacyListed.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read','lcm_summary_task','lcm_summary_submit'],'in-conversation summaries are the default')
+  assert.equal(legacyListed.ttlMs,undefined)
+  assert.equal(legacyListed.cacheScope,undefined)
   assert.deepEqual(await call(store,'lcm_find'),{conversations:[],total:0})
   input.end();await new Promise(r=>server.once('close',r));lines.close()
 }))
