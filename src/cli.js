@@ -12,26 +12,12 @@ import { existsSync, statSync, openSync, readSync, closeSync, readFileSync } fro
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { scheduleSummary } from './summary-scheduler.js'
 const [command,...rest]=process.argv.slice(2)
 const homeFlag=rest.indexOf('--home')
 if(homeFlag>=0){if(!rest[homeFlag+1])throw Error('--home requires a path');process.env.SUPERLCM_HOME=rest[homeFlag+1];rest.splice(homeFlag,2)}
 const effective=(store,session)=>store.effectiveSetting(session)
 const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>resolve(JSON.parse(text)))})
-function scheduleSummary(store,session,mode,model) {
-  if (!['cli','api'].includes(mode) || !summaryWork(store,session)) return
-  if (mode==='cli' && store.hostWriter(session)) return // Claude Code is writing this one itself (summary-claim)
-  if (mode==='api' && (!(model||process.env.SUPERLCM_CLAUDE_MODEL) || store.apiCredential(session)===null)) {
-    store.setStatus(session,'summary_unconfigured')
-    process.stderr.write('SuperLcm: api mode needs a model ID and a configured scoped API key\n')
-    return
-  }
-  spawnSummary(session,[],{SUPERLCM_SUMMARY_EXPECTED_MODE:mode,SUPERLCM_SUMMARY_EXPECTED_MODEL:model||''})
-}
-function spawnSummary(session,args,env) {
-  const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'summarize',session,...args],{detached:true,windowsHide:true,stdio:'ignore',env:{...process.env,SUPERLCM_HOOK_WORKER:'1',...env}})
-  child.on('error',error=>process.stderr.write('SuperLcm: background worker could not start: '+error.message+'\n'))
-  child.unref()
-}
 // 对话模型生成: one short note per turn, only when a whole piece is waiting. The AI writes it from memory
 // (it has just been through that part); a piece that straddles a compaction comes with its text instead.
 // Written as what it is, a note from the plugin the user installed, so a model does not read it as an injection.
@@ -90,7 +76,7 @@ else if (command==='hermes-hook' || command==='pi-hook') {
   try {
     const input=await readHook(),event=input.hook_event_name
     // A background summary run (SUPERLCM_CLI_WORKER) is never captured as a conversation.
-    if(process.env.SUPERLCM_CLI_WORKER==='1')throw Object.assign(new Error('skip'),{quiet:true})
+    if(process.env.SUPERLCM_CLI_WORKER==='1'||!store.integrationEnabled(hermes?'hermes':'pi'))throw Object.assign(new Error('skip'),{quiet:true})
     const {captureHermes}=await import('./hermes.js'),{capturePi}=await import('./pi.js')
     const result=hermes?captureHermes(store,input.session_id,{automatic:true}):capturePi(store,input,{automatic:true})
     if(!result.skipped&&store.source(result.session)){
@@ -118,7 +104,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if (process.env.SUPERLCM_CLI_WORKER !== '1') {
         const input=await readHook()
         hookEvent=input.hook_event_name
-        if (input.session_id && (input.transcript_path || ['UserPromptSubmit','SessionStart'].includes(hookEvent))) {
+        if (store.integrationEnabled(codex?'codex':'claude-code') && input.session_id && (input.transcript_path || ['UserPromptSubmit','SessionStart'].includes(hookEvent))) {
           const event=input.hook_event_name
           const session=codex ? codexSessionKey(input.session_id) : input.session_id
           // A session that never wrote a transcript (such as `claude update`) has nothing to capture.
@@ -163,7 +149,6 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       // Indexing alone never starts a paid summarizer.
     } else if (command==='summarize') {
       if (!store.source(rest[0])) throw new Error('Unknown session')
-      if (store.metadata(rest[0]).harness === 'dsh') throw new Error('dsh harness 的摘要由 SuperLcm 压缩插件生成；请导入或重建已提交的摘要')
       // --backend runs one explicit subscription pass (console "generate now"), independent of the saved mode.
       const backendFlag=rest.indexOf('--backend'),backend=backendFlag>=0?rest[backendFlag+1]:null
       if (backend!==null && !['cli','api'].includes(backend)) throw new Error('--backend must be cli or api')
@@ -172,9 +157,10 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       try {
         const {mode,model,api_provider,api_url,effort,api_effort}=oneOffApi?{mode:'api',...oneOffApi}:backend?{mode:backend,model:null}:effective(store,rest[0])
         if (!backend && process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
+        if(!backend&&!store.integrationEnabled(store.metadata(rest[0]).harness))throw Error('Integration was cancelled; automatic summaries are stopped')
         if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
         const revision = summarySettingsRevision(store, rest[0])
-        const shouldContinue = backend ? () => true : () => summarySettingsRevision(store, rest[0]) === revision
+        const shouldContinue = () => summarySettingsRevision(store, rest[0]) === revision
         result=mode==='api'
           ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL,effort:effort||api_effort||null,shouldContinue})
           : await (async()=>{
@@ -222,6 +208,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
   let reply={}
   try {
     if(!session)throw new Error('Usage: '+command+' <session>')
+    if(!store.integrationEnabled(store.metadata(session).harness))throw Object.assign(Error('Integration is disconnected'),{none:true})
     if(command==='summary-host')store.setHostWriter(session,true)
     else if(command==='summary-handoff'){
       if(store.hostWriter(session)){store.setHostWriter(session,false);store.release(session,'host')}
@@ -237,7 +224,10 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         const work=summaryWork(store,session)
         if(!work)reply={none:'nothing to summarize yet'}
         else if(!store.lease(session,300000,'host'))reply={none:'busy'}
-        else {reply={work:{batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,work),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}}
+        else {
+          store.db.prepare('INSERT INTO host_summary_claims VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision').run(session,work.batch_id,summarySettingsRevision(store,session))
+          reply={work:{batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,work),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
+        }
       } else {
         const input=await readHook()
         try {
@@ -246,9 +236,11 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           const work=summaryWork(store,session)
           if(!store.summarizing(session)||store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner!=='host')throw new Error('no summary claimed in this conversation')
           if(!work||work.batch_id!==input.batch_id)throw new Error('stale summary batch')
+          const claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
+          if(!claim||claim.batch_id!==input.batch_id||claim.revision!==summarySettingsRevision(store,session))throw Error('Summary setting changed; result not saved')
           if(summary.length<20)throw new Error('summary too short')
           if(work.level===0)for(let i=work.first;i<=work.last;i++)store.exact(session,i)
-          store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`})
+          store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`},{leaseOwner:'host',validate:()=>claim.revision===summarySettingsRevision(store,session)})
           store.setStatus(session,'ok')
           reply={saved:true,more:Boolean(summaryWork(store,session))}
         } finally { store.release(session,'host') }

@@ -30,7 +30,7 @@ export function apply(ctx,config={}) {
   if (migrated.added) ctx.logger?.info?.(`SuperLcm 已迁入 ${migrated.added} 条旧 DSH 摘要`)
   for (const conflict of migrated.conflicts) ctx.logger?.warn?.(`SuperLcm 旧摘要迁入冲突：${conflict.sessionId}/${conflict.nodeId}（${conflict.fields.join(', ')}）；共享索引与旧档案均保留，未覆盖`)
   const warn = error => ctx.logger?.warn?.('SuperLcm 归档：' + (error?.message || error))
-  const dirty = new Set(), cursors = new Map(), observed = new Set()
+  const dirty = new Set(), cursors = new Map(), observed = new Set(), settled=new Set()
   let stopped = false, running = null
   reporter.report('', 'starting')
   const worker = new ArchiveWorker({...process.env,SUPERLCM_HOME:archiveHome}, warn, {
@@ -86,16 +86,19 @@ export function apply(ctx,config={}) {
       // Bound each request by bytes and records, including a very large tool result.
       let batch = [], bytes = 0
       const flush = async () => {
-        await worker.request({ method: 'capture', packet: { header, title, records: batch } })
+        const result=await worker.request({ method: 'capture', packet: { header, title, records: batch } })
+        if(result?.skipped){cursors.delete(id);reporter.report(id,result.skipped);return false}
         from += batch.length; cursors.set(id, from); batch = []; bytes = 0
+        return true
       }
       for (let index = incremental ? 0 : from; index < events.length; index++) {
         const record = projectEvent(id, events[index]), size = Buffer.byteLength(JSON.stringify(record))
         if (size > 4 * 1024 * 1024) throw Error('DSH event exceeds the archive record limit at seq ' + events[index].seq)
-        if (batch.length >= 500 || bytes + size > 24e6) await flush()
+        if (batch.length >= 500 || bytes + size > 24e6)if(!await flush())return
         batch.push(record); bytes += size
       }
-      await flush() // Also sync a title or committed summary when there are no new events.
+      if(!await flush())return // Also sync a title or committed summary when there are no new events.
+      if(settled.delete(id))await worker.request({method:'summarize',session:dshSessionKey(id)})
       reporter.report(id, 'synced', { end: from - 1 })
     } finally { await observation.close() }
   }
@@ -112,7 +115,12 @@ export function apply(ctx,config={}) {
     })().finally(() => { running = null; if (dirty.size && !stopped) drain() })
     return running
   }
-  ctx.on('session/event', (session) => { observed.add(session.id); dirty.add(session.id); queueMicrotask(drain) })
+  ctx.on('session/event', (session,event) => {
+    observed.add(session.id);dirty.add(session.id)
+    const latest=event||session.eventAt(session.seq-1)
+    if(latest?.type==='turn/end')settled.add(session.id)
+    queueMicrotask(drain)
+  })
   ctx.on('ready', async () => {
     try { for (const { header } of await ctx.sessionQuery.listSessions()) { observed.add(header.id); dirty.add(header.id) }; drain() }
     catch (error) { warn(error) }

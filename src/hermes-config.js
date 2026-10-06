@@ -102,6 +102,18 @@ for event, entry in (x.get("hooks") or {}).items():
 save_config(c)
 print("SUPERLCM_JSON " + json.dumps({"saved": True}))`, { mcp, hooks, script })
 }
+export function removeHermesIntegration(env,{removeMcp,commands}) {
+  return runPython(env,`import json, sys
+from hermes_cli.config import load_config, save_config
+x=json.load(sys.stdin)
+c=load_config()
+if x["removeMcp"]:
+    (c.get("mcp_servers") or {}).pop("superlcm", None)
+for event, items in list((c.get("hooks") or {}).items()):
+    c["hooks"][event]=[i for i in items if not isinstance(i, dict) or i.get("command") not in x["commands"]]
+save_config(c)
+print("SUPERLCM_JSON " + json.dumps({"saved": True}))`,{removeMcp,commands})
+}
 // Read-only: which SuperLcm hook commands Hermes has already been allowed to run.
 export function hermesHookTrust(command, env = process.env) {
   const file = join(hermesHome(env), 'shell-hooks-allowlist.json')

@@ -6,6 +6,7 @@ import { findCli, runCommand as run, commandOptions, preferredNode } from './run
 import { readHermesConfig, writeHermesConfig, hermesRuntimeAsync, approveHermesHooks, HERMES_EVENTS } from './hermes-config.js'
 import { codexHookTrust } from './codex-hook-trust.js'
 import { piExtension } from './pi.js'
+import { enableSummaryOnly } from './integration.js'
 const hash=text=>createHash('sha256').update(text).digest('hex')
 const read=file=>existsSync(file)?readFileSync(file,'utf8'):null
 const quoted=text=>process.platform==='win32'?'"'+text.replaceAll('"','\"')+'"':"'"+text.replaceAll("'","'\\''")+"'"
@@ -82,6 +83,7 @@ export async function applySetup(store,harness,revision,options={}) {
       if(harness==='pi'&&p.mcp_action==='register'){mkdirSync(dirname(p.files.mcp),{recursive:true});const temp=p.files.mcp+'.superlcm-'+randomBytes(6).toString('hex');writeFileSync(temp,p._next.content,{flag:'wx',mode:0o644});renameSync(temp,p.files.mcp)}
       const after=await setupPreview(store,harness,options),verified=after.mcp_action==='preserve'&&!after.hook_events_added.length
       const trust=harness==='hermes'&&verified&&options.approveHooks?await approve(()=>approveHermesHooks(options.env||process.env,p.hook_command).then(()=>true)):{}
+      if(verified)enableSummaryOnly(store,harness,options.env)
       return {saved:true,configuration_verified:verified,state:verified?'awaiting_client_reload':'configuration_unverified',harness,backups,hook_events_added:p.hook_events_added,mcp_action:p.mcp_action,requires_review:p.requires_review&&!trust.granted,trust_granted:!!trust.granted,...(trust.error?{trust_error:trust.error}:{})}
     }
     if(p.mcp_action==='register') {
@@ -96,6 +98,7 @@ export async function applySetup(store,harness,revision,options={}) {
     if(JSON.stringify(before)!==JSON.stringify(readJson(p.files.hooks))||p2.hook_command!==p.hook_command||JSON.stringify(p2._next)!==JSON.stringify(p._next))throw Error('hook 配置发生变化；停止，保留已有更改和备份')
     if(p.hook_events_added.length){mkdirSync(dirname(p.files.hooks),{recursive:true,mode:0o700});const temp=p.files.hooks+'.superlcm-'+randomBytes(6).toString('hex');writeFileSync(temp,JSON.stringify(p._next,null,2)+'\n',{flag:'wx',mode:0o600});renameSync(temp,p.files.hooks)}
     const verified=matchingMcp(await mcpRegistration(harness,options),store,options.env||process.env)
+    if(verified)enableSummaryOnly(store,harness,options.env)
     const trust=harness==='codex'&&verified&&options.approveHooks?await approve(async()=>(await codexHookTrust({env:options.env||process.env,approve:true,command:p.hook_command})).ok):{}
     return {saved:true,configuration_verified:verified,state:verified?'awaiting_client_reload':'configuration_unverified',harness,backups,hook_events_added:p.hook_events_added,mcp_action:p.mcp_action,requires_review:p.requires_review&&!trust.granted,trust_granted:!!trust.granted,...(trust.error?{trust_error:trust.error}:{}),note:trust.granted?'已写配置并替你允许了钩子；在 Codex 重连后生效。':p.requires_review?'已写配置；仍需 Codex /hooks 原生审核。':'已写配置；在 Claude Code 重连后生效。'}
   }finally{active.delete(harness)}

@@ -77,7 +77,8 @@ export function summaryWork(store, session, options = {}) {
     const content = batch.map(n => `[${n.id}, events ${n.first}-${n.last}]\n${n.summary}`).join('\n\n')
     if (content.length > MAX_SUMMARY_INPUT) throw new Error('Complete child summaries exceed the input limit; refusing to truncate them')
     const task = { level, kind:'condensed', first:batch[0].first, last:batch.at(-1).last }
-    return { session, batch_id: nodeId(session, level, task.first, task.last, digest), ...task, children: batch.map(n => n.id), digest,
+    const sources=store.metadata(session).harness==='dsh'?store.db.prepare('SELECT DISTINCT seq FROM dsh_node_sources WHERE session=? AND id IN ('+batch.map(()=>'?').join(',')+') ORDER BY seq').all(session,...batch.map(n=>n.id)).map(r=>r.seq):undefined
+    return { session, batch_id: nodeId(session, level, task.first, task.last, digest), ...task, children: batch.map(n => n.id), digest,source_records:sources,
       content, notice:summaryInstructions(task), policy_version:SUMMARY_POLICY_VERSION }
   }
   const done = store.nodeRows(session, 0)
@@ -86,7 +87,8 @@ export function summaryWork(store, session, options = {}) {
   const end = segmentEnd(events, 0, targetChars, batchSize)
   if (end < 0) return null // wait for a complete batch; the unsummarized tail stays readable as raw events
   const batch = events.slice(0, end + 1), digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,...batch.map(e => e.digest)]))
-  const base = { session, batch_id: nodeId(session, 0, batch[0].ordinal, batch.at(-1).ordinal, digest), level: 0, first: batch[0].ordinal, last: batch.at(-1).ordinal, children: [], digest }
+  const base = { session, batch_id: nodeId(session, 0, batch[0].ordinal, batch.at(-1).ordinal, digest), level: 0, first: batch[0].ordinal, last: batch.at(-1).ordinal, children: [], digest,
+    ...(store.metadata(session).harness==='dsh'?{source_records:batch.filter(visibleEvent).map(e=>e.ordinal)}:{}) }
   const previous=done.filter(n=>n.last<base.first).at(-1)
   const task={...base,kind:'leaf',policy_version:SUMMARY_POLICY_VERSION,
     ...(previous?{previousSummary:`[${previous.id}, events ${previous.first}-${previous.last}]\n${previous.summary}`}:{})}
@@ -120,10 +122,9 @@ export function summaryEstimate(store, session) {
 }
 export function summarySettingsRevision(store, session, env = process.env) {
   const setting = store.effectiveSetting(session, env)
-  return hash(JSON.stringify([setting, setting.mode === 'api' ? store.apiCredential(session, env) : null]))
+  return hash(JSON.stringify([setting,store.tuning(),store.integrationRevision(setting.harness), setting.mode === 'api' ? store.apiCredential(session, env) : null]))
 }
 export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars = store.tuning().target_chars, fanout = store.tuning().fanout, summarize = summarizeWithModel, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000 } = {}) {
-  if (store.metadata(session).harness === 'dsh') throw new Error('DSH summaries are owned by the compaction plugin')
   if (!model || (apiKey == null && summarize === summarizeWithModel)) throw new Error('Explicit summarizer model and API key required')
   if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 200) throw new Error('batchSize must be 2–200')
   if (!Number.isSafeInteger(fanout) || fanout < 2 || fanout > 8) throw new Error('fanout must be 2–8')
@@ -151,7 +152,7 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
       checkLease()
       if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
       verify()
-      store.addNode({ session, id: work.batch_id, level: work.level, first: work.first, last: work.last, children: work.children, summary, digest: work.digest, model }, { leaseOwner: owner })
+      store.addNode({ session, id: work.batch_id, level: work.level, first: work.first, last: work.last, children: work.children, summary, digest: work.digest, model,sourceRecords:work.source_records }, { leaseOwner: owner,validate:mayContinue })
       if (!store.renewLease(session, leaseDurationMs, owner)) throw new Error('Summary writer lost its lease')
       created++
     }

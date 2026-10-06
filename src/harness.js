@@ -32,7 +32,7 @@ export async function mcpRegistration(harness,{env=process.env,runCommand=run}={
 export function ownMcp(reg,store) {
   const c=reg?.config
   if(!reg?.found||!c||!['stdio',undefined].includes(c.type))return false
-  if(!Array.isArray(c.args)||c.args.length!==2||resolve(c.args[0])!==script||c.args[1]!=='mcp')return false
+  if(!Array.isArray(c.args)||c.args.length!==2||![script,join(store.dir,'superlcm.js')].includes(resolve(c.args[0]))||c.args[1]!=='mcp')return false
   const configuredHome=c.env?.SUPERLCM_HOME||c.env?.SUPERLCM_CLAUDE_HOME
   const defaultHome=resolve(process.env.SUPERLCM_HOME||process.env.SUPERLCM_CLAUDE_HOME||join(paths().home,'.superlcm-claude'))
   return resolve(configuredHome||defaultHome)===store.dir
@@ -77,6 +77,7 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     if(def.id==='dsh') {
       const dsh = await inspectDsh(store,{env,runCommand})
       return {harness:'dsh',label:def.label,supported:true,local_conversations:true,detected:dsh.detected,bin,version,
+        integration_enabled:store.integrationEnabled('dsh'),connection_mode:dsh.profiles.some(p=>p.enabled)?'takeover':'summary-only',
         configured:dsh.configured,configuration_matches:dsh.configuration_matches,hook:{status:dsh.configured?'configured':'missing'},
         connection_evidence:connectionEvidence(store,'dsh'),index_home:store.dir,compression:compressionCapabilities.dsh,dsh}
     }
@@ -91,7 +92,7 @@ export async function harnessConnections(store,{env=process.env,runCommand=run}=
     const mcpSeen=seen.find(c=>c.kind==='mcp-self-reported'&&(def.id==='claude-code'?/claude/i:/codex/i).test(c.client)&&!c.client.includes('self-test'))?.seen_at||null
     const viaPlugin=!!claude?.plugin?.enabled
     const capture_stale=native&&(!!reg.found||viaPlugin)&&captureStale(newestTranscript(def.id,env),hookSeen)
-    return {compression:compressionCapabilities[def.id]||{supported:false,owner:null,mode:'unsupported'},capture_stale,node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found||viaPlugin,configuration_matches:viaPlugin?!claude.plugin.outdated:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir,...(claude?{claude}:{})}
+    return {integration_enabled:store.integrationEnabled(def.id),connection_mode:def.id==='claude-code'&&store.takeover().enabled?'takeover':'summary-only',compression:compressionCapabilities[def.id]||{supported:false,owner:null,mode:'unsupported'},capture_stale,node_borrowed:preferredNode(env).borrowed,harness:def.id,label:def.label,supported:def.supported,local_conversations:!!(def.supported||def.local),detected,bin,version,configured:!!reg.found||viaPlugin,configuration_matches:viaPlugin?!claude.plugin.outdated:native?matchingMcp(reg,store,env)&&(await import('./setup.js')).nativeHooksCurrent(store,def.id,env):!!plan&&plan.mcp_action==='preserve'&&!plan.hook_events_added.length,config_error:reg.error||null,hook,files,hook_seen:hookSeen,mcp_self_reported:native?mcpSeen:null,connection_evidence:connectionEvidence(store,def.id),connection:'unverified',index_home:store.dir,...(claude?{claude}:{})}
   }))
   for(const x of store.harnessSettings())if(!rows.some(r=>r?.harness===x.harness))rows.push({harness:x.harness,label:x.harness,supported:false,detected:false,configured:false,hook:{status:'unsupported'},connection:'unverified'})
   return rows.filter(Boolean)

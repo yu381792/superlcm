@@ -1,7 +1,7 @@
 import { readFileSync,writeFileSync,renameSync,mkdirSync } from 'node:fs'
 import { join,dirname } from 'node:path'
 import { fileURLToPath,pathToFileURL } from 'node:url'
-import { randomUUID } from 'node:crypto'
+import { randomUUID,createHash } from 'node:crypto'
 import { ClaudeStore } from '../../src/store.js'
 import { dshCompressionSettings,publicCompressionSettings,saveDshCompression,controlsPath } from '../../src/dsh-controls.js'
 import { readControls } from '../controls-config.js'
@@ -11,6 +11,9 @@ export const name='superlcm-settings'
 export async function apply(ctx,config={}) {
   const store=new ClaudeStore(config.archiveHome)
   ctx.effect(()=>()=>store.close())
+  const summaryState=()=>({archive_only:true,enabled:store.integrationEnabled('dsh'),setting:store.harnessSetting('dsh')||store.globalSetting()||{mode:'off'},
+    revision:createHash('sha256').update(JSON.stringify([store.harnessSetting('dsh'),store.globalSetting(),store.integrationRevision('dsh'),store.apiModels()])).digest('hex'),
+    models:store.apiModels().map(m=>({id:m.id,label:m.label||m.model,model:m.model})),target_chars:store.tuning().target_chars})
   // Exact routes use DSH's authenticated /api carrier. Its admission checks
   // run before this handler; no separate server or second credentials store.
   const host=dshHost()
@@ -26,8 +29,16 @@ export async function apply(ctx,config={}) {
         let result
         try {
           request.signal.throwIfAborted()
-          const value=endpoint==='read'?publicCompressionSettings(await dshCompressionSettings(store)):
-            await saveDshCompression(store,message.payload)
+          let value
+          if(config.archiveOnly) {
+            if(endpoint==='save') {
+              const x=message.payload,current=summaryState()
+              if(x.revision!==current.revision)throw Error('摘要设置已变化，请重新读取')
+              if(!['off','api'].includes(x.mode))throw Error('后台摘要请选择自定义 API 或关闭')
+              store.setHarnessSetting('dsh',x.mode,null,null,null,x.mode==='api'?x.api_ref:null)
+            }
+            value=summaryState()
+          } else value=endpoint==='read'?publicCompressionSettings(await dshCompressionSettings(store)):await saveDshCompression(store,message.payload)
           result={ok:true,value}
         }catch(error){result={ok:false,error:{code:'SUPERLCM_SETTINGS',message:error.message,details:{}}}}
         return Response.json({type:'server-response',rpcId:message.rpcId,result})
@@ -54,6 +65,7 @@ export async function apply(ctx,config={}) {
   const timer=setInterval(()=>{
     try {
       const active=selected();if(active===prior)return
+      if(config.archiveOnly){store.setIntegrationEnabled('dsh',active);prior=active;return}
       const document=readControls(controlsPath(store));if(!document)return
       store.db.exec('BEGIN IMMEDIATE')
       try {

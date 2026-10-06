@@ -83,11 +83,13 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS global_summary_settings(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
       CREATE TABLE IF NOT EXISTS summary_tuning(id INTEGER PRIMARY KEY CHECK(id=1), target_chars INTEGER NOT NULL, batch_size INTEGER NOT NULL, fanout INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS harness_summary_settings(harness TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','cli','codex-cli','api','agent')), model TEXT);
+      CREATE TABLE IF NOT EXISTS integrations(harness TEXT PRIMARY KEY,enabled INTEGER NOT NULL,revision INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS deleted_sessions(session TEXT PRIMARY KEY, deleted_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS compactions(session TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(session,ordinal));
       CREATE TABLE IF NOT EXISTS takeover_settings(id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, window INTEGER NOT NULL, previous TEXT);
       CREATE TABLE IF NOT EXISTS takeover_copies(session TEXT PRIMARY KEY, remaining INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS host_writers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS host_summary_claims(session TEXT PRIMARY KEY,batch_id TEXT NOT NULL,revision TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS takeover_runs(session TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, before INTEGER NOT NULL, after INTEGER NOT NULL);
     `)
     initializeEventCounts(this.db)
@@ -154,7 +156,7 @@ export class ClaudeStore {
     return {api_provider:null,api_url:null}
   }
   // Granularity applies to batches planned from now on; saved nodes keep their original ranges.
-  tuning() { return this.db.prepare('SELECT target_chars,batch_size,fanout FROM summary_tuning WHERE id=1').get() || {target_chars:12000,batch_size:32,fanout:4} }
+  tuning() { return this.db.prepare('SELECT target_chars,batch_size,fanout FROM summary_tuning WHERE id=1').get() || {target_chars:48000,batch_size:32,fanout:4} }
   setTuning({target_chars,batch_size=this.tuning().batch_size,fanout}) {
     const within=(n,lo,hi)=>Number.isSafeInteger(n)&&n>=lo&&n<=hi
     if (!within(target_chars,2000,48000) || !within(batch_size,2,64) || !within(fanout,2,8)) throw new Error('Unsupported summary granularity')
@@ -230,18 +232,26 @@ export class ClaudeStore {
   harnessKeyScope(harness,setting=this.harnessSetting(harness)) {return setting?.api_ref?'model:'+setting.api_ref:'harness:'+harness}
   clearHarnessSetting(harness) {this.harnessSetting(harness);this.db.prepare('DELETE FROM harness_summary_settings WHERE harness=?').run(harness);return null}
   harnessSettings() {return this.db.prepare(ClaudeStore.SETTING+' ORDER BY h.harness').all()}
+  integrationEnabled(harness) { return this.db.prepare('SELECT enabled FROM integrations WHERE harness=?').get(harness)?.enabled !== 0 }
+  setIntegrationEnabled(harness, enabled) {
+    this.db.prepare('INSERT INTO integrations VALUES(?,?,1) ON CONFLICT(harness) DO UPDATE SET enabled=excluded.enabled,revision=integrations.revision+1').run(harness,enabled?1:0)
+    if(!enabled) {
+      this.db.prepare('UPDATE host_writers SET until_ms=0 WHERE session IN (SELECT session FROM session_origins WHERE harness=?)').run(harness)
+      this.db.prepare("UPDATE leases SET until_ms=0 WHERE owner='host' AND session IN (SELECT session FROM session_origins WHERE harness=?)").run(harness)
+    }
+  }
+  integrationRevision(harness) { return this.db.prepare('SELECT enabled,revision FROM integrations WHERE harness=?').get(harness) || {enabled:1,revision:0} }
   effectiveSetting(session,env=process.env) {
     if(!this.source(session))throw new Error('Unknown session')
     const harness=this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness||'legacy'
-    // SuperLcm's DSH compaction plugin is its only summary writer, including when a user
-    // changes the global archive preference. Recall never starts a second AI.
-    if(harness==='dsh')return {mode:'off',model:null,scope:'compaction-plugin',harness}
+    if(!this.integrationEnabled(harness))return {mode:'off',model:null,scope:'disconnected',harness}
     const specific=harness!=='legacy'?this.harnessSetting(harness):null
     const choice=specific||this.globalSetting()
     const r=choice ? {...choice,scope:specific?'harness':'global',harness} : {mode:summaryMode(env),model:null,api_provider:null,api_url:null,scope:'environment',harness}
     // A model belongs to one tool's CLI, so only a tool's own setting (or the environment) names one.
     if(r.mode==='codex-cli')r.mode='cli'
     if(r.mode==='cli'&&r.scope==='global')r.model=null
+    if(harness==='dsh'&&!['api','off'].includes(r.mode))return {...r,mode:'off',model:null,scope:'needs-api'}
     return r
   }
   apiCredential(session,env=process.env) {
@@ -610,14 +620,23 @@ export class ClaudeStore {
   }
   eventRows(session) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? ORDER BY ordinal').all(session) }
   eventRowsFrom(session, start) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? AND ordinal>=? ORDER BY ordinal').all(session, start) }
-  nodeRows(session, level) { return this.db.prepare('SELECT n.* FROM nodes n WHERE n.session=? AND n.level=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.first').all(session, level) }
+  nodeRows(session, level) { return this.db.prepare("SELECT n.* FROM nodes n WHERE n.session=? AND n.level=? AND n.id NOT LIKE 'dsh-native-%' ORDER BY n.first").all(session, level) }
   node(session, id) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND id=?').get(session, id) }
-  addNode(node, { leaseOwner } = {}) {
+  addNode(node, { leaseOwner,validate } = {}) {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       if (leaseOwner && !this.ownsLease(node.session, leaseOwner)) throw new Error('Summary writer lost its lease; result not saved')
+      if(validate&&!validate())throw Error('Summary setting changed; result not saved')
       this.db.prepare('INSERT OR IGNORE INTO nodes VALUES(?,?,?,?,?,?,?,?,?)').run(node.session,node.id,node.level,node.first,node.last,JSON.stringify(node.children),node.summary,node.digest,node.model)
       if (this.db.prepare('SELECT changes() AS n').get().n) this.db.prepare('INSERT INTO node_fts(session,id,summary) VALUES(?,?,?)').run(node.session,node.id,node.summary)
+      if(node.sourceRecords) {
+        this.db.exec('CREATE TABLE IF NOT EXISTS dsh_node_sources(session TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,PRIMARY KEY(session,id,seq))')
+        const insert=this.db.prepare('INSERT OR IGNORE INTO dsh_node_sources VALUES(?,?,?)')
+        for(const seq of node.sourceRecords) {
+          if(!Number.isSafeInteger(seq)||seq<node.first||seq>node.last)throw Error('Invalid summary source record')
+          insert.run(node.session,node.id,seq)
+        }
+      }
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }

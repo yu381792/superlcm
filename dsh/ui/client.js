@@ -11,8 +11,17 @@ window.__ModuleLoader__.load({id:'superlcm',factory:require=>{
     const read=async(reset=false)=>{try{const next=await call('read',null);setSaved(next);if(reset||!dirty.current)setDraft(next);setError('')}catch(e){setError(e.message)}}
     R.useEffect(()=>{let stopped=false;read(true);const timer=setInterval(()=>{if(!stopped)read()},5000);return()=>{stopped=true;clearInterval(timer)}},[])
     const change=(key,value)=>{dirty.current=true;setDraft(d=>({...d,[key]:value}))}
-    const save=async()=>{setBusy(true);setError('');try{const next=await call('save',Object.fromEntries(fields.map(k=>[k,draft[k]])));dirty.current=false;setSaved(next);setDraft(next)}catch(e){setError(e.message)}finally{setBusy(false)}}
+    const save=async()=>{setBusy(true);setError('');try{const next=await call('save',draft.archive_only?{revision:draft.revision,mode:draft.setting.mode,api_ref:draft.setting.api_ref}:Object.fromEntries(fields.map(k=>[k,draft[k]])));dirty.current=false;setSaved(next);setDraft(next)}catch(e){setError(e.message)}finally{setBusy(false)}}
     if(!draft)return h('div',{className:'slcm-settings'},h('p',{role:error?'alert':'status'},error||'正在读取 SuperLcm 设置…'),h('button',{className:'slcm-btn',onClick:()=>read(true)},'重新读取'))
+    if(draft.archive_only)return h('div',{className:'slcm-settings','data-superlcm-settings':true},
+      h('p',{className:'slcm-status'},'自动归档、后台摘要和查询'),
+      h('p',{className:'slcm-help'},'上下文压缩由 dsh harness 自身负责。SuperLcm 的后台摘要只保存到档案，不替换聊天上下文。'),
+      h('div',{className:'slcm-fields'},h('label',{className:'slcm-field'},'摘要生成',h('select',{value:draft.setting.mode,disabled:busy,onChange:e=>{dirty.current=true;setDraft(d=>({...d,setting:{...d.setting,mode:e.target.value,api_ref:d.setting.api_ref||d.models[0]?.id}}))}},h('option',{value:'api'},'自定义 API'),h('option',{value:'off'},'关闭（摘要方式）'))),
+      draft.setting.mode==='api'?h('label',{className:'slcm-field'},'模型',h('select',{value:draft.setting.api_ref||'',disabled:busy,onChange:e=>{dirty.current=true;setDraft(d=>({...d,setting:{...d.setting,api_ref:e.target.value}}))}},h('option',{value:'',disabled:true},'选择已保存的摘要模型'),...draft.models.map(m=>h('option',{key:m.id,value:m.id},m.label)))):null),
+      !draft.models.length?h('p',{className:'slcm-help'},'请先在 SuperLcm 后台设置里添加摘要 API 模型。'):null,
+      h('p',{className:'slcm-help'},'每段摘要约 '+draft.target_chars.toLocaleString()+' 字符，原文完整保留。'),
+      error?h('p',{className:'slcm-error',role:'alert'},error):null,
+      h('div',{className:'slcm-actions'},h('button',{type:'button',className:'slcm-btn primary','data-superlcm-save':true,disabled:busy||draft.setting.mode==='api'&&!draft.setting.api_ref,onClick:save},busy?'保存中…':'保存'),h('button',{type:'button',className:'slcm-btn',disabled:busy,onClick:()=>{dirty.current=false;read(true)}},'重新读取')))
     const provider=draft.catalog.providers.find(p=>p.ref===draft.provider_ref),disabled=busy||!saved.controls_installed
     const numeric=(key,label,scale=1000)=>h('label',{className:'slcm-field',key},label,h('input',{type:'number','data-superlcm-field':key,value:draft[key]/scale,step:scale===1000?'0.001':'1',min:0,disabled,onChange:e=>change(key,Math.round(Number(e.target.value)*scale))}))
     const presets=(key,values)=>h('div',{className:'slcm-choice',role:'radiogroup','aria-label':key==='softActiveTokens'?'压缩门槛':'最近原文保留'},...values.map(value=>h('button',{type:'button',role:'radio','aria-checked':draft[key]===value,key:value,disabled,onClick:()=>{dirty.current=true;setDraft(d=>({...d,[key]:value,...key==='softActiveTokens'&&d.hardActiveTokens<=value?{hardActiveTokens:Math.round(value*1.4)}:{}}))}},value/1000+'K')))

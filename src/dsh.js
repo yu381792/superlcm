@@ -33,6 +33,7 @@ function initialize(store) {
 }
 export function captureDshPacket(store, packet, {clientKind='hook'}={}) {
   const id = packet?.header?.id, session = dshSessionKey(id)
+  if (clientKind !== 'import' && !store.integrationEnabled('dsh')) return {session,skipped:'disconnected'}
   if (store.isDeleted(session) && clientKind !== 'import') return { session, skipped: 'deleted' }
   if (!Array.isArray(packet.records) || packet.records.length > 1000) throw Error('DSH capture requires at most 1000 events per batch')
   initialize(store)
@@ -108,8 +109,7 @@ export function captureDshPacket(store, packet, {clientKind='hook'}={}) {
     } catch (error) { store.db.exec('ROLLBACK'); throw error }
     const first = store.db.prepare("SELECT preview FROM events WHERE session=? AND preview LIKE 'user:%' ORDER BY ordinal LIMIT 1").get(session)
     store.setMetadata(session, { harness: 'dsh', externalId: id, name: packet.title || first?.preview.replace(/^user:\s*/, '').slice(0, 100) || id, nameSource: packet.title ? 'native' : 'derived' })
-    // DSH owns summary generation. Archive capture never launches another model.
-    store.db.prepare("INSERT INTO harness_summary_settings(harness,mode,model) VALUES('dsh','off',NULL) ON CONFLICT(harness) DO UPDATE SET mode='off'").run()
+    // Capture preserves the user's independent archive-summary preference.
     syncDshSummaries(store, session, id)
   }
   store.markClient('dsh', clientKind)

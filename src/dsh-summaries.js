@@ -7,7 +7,8 @@ import { semanticKind, semanticFrontier, semanticLevel } from '../dsh/tree-seman
 
 const hasTable = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
 export function dshVisibleNodes(db, alias = 'n') {
-  return hasTable(db, 'dsh_shared_nodes') ? `NOT EXISTS (SELECT 1 FROM dsh_shared_nodes v WHERE v.session=${alias}.session AND v.id=${alias}.id AND v.visible=0)` : '1'
+  const visible=hasTable(db,'dsh_shared_nodes')?`NOT EXISTS (SELECT 1 FROM dsh_shared_nodes v WHERE v.session=${alias}.session AND v.id=${alias}.id AND v.visible=0)`:'1'
+  return visible
 }
 
 export function dshRecordCategory(event) {

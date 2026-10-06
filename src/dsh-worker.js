@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline'
 import { ClaudeStore } from './store.js'
 import { captureDshPacket } from './dsh.js'
 import { call } from './mcp.js'
+import { scheduleSummary } from './summary-scheduler.js'
 const store = new ClaudeStore()
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
   let id
@@ -19,6 +20,11 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       if (!['lcm_continue','lcm_find','lcm_outline','lcm_read'].includes(request.name)) throw Error('DSH archive only exposes recall tools')
       result = await call(store, request.name, request.args)
     } else if (request.method === 'capture') result = captureDshPacket(store, request.packet)
+    else if(request.method==='summarize') {
+      if(!request.session?.startsWith('dsh-')||!store.source(request.session))throw Error('Unknown DSH conversation')
+      const setting=store.effectiveSetting(request.session)
+      result={scheduled:scheduleSummary(store,request.session,setting.mode,setting.model)}
+    }
     else throw Error('Unknown DSH archive operation')
     process.stdout.write(JSON.stringify({ id, result }) + '\n')
   } catch (error) { process.stdout.write(JSON.stringify({ id, error: error.message }) + '\n') }

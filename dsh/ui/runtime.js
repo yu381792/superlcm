@@ -7,9 +7,9 @@ export const name = 'superlcm'
 // One public DSH component owns the three internal responsibilities. The
 // archive and settings bridge never register another compaction service.
 export async function apply(ctx, config = {}) {
-  await mountCompactionOwner(ctx, config)
+  if(config.archiveOnly!==true)await mountCompactionOwner(ctx, config)
   const archive = ctx.plugin(Archive, { archiveHome: config.archiveHome })
   await archive.await()
-  const settings = ctx.plugin(Settings, { archiveHome: config.archiveHome })
+  const settings = ctx.plugin(Settings, { archiveHome: config.archiveHome,archiveOnly:config.archiveOnly })
   await settings.await()
 }

@@ -65,13 +65,13 @@ test('DSH connection needs matching live engine and archive, not old summary rec
     assert.ok(!(JSON.stringify(await inspectDsh(store,opts))).includes('secret'))
   } finally { version.close(); archive.close(); store.close() }
 })
-test('console exposes compression status without spawning models and refuses a second DSH writer', async () => {
+test('console exposes compression status without spawning models and supports independent DSH background settings', async () => {
   const store = fixture(), web = await startWeb({ store, discovery: async () => [], catalog: async () => [], spawnWorker: () => { throw Error('must not spawn') } })
   try {
     const data = await fetch(web.url+'api/compression').then(r => r.json())
     assert.deepEqual(data.runtimes,[]); assert.equal(data.capabilities.dsh.supported,true)
-    const r = await fetch(web.url+'api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'harness',harness:'dsh',mode:'api',api_url:'https://example.test',model:'fixture'})})
-    assert.equal(r.status,400); assert.match((await r.json()).error,/SuperLcm 插件管理/)
+    const r = await fetch(web.url+'api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'harness',harness:'dsh',mode:'api',api_provider:'openai',api_url:'http://127.0.0.1:9/v1',model:'fixture'})})
+    assert.equal(r.status,200); assert.equal((await r.json()).mode,'api')
   } finally { await web.close() }
 })
 

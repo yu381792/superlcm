@@ -35,7 +35,7 @@ function ownDshFile(name,file){
   if(!new RegExp('/dsh/'+file+'\\.js$').test(String(name).replaceAll('\\','/')))return false
   try{const path=String(name).startsWith('file:')?fileURLToPath(name):name;return JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).name==='superlcm-mcp'}catch{return false}
 }
-export const isDshEngine=e=>['superlcm','superlcm/runtime','superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(e.name)||ownDshFile(e.name,'engine')
+export const isDshEngine=e=>(!e.config?.archiveOnly&&['superlcm','superlcm/runtime'].includes(e.name))||['superlcm-mcp/dsh-engine','SuperLcm','@deepseek-ai/dsh-compaction-basic'].includes(e.name)||ownDshFile(e.name,'engine')
 export const isDshArchive=e=>['superlcm','superlcm/runtime','superlcm-mcp/dsh'].includes(e.name)||ownDshFile(e.name,'archive')
 export function inspectDshTree(tree) {
   const entries = dshEntries(tree)
@@ -44,6 +44,8 @@ export function inspectDshTree(tree) {
   const entry = engines.find(x => x.name!=='@deepseek-ai/dsh-compaction-basic')
   const engine=entry?{...entry,config:{...entry.config,...readControls(entry.config?.controlFile)?.config}}:undefined
   const presetLeaks=presetCompactionLeaks(tree).length
+  const archiveOnly=archives.some(e=>e.config?.archiveOnly===true)
+  if(archiveOnly)return {configured:archives.length===1&&!entry&&engines.some(e=>e.name==='@deepseek-ai/dsh-compaction-basic'&&e.config?.auto!==false),archive_only:true,preset_compaction_leaks:0,engines:engines.length,archives:archives.length,enabled:false,route_ready:true,model:null}
   return { configured: engines.length === 1 && !!engine && archives.length === 1 && presetLeaks===0,
     preset_compaction_leaks:presetLeaks,
     engines: engines.length, archives: archives.length, enabled: engine?.config?.auto === true,
@@ -68,14 +70,14 @@ export async function inspectDsh(store, { env = process.env, runCommand = run, p
       if (!bin || !parse) { profiles.push({ profile: name, configured: false, error: '缺少 DSH 命令或配置解析器，无法核实压缩配置' }); return }
       const output = await runCommand(command, [...argsPrefix,'--profile', name, '--dump-config'], { ...commandOptions(env), timeout: 5000 })
       const config = inspectDshTree(parse(output.stdout))
-      const globalEngine=dshEntries(parse(output.stdout)).find(e=>['superlcm-global','superlcm-global-compaction'].includes(e.id)&&isDshEngine(e))
+      const globalEngine=dshEntries(parse(output.stdout)).find(e=>['superlcm-global','superlcm-global-compaction'].includes(e.id)&&(isDshEngine(e)||isDshArchive(e)))
       if(globalEngine)try{
         if(['superlcm','superlcm/runtime'].includes(globalEngine.name))installed=JSON.parse(readFileSync(join(root,'node_modules/superlcm/package.json'),'utf8')).version
         else {const path=globalEngine.name.startsWith('file:')?fileURLToPath(globalEngine.name):globalEngine.name;installed=JSON.parse(readFileSync(join(dirname(dirname(path)),'package.json'),'utf8')).version}
       }catch{}
       const live = snapshot.runtimes.filter(r => r.profile === name && r.live)
-      const engine = live.find(r => r.kind === 'engine'), archive = live.find(r => r.kind === 'archive' && r.pid === engine?.pid)
-      const running = !!installed && config.configured && !!engine && !!archive && engine.version === installed && archive.version === installed
+      const engine = live.find(r => r.kind === 'engine'), archive = live.find(r => r.kind === 'archive' && (config.archive_only||r.pid === engine?.pid))
+      const running = !!installed && config.configured && !!archive && archive.version===installed && (config.archive_only||!!engine&&engine.version===installed)
       const state = !config.configured ? 'misconfigured' : !config.enabled ? 'disabled' : !config.route_ready ? 'missing-route' : !running ? 'awaiting-runtime' : !engine.enabled || !engine.route_ready ? 'runtime-mismatch' : 'enabled'
       profiles.push({ profile: name, connected:connected||!!globalEngine, global:!!globalEngine, ...config, installed_version: installed, running, state:connected||globalEngine?state:'not-connected', runtime_version: engine?.version || null })
     } catch { profiles.push({ profile: name, configured: false, state: 'misconfigured', error: 'DSH 配置读取失败；请在该界面检查插件配置' }) }

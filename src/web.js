@@ -10,6 +10,7 @@ import { probeClaudeConnection } from './claude-connection.js'
 import { localConversations, indexLocalConversation } from './local-conversations.js'
 import { testHarness } from './diagnostics.js'
 import { setupPreview, publicPreview, applySetup } from './setup.js'
+import { disconnectPreview,applyDisconnect } from './disconnect.js'
 import { probeMcp } from './mcp-probe.js'
 import { page } from './web-page.js'
 import { ClaudeStore } from './store.js'
@@ -48,7 +49,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local Web port')
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
   // One-off catch-up methods this computer can actually run for a conversation.
-  const backends = id => store.metadata(id).harness === 'dsh' ? [] : [...(writerTool(store.metadata(id).harness, env) ? ['cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
+  const backends = id => [...(writerTool(store.metadata(id).harness, env) ? ['cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
   const routes = {
     'GET /api/conversations': url => ({ ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() }),
     'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), writer_tool: writerTool(store.metadata(id).harness, env), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id), estimate: summaryEstimate(store, id) } },
@@ -88,6 +89,8 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     'POST /api/connection-check': async req => { const x = await body(req); return x.harness === 'claude-code' ? claudeProbe(store, { env }) : testHarness(store, x.harness, { env }) },
     'POST /api/setup-preview': async req => { const x = await body(req); return publicPreview(await setupPreview(store, x.harness, { env,provider_ref:x.provider_ref,provider:x.provider,model:x.model })) },
     'POST /api/setup-apply': async req => { const x = await body(req); if (x.confirm !== true) throw Error('请先预览并确认接入'); return applySetup(store, x.harness, x.revision, { env,provider_ref:x.provider_ref,provider:x.provider,model:x.model, approveHooks: x.approve_hooks === true }) },
+    'POST /api/disconnect-preview': async req=>{const x=await body(req);return publicPreview(await disconnectPreview(store,x.harness,{env}))},
+    'POST /api/disconnect-apply': async req=>{const x=await body(req);if(x.confirm!==true)throw Error('请先预览并确认取消接入');return applyDisconnect(store,x.harness,x.revision,{env})},
     'GET /api/models': url => catalog(url.searchParams.get('backend'), { env }),
     // Kept fast: no tool detection here, so saving a choice on a card answers at once.
     'GET /api/settings': async () => {
@@ -129,7 +132,7 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       const x = await body(req)
       if (x.scope !== 'global' && x.scope !== 'harness') throw new Error('Invalid settings scope')
       if (x.scope === 'harness' && !definitions.some(d => d.id === x.harness) && !store.harnessSetting(x.harness)) throw new Error('Unknown tool')
-      if (x.scope === 'harness' && x.harness === 'dsh') throw new Error('dsh harness 的摘要与压缩由 SuperLcm 插件管理，请在设置里的压缩页面修改')
+      if(x.harness==='dsh'&&['cli','agent','codex-cli'].includes(x.mode))throw Error('dsh harness 后台摘要请选择自定义 API')
       if (x.scope === 'harness' && x.mode === 'inherit') return store.clearHarnessSetting(x.harness)
       if (x.scope === 'harness' && x.mode === 'api' && x.api_ref) {
         const result = store.setHarnessSetting(x.harness, 'api', null, null, null, x.api_ref)

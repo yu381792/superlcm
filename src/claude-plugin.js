@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findCli, paths, runCommand as run, commandOptions } from './runtime.js'
 import { configFiles, readJson, mcpRegistration, ownMcp, hookInspection, script } from './harness.js'
+import { enableSummaryOnly } from './integration.js'
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 export const PACKAGE_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
 const MARKETPLACE = (() => { try { return JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'marketplace.json'), 'utf8')).name } catch { return 'superlcm' } })()
@@ -79,5 +80,8 @@ export async function pluginAction(store, action, { env = process.env, runComman
     }
     return { action, backups: backups.filter(Boolean), legacy: await claudeLegacy(store, { env, runCommand }) }
   } else throw Error('Unknown plugin action')
-  return { action, plugin: await claudePlugin({ env, runCommand }) }
+  const plugin=await claudePlugin({env,runCommand})
+  if(plugin && !plugin.enabled)await exec(env,runCommand,['plugin','enable',plugin.id])
+  enableSummaryOnly(store,'claude-code',env)
+  return { action, mode:'summary-only',plugin:await claudePlugin({env,runCommand}) }
 }

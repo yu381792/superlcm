@@ -15,12 +15,12 @@ From 0.5.11, background writers and Claude/DSH compaction share rules for chrono
 | Harness | Archive, summaries and continuation | Compaction integration | How to connect |
 |---|---|---|---|
 | Claude Code | Supported | SuperLcm takeover, enabled explicitly | Claude plugin or console |
-| Codex | Supported | No SuperLcm takeover yet | Console: MCP tools and capture hooks |
-| Hermes | Supported | No SuperLcm takeover yet | Console: Hermes configuration and capture hooks |
-| Pi | Supported | No SuperLcm takeover yet | Console: auto-discovered extension |
-| dsh harness | Supported | SuperLcm plugin compaction takeover, shared originals and summaries | Console: choose a configured model and connect globally |
+| Codex | Supported | Native host compaction | Console: MCP tools and capture hooks |
+| Hermes | Supported | Native host compaction | Console: Hermes configuration and capture hooks |
+| Pi | Supported | Native host compaction | Console: auto-discovered extension |
+| dsh harness | Supported | Native host compaction, shared archive and background summaries | Console: connect globally and choose a summary API |
 
-Archiving and generating summaries are available across all five adapters. Replacing the active model context currently has two integrations: **SuperLcm takeover in Claude Code and dsh harness**. The console shows configuration and runtime status separately.
+All five connections default to archiving, background summaries and recall, with compaction owned by the host. Claude Code takeover remains an explicit optional setting; installing or updating its connection turns it off. The default DSH component never mounts a compaction engine.
 
 Start with the [installation package](docs/RELEASE.md), run `superlcm web`, and choose your tool under **Connect**. Claude Code users can also [install the Claude plugin](#install-as-a-claude-plugin) and open `/superlcm:console`. For dsh harness, choose its configured provider and model, connect once globally, then reload dsh harness; see [dsh harness setup](docs/DSH.md).
 
@@ -81,11 +81,11 @@ Both sides start with the same 18 messages and a context window that holds six. 
 
 ## Who writes the summaries
 
-**The SuperLcm plugin takes over dsh harness compaction.** After connecting, configure the model, switch, thresholds and retention under Plugins → SuperLcm in DSH. The SuperLcm console’s Settings → Compaction contains Claude Code controls only. The plugin generates layered summaries, replaces older context and archives originals and summaries, without starting a second summary writer. The choices below apply to Claude Code, Codex, Hermes and Pi.
+**dsh harness owns compaction; SuperLcm writes independent background summaries.** Select a saved API on its connection card or under Plugins → SuperLcm in DSH. Summaries enter the archive without replacing the active context. Migration and disconnect verify native compaction and preserve configured chat models.
 
 Import existing DSH sessions under Connect → dsh harness → Import past conversations. Complete tool records are retained, no model is called, and repeated imports are deduplicated.
 
-Chosen per tool in the console: **the agent itself** (the default; it has just been through that part and writes from memory), **the tool's own CLI** in a short background run with the account and model you already use (for Claude Code 2.1.286+ with the plugin, the model is called from inside the conversation instead; Haiku is a good choice), **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
+Chosen per tool in the console: **the agent itself** (optional), **the tool's own CLI** (the default) in a short background run with the account and model you already use (for Claude Code 2.1.286+ with the plugin, the model is called from inside the conversation instead; Haiku is a good choice), **your own API** (any Anthropic or OpenAI-compatible endpoint, including a gateway on your own computer), or **off** (everything is still saved and searchable).
 
 ## Compaction vs. an archive
 
@@ -117,7 +117,7 @@ Open `http://127.0.0.1:8791/` (no login; it only listens on this computer), then
 
 1. **接入 (Connect)** — pick Claude Code, Codex, Hermes, Pi or dsh harness and confirm. SuperLcm registers its MCP server and capture hooks (for Pi, one extension file), backs up the config first, and verifies it loads. For dsh harness, choose its configured provider and model; the integration is global. Reload dsh harness after installation. Codex and Hermes want new hooks approved once; a checkbox in the dialog (on by default) does that for you through each tool's own mechanism, so no terminal step is needed.
 2. **对话 (Conversations)** — browse, search and read every stored conversation and its summary tree. Click **换个工具继续** to get the one-line handoff for another tool.
-3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (the default: it writes each part from memory right after it happens, which costs almost nothing), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width, and turn on the Claude Code compaction takeover under Compaction.
+3. **设置 (Settings)** — choose who writes summaries: the AI inside the conversation (optional), a separate background run of the conversation's own tool (Claude Code, Codex, Hermes or Pi, with whatever account and model you set up there, pickable per tool), or a custom API that SuperLcm calls directly (any Anthropic or OpenAI-compatible endpoint). Tune segment size and merge width, and turn on the Claude Code compaction takeover under Compaction.
 
 Terminal equivalents: `superlcm setup dsh --provider <provider> --model <model> --apply`, `node src/cli.js setup codex --apply`, `node src/cli.js setup claude-code --apply`, `node src/cli.js summarize <conversation> --backend cli`.
 
@@ -144,3 +144,5 @@ Every tool is marked with MCP annotations: the four lookups are read-only, the t
 - License: [MIT](LICENSE). Copyright 2026 ygc381792 and contributors. Free to use, modify and redistribute, including commercially; keep the copyright notice.
 
 Claude, Claude Code, Codex, Hermes and Pi names and logos belong to their respective owners and are used only to identify compatible tools. SuperLcm is an independent project and is not affiliated with or endorsed by them.
+
+Segments default to about 48,000 characters, with four children per condensed summary. Manage connection → Disconnect stops automatic capture and summaries, removes recall registration and keeps all stored originals and summaries. Reload existing sessions afterwards. Import and startup history replay never start model calls.

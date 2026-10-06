@@ -73,9 +73,9 @@ test('a pending summary renews its lease and does not allow a second billed call
   const { store } = fixture(t, 2)
   const other = new ClaudeStore(store.dir); t.after(() => other.close())
   let release, calls = 0; const gate = new Promise(r => { release = r })
-  const first = buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2, leaseDurationMs: 120, leaseHeartbeatMs: 15,
+  const first = buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2, leaseDurationMs: 1500, leaseHeartbeatMs: 100,
     summarize: async () => { calls++; await gate; return 'Synthetic factual summary' } })
-  await new Promise(r => setTimeout(r, 190))
+  await new Promise(r => setTimeout(r, 1800))
   const second = await buildHierarchy(other, 'fixture', { model: 'synthetic', batchSize: 2, summarize: async () => { calls++; return 'duplicate' } })
   assert.equal(second.busy, true)
   release(); assert.equal((await first).created, 1); assert.equal(calls, 1)
@@ -123,7 +123,7 @@ test('lease replacement during final original verification is fenced inside the 
   assert.equal(other.ownsLease('fixture', 'replacement-writer'), true)
 })
 
-test('DSH exposes no generic summary backend and rejects direct generic generation', async t => {
+test('DSH supports independent API summaries while no CLI backend is guessed', async t => {
   const { store } = fixture(t, 4, true), nativeId = 'dsh-fixture'
   const { session } = captureDshPacket(store, { header: { id: nativeId }, records: [{ role: 'user', content: 'Synthetic DSH original', dsh_session: nativeId, event: { seq: 0, type: 'user/message', data: {} } }] })
   let spawns = 0
@@ -134,7 +134,7 @@ test('DSH exposes no generic summary backend and rejects direct generic generati
   assert.equal(detail.writer_tool, null)
   const response = await fetch(web.url + 'api/summarize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session, backend: 'cli' }) })
   assert.equal(response.status, 400); assert.equal(spawns, 0)
-  await assert.rejects(buildHierarchy(store, session, { model: 'synthetic', summarize: async () => 'unused' }), /owned by the compaction plugin/)
+  const result=await buildHierarchy(store,session,{model:'synthetic',summarize:async()=>{throw Error('no text, no call')}});assert.equal(result.created,0)
 })
 
 test('legacy settings reject reusing a key across endpoints and clear it on loopback changes', async t => {

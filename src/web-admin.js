@@ -19,18 +19,18 @@ function dshCompressionLabel(h) {
 // Short badge plus a plain-language detail line, both from real evidence.
 function connState(h) {
   const e = h.connection_evidence, tool = toolName(h.harness)
+  if(h.integration_enabled===false)return {cls:'off',badge:t('未接入'),text:t('已取消接入，已有档案和摘要保留')}
   if (h.harness === 'dsh' && admin.outdated) return {cls:'warn',badge:t('需重启后台'),text:t('页面已更新，后台仍是旧版；重新启动 SuperLcm 后才能检测和接入 dsh harness')}
   if (!h.supported) return { cls: 'off', badge: t('仅导入'), text: h.local_conversations ? t('暂不支持自动接入，可导入本机对话') : t('暂不支持自动接入') }
   if (!h.bin) return { cls: 'off', badge: t('未安装'), text: t('未找到 {tool} 命令行', { tool }) }
   if (h.harness === 'dsh') {
-    if (!h.configuration_matches) return { cls: 'warn', badge: h.configured?t('未就绪'):t('未接入'), text: dshCompressionLabel(h) }
-    return h.dsh.profiles.some(p => p.running) ? { cls: 'on', badge: t('已接入'), text: dshCompressionLabel(h) }
-      : { cls: 'warn', badge: t('待加载'), text: dshCompressionLabel(h) }
+    if(!h.configuration_matches)return {cls:'warn',badge:h.configured?t('需更新'):t('未接入'),text:t('接入后，自动归档并在后台生成摘要')}
+    return h.dsh.profiles.some(p=>p.running)?{cls:'on',badge:t('已接入'),text:t('自动归档与后台摘要已接入')}:{cls:'warn',badge:t('待加载'),text:t('已写入配置，重新加载 dsh harness 后生效')}
   }
   const c = h.claude
   if (c?.plugin && !c.plugin.enabled) return { cls: 'warn', badge: t('已停用'), text: t('SuperLcm 插件装了，但在 Claude Code 里被停用') }
   if (c?.plugin?.outdated) return { cls: 'warn', badge: t('需更新'), text: t('插件是 v{a}，有新版 v{b}', { a: c.plugin.version, b: c.plugin.latest }) }
-  if (c && !c.plugin) return h.configured ? { cls: 'warn', badge: t('建议改装'), text: t('正在用旧方式（MCP + 钩子）存对话；装成插件才能接管压缩') } : { cls: 'warn', badge: t('未接入'), text: t('装上 SuperLcm 插件后，新对话会自动存入') }
+  if (c && !c.plugin) return h.configured ? { cls: 'warn', badge: t('建议改装'), text: t('正在用 MCP 和钩子归档；可在管理接入中更新为插件') } : { cls: 'warn', badge: t('未接入'), text: t('接入后，新对话会自动存入 SuperLcm') }
   if (!h.configuration_matches) return h.configured ? { cls: 'warn', badge: t('需更新'), text: t('点「管理接入」更新一次，以后 {tool} 升级不会影响 SuperLcm', { tool }) } : { cls: 'warn', badge: t('未接入'), text: t('接入后，新对话会自动存入 SuperLcm') }
   if (h.capture_stale) return { cls: 'warn', badge: t('没在存'), text: h.harness === 'codex' ? t('最近的 Codex 对话没有存进来，多半是 Codex 在等你允许钩子。到「管理接入」检查并更新接入') : t('最近的 {tool} 对话没有存进来。点「管理接入」看看哪里不对', { tool }) }
   if (h.node_borrowed) return { cls: 'warn', badge: t('已接入'), text: t('借用 {owner} 自带的 node 运行；{owner} 升级后若失灵，点「管理接入」即可恢复', { owner: h.node_borrowed }) }
@@ -63,8 +63,8 @@ function renderTools() {
     const rows = [[t('状态'), esc(s.text)], [t('已存对话'), count ? t('{n} 个', { n: fmt(count) }) : '<span class="muted">' + t('暂无') + '</span>']]
     rows.push(...writerRows(h))
     if (h.claude) rows.push(...claudeRows(h))
-    else if (h.harness === 'dsh') rows.push([t('压缩接管'), '<span>' + esc(dshCompressionLabel(h)) + '</span>'])
-    else rows.push([t('压缩接管'), '<span class="muted">' + (h.compression?.mode === 'summary-only' ? t('当前仅摘要和接续，尚未接管压缩') : t('尚未实现接管')) + '</span>'])
+    const takeover=h.harness==='claude-code'?admin.settings?.takeover.enabled:h.harness==='dsh'&&h.dsh?.profiles.some(p=>p.enabled&&!p.archive_only)
+    rows.push([t('上下文压缩'),'<span class="muted">'+(takeover?t('SuperLcm 接管已开启'):t('由 {tool} 自身负责',{tool:toolName(h.harness)}))+'</span>'])
     return '<article class="tcard' + (h.detected ? '' : ' dim') + '"><header class="tc-h">' + mark(h.harness, 'lg') + '<div class="tc-name"><div class="tn">' + esc(toolName(h.harness)) + '</div>' + (h.detected ? '' : '<div class="tv">' + t('本机未检测到') + '</div>') + '</div><span class="state ' + s.cls + '">' + esc(s.badge) + '</span></header>' +
       '<dl class="tc-kv">' + rows.map(([k, v]) => '<div><dt>' + k + '</dt><dd>' + v + '</dd></div>').join('') + '</dl>' +
       (buttons ? '<footer class="tc-f">' + buttons + '</footer>' : '') + '</article>'
@@ -104,14 +104,15 @@ function openConnectionManager(harness) {
     const configured = h.claude ? !!h.claude.plugin : h.configured
     overlay('<div class="modal" role="dialog" aria-labelledby="connectionTitle"><div class="card"><div class="card-h"><h3 id="connectionTitle">' + t('管理接入') + ' · ' + esc(toolName(harness)) + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
       '<p><span class="state ' + s.cls + '">' + esc(s.badge) + '</span></p><p>' + esc(s.text) + '</p>' +
-      (harness === 'dsh' ? '<p class="muted">' + t('只有运行中的压缩引擎和归档插件都回报状态，才会显示已接管。更新插件后需要重新加载 dsh harness。') + '</p>' : '') +
-      '<div class="actions"><button type="button" class="btn primary" id="manageApply">' + t(configured ? '更新接入' : '接入') + '</button><button type="button" class="btn" id="manageCheck">' + t('检查接入') + '</button><button type="button" class="btn" data-close>' + t('关闭') + '</button></div></div></div></div>', root => {
+      '<p class="muted">'+t('默认接入归档、后台摘要和查询，压缩由工具自身负责。')+'</p>'+
+      '<div class="actions"><button type="button" class="btn primary" id="manageApply">' + t(configured ? '更新接入' : '接入') + '</button><button type="button" class="btn" id="manageCheck">' + t('检查接入') + '</button>'+(h.configured&&h.integration_enabled!==false||h.claude?.plugin?.enabled?'<button type="button" class="btn" id="manageDisconnect">'+t('取消接入')+'</button>':'')+'<button type="button" class="btn" data-close>' + t('关闭') + '</button></div></div></div></div>', root => {
       root.querySelector('#manageCheck').onclick = event => act(async () => { await loadHarnesses(); render(); toast(t('已重新检查')) }, event.currentTarget)
       root.querySelector('#manageApply').onclick = event => {
         if (harness === 'dsh') return openDshSetup()
         if (h.claude) return pluginAct(configured ? 'update' : 'install', event.currentTarget).then(render)
         return openSetup(harness)
       }
+      root.querySelector('#manageDisconnect')?.addEventListener('click',()=>openDisconnect(harness))
     })
   }
   render()
@@ -124,11 +125,6 @@ function moduleSupport(c) {
 function claudeRows(h) {
   const c = h.claude, rows = []
   rows.push([t('接入方式'), c.plugin ? t('Claude 插件 · v{v}', { v: esc(c.plugin.version || '?') }) : h.configured ? t('旧方式：MCP + 钩子') : '<span class="muted">' + t('尚未安装插件') + '</span>'])
-  const tk = admin.settings?.takeover
-  if (tk) {
-    const where = moduleSupport(c).map(([name, v, ok]) => '<span class="' + (ok ? 'ok' : 'no') + '">' + name + ' ' + esc(v) + (ok ? '' : ' · ' + t('待更新')) + '</span>').join('')
-    rows.push([t('压缩接管'), '<div class="tk-cell"><button type="button" class="link" data-goto-compact>' + (tk.enabled ? t('已打开 · {w}', { w: kfmt(tk.window) }) : t('未打开')) + '</button>' + (tk.enabled && where ? '<span class="tk-where">' + where + '</span>' : '') + '</div>'])
-  }
   if (c.plugin?.enabled && (c.legacy?.hooks || c.legacy?.mcp)) rows.push([t('旧接入'), '<span class="muted">' + t('还留着旧的钩子/MCP 登记，已自动停用') + '</span> <button type="button" class="link" data-plugin="cleanup">' + t('清理') + '</button>'])
   return rows
 }
@@ -304,13 +300,13 @@ $('#saveWriter').onclick = () => act(async () => {
 }, $('#saveWriter'))
 // Each tool picks its own summary writer on its card; a second row picks the model where there is a choice.
 function writerRows(h) {
-  if (h.harness === 'dsh') return [[t('摘要生成'), t('SuperLcm 插件生成，使用 DSH 已配置模型')]]
   const s = admin.settings
   if (!s) return []
   const x = s.settings.find(y => y.harness === h.harness)
   if (!h.supported && !h.detected && !x) return []
-  const mode = x ? x.mode : s.global.mode, rows = []
-  rows.push([t('摘要生成'), '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '">' + WRITERS.map(([id, label]) => '<option value="' + id + '"' + (mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>'])
+  const savedMode=x?x.mode:s.global.mode,mode=h.harness==='dsh'&&!['api','off'].includes(savedMode)?'off':savedMode,rows=[]
+  const writers=h.harness==='dsh'?WRITERS.filter(w=>['api','off'].includes(w[0])):WRITERS
+  rows.push([t('摘要生成'), '<select aria-label="' + t('摘要生成') + '" data-tool="' + esc(h.harness) + '">' + writers.map(([id, label]) => '<option value="' + id + '"' + (mode === id ? ' selected' : '') + '>' + label + '</option>').join('') + '</select>'])
   if (mode === 'cli' && h.bin) rows.push([t('模型'), '<select aria-label="' + t('模型') + '" data-model="' + esc(h.harness) + '"><option value="' + esc(x?.model || '') + '">' + esc(x?.model || t('跟随 {tool} 当前模型', { tool: toolName(h.harness) })) + '</option></select>'])
   if (mode === 'cli' && h.harness === 'claude-code' && h.claude?.plugin?.enabled) rows.push(['', '<span class="muted">' + t('Claude Code 2.1.286+ 在对话里直接调用这个模型，不另开会话；对话结束后剩下的交给后台命令行补完') + '</span>'])
   if (mode === 'api') {

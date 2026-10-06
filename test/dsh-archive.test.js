@@ -132,7 +132,7 @@ test('DSH coverage counts exact original surface messages, not metadata or previ
     assert.deepEqual(stats.latest_tail, { from: 8, to: 10, records: 2, ranges: stats.unsummarized_ranges })
     assert.deepEqual(store.outline(session).unsummarized, stats.latest_tail)
     for (const key of ['records', 'raw_records', 'summarized_records', 'unsummarized_records', 'unsummarized_ranges', 'latest_tail']) assert.deepEqual(listed[key], stats[key])
-    assert.equal(listed.summary_mode, 'compaction-plugin')
+    assert.equal(listed.summary_mode, 'off')
   } finally { native.close(); store.close() }
 })
 

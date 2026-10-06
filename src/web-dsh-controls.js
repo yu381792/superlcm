@@ -14,6 +14,7 @@ function dshSettingsStatus() {
 function renderDshControls() {
   const root=$('#dshCompressionSettings'),value=dshControls.value,draft=dshControls.draft
   if(!value){root.innerHTML='<p class="muted">'+esc(dshControls.error||t('正在读取压缩设置…'))+'</p><button class="btn" type="button" id="dshSettingsConnect">'+t('去接入')+'</button>';root.querySelector('button').onclick=()=>show('connect');return}
+  if(value.archive_only){root.innerHTML='<p class="desc">'+t('由 dsh harness 自身负责上下文压缩。SuperLcm 只归档和在后台生成摘要，摘要模型在接入页面设置。')+'</p><button class="btn" type="button" id="dshSummarySettings">'+t('设置后台摘要')+'</button>';root.querySelector('button').onclick=()=>show('connect');return}
   const disabled=dshControls.busy||!value.controls_installed,providers=value.catalog.providers,selected=providers.find(p=>p.ref===draft.provider_ref)
   const ratio=draft.softActiveTokens>0?Math.round(draft.minRetainTokens/draft.softActiveTokens*10000)/100:0
   root.innerHTML='<label class="toggle-row"><span><b>'+t('由 SuperLcm 接管压缩')+'</b><span>'+t('后台压缩旧内容，保留近期原文；关闭后继续存档')+'</span></span><span class="switch"><input type="checkbox" id="dshControlsOn" role="switch"'+(draft.enabled?' checked':'')+(disabled?' disabled':'')+'><i></i></span></label>'+

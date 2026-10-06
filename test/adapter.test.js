@@ -143,7 +143,7 @@ test('MCP modern discovery, legacy handshake and tools',fixture(async ({store,di
   assert.equal(tools.length,6)
   assert.deepEqual(tools.map(t=>t.annotations.readOnlyHint),[true,true,true,true,false,false]);assert.ok(tools.every(t=>t.annotations.destructiveHint===false&&t.annotations.openWorldHint===false))
   const legacyListed=(await send({jsonrpc:'2.0',id:6,method:'tools/list',params:{}})).result
-  assert.deepEqual(legacyListed.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read','lcm_summary_task','lcm_summary_submit'],'in-conversation summaries are the default')
+  assert.deepEqual(legacyListed.tools.map(t=>t.name),['lcm_continue','lcm_find','lcm_outline','lcm_read'],'background summaries are the default')
   assert.equal(legacyListed.ttlMs,undefined)
   assert.equal(legacyListed.cacheScope,undefined)
   assert.deepEqual(await call(store,'lcm_find'),{conversations:[],total:0})
@@ -276,7 +276,7 @@ test('duplicate names remain ambiguous; source identity is returned with summary
 }))
 test('global defaults and per-harness overrides persist without a conversation selector',fixture(async ({dir,store})=>{
   for(const [id,harness] of [['a','claude-code'],['b','codex']]){const file=join(dir,id+'.txt');writeFileSync(file,'A user decision\n');importFile(store,file,id,harness)}
-  assert.equal(store.effectiveSetting('a',{}).mode,'agent')
+  assert.equal(store.effectiveSetting('a',{}).mode,'cli')
   store.setGlobalSetting('off');assert.equal(store.effectiveSetting('a').mode,'off');assert.equal(store.effectiveSetting('b').mode,'off')
   assert.throws(()=>store.setHarnessSetting('codex','codex-cli','gpt-test'),/Invalid/)
   store.setHarnessSetting('codex','cli','gpt-test');assert.equal(store.effectiveSetting('a').scope,'global');assert.deepEqual([store.effectiveSetting('b').mode,store.effectiveSetting('b').model,store.effectiveSetting('b').scope],['cli','gpt-test','harness'])
@@ -597,8 +597,8 @@ test('legacy agent policy row does not block independent CLI policy',fixture(asy
   assert.equal(store.summaryMode('legacy-session'),'cli')
   assert.equal(store.db.prepare('SELECT mode FROM session_modes WHERE session=?').get('legacy-session').mode,'agent')
 }))
-test('mode defaults to the conversation AI and preserves explicit CLI or API choice',()=>{
-  assert.equal(summaryMode({}),'agent')
+test('mode defaults to background writing and preserves explicit CLI or API choice',()=>{
+  assert.equal(summaryMode({}),'cli')
   assert.equal(summaryMode({SUPERLCM_ANTHROPIC_API_KEY:'test'}),'api')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'cli')
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'off',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'off')
@@ -607,7 +607,7 @@ test('mode defaults to the conversation AI and preserves explicit CLI or API cho
   assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'agent',SUPERLCM_ANTHROPIC_API_KEY:'test'}),'agent')
   assert.equal(workerEnv({SUPERLCM_ANTHROPIC_API_KEY:'secret',SUPERLCM_CLI_WORKER:'0'}).SUPERLCM_CLI_WORKER,'1')
   assert.equal(workerEnv({SUPERLCM_ANTHROPIC_API_KEY:'secret'}).SUPERLCM_ANTHROPIC_API_KEY,undefined)
-  assert.equal(summaryMode({}),'agent');assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'codex-cli'}),'cli')
+  assert.equal(summaryMode({}),'cli');assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'codex-cli'}),'cli')
 })
 test('merge work is planned as soon as four summaries exist, before the next raw batch',fixture(async ({dir,store})=>{
   const src=join(dir,'long.jsonl');writeFileSync(src,Array.from({length:48},(_,i)=>line(i)).join(''))
