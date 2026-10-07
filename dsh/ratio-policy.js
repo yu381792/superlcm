@@ -1,6 +1,13 @@
 // Ratios describe the current routed request's INPUT capacity, after its
 // output reservation. Fixed prompt/tool costs still count as active input.
 export const RATIO_DEFAULTS = Object.freeze({prepareRatio:0.7,switchRatio:0.8,emergencyRatio:0.9})
+// One user-facing replacement threshold; the other phases are internal.
+export function automaticRatios(switchRatio) {
+  if(!Number.isFinite(switchRatio)||switchRatio<.01||switchRatio>.99)throw Error('压缩比例必须在 1% 到 99% 之间')
+  const round=value=>Math.round(value*1e12)/1e12
+  return {prepareRatio:round(switchRatio-Math.min(.1,switchRatio/2)),switchRatio,
+    emergencyRatio:round(switchRatio+Math.min(.1,(1-switchRatio)/2))}
+}
 export function ratioOptions(raw = {}) {
   const out = {}
   for (const [key, fallback] of Object.entries(RATIO_DEFAULTS)) {

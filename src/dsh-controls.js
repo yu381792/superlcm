@@ -5,7 +5,7 @@ import { controlsConfig,readControls,controlFields } from '../dsh/controls-confi
 import { dshEntries,isDshEngine } from './dsh-connection.js'
 import {packageInfo} from './dsh-install.js'
 import {dshHome} from './dsh-connection.js'
-import {RATIO_DEFAULTS} from '../dsh/ratio-policy.js'
+import {RATIO_DEFAULTS,automaticRatios} from '../dsh/ratio-policy.js'
 import { compressionSnapshot } from './compression-status.js'
 export const controlsPath=store=>join(store.dir,'dsh-compression.json')
 export const rawControls=store=>existsSync(controlsPath(store))?readFileSync(controlsPath(store),'utf8'):null
@@ -44,7 +44,7 @@ async function readSettings(store,options) {
   const acknowledged=!!saved&&live.length>0&&live.every(r=>r.settings_revision===saved.revision&&r.enabled===base.auto&&r.route_ready&&r.version===installedVersion&&r.version===packageInfo.version&&runtimes.some(a=>a.live&&a.kind==='archive'&&a.pid===r.pid&&a.profile===r.profile&&a.version===r.version))
   const revision=digest(JSON.stringify([raw,plan.revision]))
   return {expected_version:packageInfo.version,installed_version:installedVersion,configured:plan.existing||archiveOnly,archive_only:archiveOnly,controls_installed:installed,revision,settings_revision:saved?.revision||null,
-    enabled:archiveOnly?false:base.auto??false,budgetMode:base.budgetMode||'ratio',prepareRatio:base.prepareRatio??0.7,switchRatio:base.switchRatio??0.8,emergencyRatio:base.emergencyRatio??0.9,provider_ref:base.summaryAdapter?.ref||plan.provider_ref,provider:base.summarizationProvider||plan.provider,model:base.summarizationModel||plan.model,...fields,
+    compressionRatio:base.switchRatio??0.8,enabled:archiveOnly?false:base.auto??false,budgetMode:base.budgetMode||'ratio',prepareRatio:base.prepareRatio??0.7,switchRatio:base.switchRatio??0.8,emergencyRatio:base.emergencyRatio??0.9,provider_ref:base.summaryAdapter?.ref||plan.provider_ref,provider:base.summarizationProvider||plan.provider,model:base.summarizationModel||plan.model,...fields,
     status:!installed?'needs-update':acknowledged?'applied':live.length?'pending':'awaiting-runtime',catalog:plan.catalog,
     _plan:plan,_raw:raw}
 }
@@ -68,7 +68,7 @@ async function saveSettings(store,input,options) {
   const snapshot=p=>JSON.stringify([p._next.raw,p._next.configuration.profiles.map(x=>[x.name,x.manifest,x.patch])])
   if(snapshot(plan)!==snapshot(current._plan))throw Error('配置已变化，请重新读取后保存')
   const before=inheritedControls(store,provider)
-  const config=controlsConfig({...before,...Object.fromEntries([...Object.keys(controlFields),...Object.keys(RATIO_DEFAULTS)].filter(k=>input[k]!==undefined).map(k=>[k,input[k]])),auto:input.enabled,budgetMode:input.budgetMode??before.budgetMode??'ratio',...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})
+  const config=controlsConfig({...before,...Object.fromEntries([...Object.keys(controlFields),...Object.keys(RATIO_DEFAULTS)].filter(k=>input[k]!==undefined).map(k=>[k,input[k]])),...(input.compressionRatio!==undefined?automaticRatios(input.compressionRatio):{}),auto:input.enabled,budgetMode:input.compressionRatio!==undefined?'ratio':input.budgetMode??before.budgetMode??'ratio',...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})
   if(rawControls(store)!==current._raw)throw Error('压缩设置已变化，请重新读取后保存')
   const backup=join(store.dir,'config-backups','dsh-controls-'+randomUUID());mkdirSync(backup,{recursive:true,mode:0o700})
   if(current._raw!==null)writeFileSync(join(backup,'settings.before.json'),current._raw,{mode:0o600})

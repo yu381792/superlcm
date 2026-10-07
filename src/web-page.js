@@ -60,7 +60,7 @@ export function page(nonce) {
         <button type="button" id="compression-tab-dsh" role="tab" data-compression-tool="dsh" aria-controls="compression-dsh" aria-selected="false">dsh harness</button>
       </div>
       <section class="compression-card" id="compression-claude-code" data-compression="claude-code" role="tabpanel" aria-labelledby="compression-tab-claude">
-        <div class="compression-card-head"><div><span class="eyebrow">Claude Code</span><h2>Claude 压缩</h2></div><span class="state" id="claudeCompressionOwner">正在读取…</span></div>
+        <div class="compression-card-head"><div><span class="eyebrow">Claude Code</span><h2>Claude 压缩</h2></div><span class="state" id="claudeCompressionOwner" hidden>正在读取…</span></div>
         <p class="desc">Claude Code 的对话太长时会压缩。交给 SuperLcm 后，旧的部分换成后台写好的摘要，最近几轮原样留下，原文随时能用 lcm_read 调回。</p>
         <label class="toggle-row"><span><b>由 SuperLcm 接管压缩</b><span>到门槛时直接换上现成的摘要，不调用模型，几乎不用等</span></span><span class="switch"><input type="checkbox" id="takeoverOn" role="switch"><i></i></span></label>
         <h3>压缩门槛</h3>
@@ -76,7 +76,7 @@ export function page(nonce) {
         <details class="how"><summary>它怎么工作</summary><p>SuperLcm 平时就在后台把对话写成分层摘要，但不动 Claude Code 的上下文。到了门槛，Claude Code 要压缩时，SuperLcm 把已经被摘要覆盖的旧对话换成这些摘要，没覆盖到的部分和最近一段（按「最近原文保留」，至少两轮）一字不改地保留。</p><p>摘要还没跟上、对不上号、换完仍然太大，或者是子代理的对话，都照旧交给 Claude Code 自己压缩，对话不会因此卡住。打开时会改 Claude Code 的设置，让它正好在门槛开始压缩，由 SuperLcm 当场换上摘要；它显示的窗口是门槛再加 100K（最多 1M）。关闭时恢复原来的设置。</p></details>
       </section>
       <section class="compression-card" id="compression-dsh" data-compression="dsh" role="tabpanel" aria-labelledby="compression-tab-dsh" hidden>
-        <div class="compression-card-head"><div><span class="eyebrow">dsh harness</span><h2>DSH 压缩</h2></div><span class="state" id="dshCompressionOwner">正在读取…</span></div>
+        <div class="compression-card-head"><div><span class="eyebrow">dsh harness</span><h2>DSH 压缩</h2></div><span class="state" id="dshCompressionOwner" hidden>正在读取…</span></div>
         <p class="desc">可选择由 SuperLcm 接管。关闭接管时，DSH 使用原生压缩，后台摘要和归档继续独立运行。</p>
         <div id="dshCompressionSettings"><p class="muted">正在读取压缩设置…</p></div>
       </section>

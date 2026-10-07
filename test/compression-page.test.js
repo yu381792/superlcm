@@ -131,3 +131,42 @@ test('custom percentages round-trip while native compression and model settings 
   await assert.rejects(saveDshCompression(store,{revision:readback.revision,enabled:false,prepareRatio:.9,switchRatio:.8,emergencyRatio:.95},{env}),/比例/)
   assert.equal(readFileSync(controlsPath(store),'utf8'),raw)
 })
+
+test('single compression ratio saves automatic internal thresholds and rejects invalid values',async t=>{
+  const {store,env}=await fixture(t),initial=await dshCompressionSettings(store,{env})
+  const saved=await saveDshCompression(store,{revision:initial.revision,enabled:false,compressionRatio:.85},{env})
+  assert.equal(saved.compressionRatio,.85);assert.equal(saved.switchRatio,.85)
+  assert.equal(saved.prepareRatio,.75);assert.equal(saved.emergencyRatio,.925)
+  assert.equal((await dshCompressionSettings(store,{env})).compressionRatio,.85)
+  const raw=readFileSync(controlsPath(store),'utf8')
+  for(const compressionRatio of [0,1,'0.85'])await assert.rejects(saveDshCompression(store,{revision:saved.revision,enabled:false,compressionRatio},{env}),/压缩比例/)
+  assert.equal(readFileSync(controlsPath(store),'utf8'),raw)
+})
+
+test('single ratio switches legacy token controls into model-relative mode',async t=>{
+  const {store,env}=await fixture(t),initial=await dshCompressionSettings(store,{env})
+  const legacy=await saveDshCompression(store,{revision:initial.revision,enabled:false,budgetMode:'tokens'},{env})
+  assert.equal(legacy.budgetMode,'tokens')
+  const saved=await saveDshCompression(store,{revision:legacy.revision,enabled:false,compressionRatio:.85},{env})
+  assert.equal(saved.budgetMode,'ratio');assert.equal(readControls(controlsPath(store)).config.budgetMode,'ratio')
+  assert.equal(saved.compressionRatio,.85);assert.equal(saved.prepareRatio,.75);assert.equal(saved.emergencyRatio,.925)
+})
+test('DSH ownership reminder is hidden while off and visible for takeover or a still-running owner',()=>{
+  const code=source('src/web-dsh-controls.js'),status=code.slice(code.indexOf('function dshSettingsStatus()'),code.indexOf('function renderDshControls()'))
+  const badge={},notice={},value={enabled:false,archive_only:true,controls_installed:true},runtimes=[]
+  const context={dshControls:{value},admin:{compression:{runtimes}},$:id=>id==='#dshCompressionOwner'?badge:notice,t:x=>x,renderCompressionOwner(){}}
+  runInNewContext(status+'dshSettingsStatus()',context);assert.equal(badge.hidden,true)
+  value.enabled=true;runInNewContext(status+'dshSettingsStatus()',context);assert.equal(badge.hidden,false)
+  value.enabled=false;runtimes.push({kind:'engine',live:true,enabled:true});runInNewContext(status+'dshSettingsStatus()',context);assert.equal(badge.hidden,false)
+  runtimes[0].enabled=false;runInNewContext(status+'dshSettingsStatus()',context);assert.equal(badge.hidden,true)
+  assert.match(page('fixture'),/id="dshCompressionOwner" hidden/)
+})
+
+test('Claude ownership badge is visible only while takeover is enabled',()=>{
+  const badge={},context={$:()=>badge,t:x=>x}
+  const code=source('src/web-compression.js').slice(source('src/web-compression.js').indexOf('function renderCompressionOwner'))
+  runInNewContext(code+'renderCompressionOwner("#claudeCompressionOwner",false)',context);assert.equal(badge.hidden,true)
+  runInNewContext(code+'renderCompressionOwner("#claudeCompressionOwner",true)',context);assert.equal(badge.hidden,false)
+  assert.equal(badge.textContent,'SuperLcm 接管')
+  assert.match(page('fixture'),/id="claudeCompressionOwner" hidden/)
+})

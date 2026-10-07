@@ -25,14 +25,14 @@ function harness(overrides={},language='zh') {
       })
     },
     querySelector(selector){return selector==='button'?nodes.find(node=>node.tag==='button'):nodes.find(node=>selector==='#'+node.id)||null},
-    querySelectorAll(selector){return nodes.filter(node=>selector==='[data-dsh-field]'?node.dataset.dshField:selector==='[data-dsh-batch]'?node.dataset.dshBatch:false)}
+    querySelectorAll(selector){return nodes.filter(node=>selector==='[data-dsh-field]'?node.dataset.dshField:selector==='[data-dsh-batch]'?node.dataset.dshBatch:selector==='[data-dsh-ratio]'?node.dataset.dshRatio:false)}
   }
   const calls=[],toasts=[],owners=[]
   const context={
     $:selector=>selector==='#dshCompressionSettings'?root:root.querySelector(selector),esc:escape,
     t:(text,vars={})=>text.replace(/\{(\w+)\}/g,(match,key)=>vars[key]??match),
     admin:{compression:{runtimes:[]}},renderCompressionOwner:(_selector,enabled,pending)=>owners.push({enabled,pending}),
-    api:async(url,body)=>{calls.push({url,body});if(body)Object.assign(settings,body);return {...settings}},toast:message=>toasts.push(message),act:callback=>callback(),show(){},openDshSetup(){},
+    api:async(url,body)=>{calls.push({url,body});if(body){Object.assign(settings,body);if(body.compressionRatio!==undefined)settings.switchRatio=body.compressionRatio;}return {...settings}},toast:message=>toasts.push(message),act:callback=>callback(),show(){},openDshSetup(){},
     localStorage:{getItem:()=>language},navigator:{language},document:{documentElement:{}}
   }
   runInNewContext((language==='en'?source('web-i18n.js')+'\n':'')+source('web-dsh-controls.js')+'\nthis.ui={controls:dshControls,load:loadDshControls,save:saveDshControls}',context)
@@ -46,13 +46,14 @@ test('普通区显示自动比例策略，固定门槛和原文保留表单已�
   const html=root.innerHTML
   for(const key of ['softActiveTokens','hardActiveTokens','minRetainTokens','tailCount','pressureFoldTokens','summaryPrefixTargetTokens'])assert.doesNotMatch(html,new RegExp('id="dsh-'+key+'"'))
   assert.doesNotMatch(html,/dshKeepPercent|data-dsh-window|开始压缩门槛|强制压缩门槛|原文保留比例/)
-  assert.match(html,/平时按摘要粒度在后台准备摘要，并逐层合并/)
-  assert.match(html,/已扣除输出预留/);assert.match(html,/比例可以自行调整/)
-  for(const [key,value] of [['prepareRatio','70'],['switchRatio','80'],['emergencyRatio','90']])assert.equal(root.querySelector('#dsh-'+key).value,value)
-  assert.match(html,/近期原文保留量与压缩后的总预算，按当前会话模型容量自动计算/)
+  assert.match(html,/上下文占用达到所选比例时压缩/)
+  assert.doesNotMatch(html,/摘要收口|安全等待|dsh-prepareRatio|dsh-emergencyRatio/)
+  assert.equal(root.querySelector('#dsh-switchRatio').value,'80')
+  assert.match(html,/class="custom-size" id="dshRatioCustom" hidden/)
+  assert.deepEqual(root.querySelectorAll('[data-dsh-ratio]').map(n=>n.dataset.dshRatio),['0.7','0.8','0.9','custom'])
   assert.match(html,/摘要模型供应商/)
-  assert.match(html,/摘要粒度（K）/)
-  assert.deepEqual(root.querySelectorAll('[data-dsh-batch]').map(node=>Number(node.dataset.dshBatch)),[10000,20000,40000])
+  assert.match(html,/自定义摘要粒度（K）/)
+  assert.deepEqual(root.querySelectorAll('[data-dsh-batch]').map(node=>node.dataset.dshBatch),['10000','20000','40000','custom'])
   assert.equal(root.querySelectorAll('[data-dsh-batch]')[1].attrs['aria-checked'],'true')
   assert.equal(root.querySelector('#dsh-foldBatchTokens').attrs.step,'1')
 })
@@ -63,7 +64,7 @@ test('旧后台缺少粒度时显示 20K，保存明确选择比例策略并保�
   assert.equal(root.querySelector('#dsh-foldBatchTokens').value,'20')
   assert.equal(root.querySelector('#dshControlsOn').checked,false)
   await ui.save()
-  assert.deepEqual(plain(calls[1].body),{revision:'current',enabled:false,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',prepareRatio:0.7,switchRatio:0.8,emergencyRatio:0.9,foldBatchTokens:20000})
+  assert.deepEqual(plain(calls[1].body),{revision:'current',enabled:false,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',compressionRatio:0.8,foldBatchTokens:20000})
   assert.equal(root.querySelector('#dshControlsOn').checked,false)
 })
 
@@ -74,10 +75,12 @@ test('摘要粒度预设与整数输入保存到粒度字段，普通调整保�
   assert.equal(root.querySelector('#dsh-foldBatchTokens').value,'40')
   await ui.save()
   assert.equal(calls[1].body.foldBatchTokens,40000)
+  root.querySelectorAll('[data-dsh-batch]').find(node=>node.dataset.dshBatch==='custom').onclick()
   input('foldBatchTokens',25)
-  assert.ok(root.querySelectorAll('[data-dsh-batch]').every(node=>node.attrs['aria-checked']==='false'))
+  assert.equal(root.querySelectorAll('[data-dsh-batch]').at(-1).attrs['aria-checked'],'true')
+  assert.match(root.innerHTML,/class="custom-size" id="dshBatchCustom"><input/)
   await ui.save()
-  assert.deepEqual(plain(calls[2].body),{revision:'current',enabled:false,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',prepareRatio:0.7,switchRatio:0.8,emergencyRatio:0.9,foldBatchTokens:25000})
+  assert.deepEqual(plain(calls[2].body),{revision:'current',enabled:false,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',compressionRatio:0.8,foldBatchTokens:25000})
   assert.equal(ui.controls.draft.softActiveTokens,160000)
   assert.equal(ui.controls.draft.minRetainTokens,32000)
   assert.equal(root.querySelector('#dshControlsOn').checked,false)
@@ -91,10 +94,10 @@ test('高级设置只回传用户改过的项，接管开关由用户明确操�
   input('condensedMinFanout',6)
   root.querySelector('#dshControlsOn').onchange({target:{checked:true}})
   await ui.save()
-  assert.deepEqual(plain(calls[1].body),{revision:'current',enabled:true,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',prepareRatio:0.7,switchRatio:0.8,emergencyRatio:0.9,foldBatchTokens:20000,condensedMinFanout:6,summaryTimeoutMs:120000,summaryRetryCooldownMs:45000})
+  assert.deepEqual(plain(calls[1].body),{revision:'current',enabled:true,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',compressionRatio:0.8,foldBatchTokens:20000,condensedMinFanout:6,summaryTimeoutMs:120000,summaryRetryCooldownMs:45000})
   root.querySelector('#dshControlsOn').onchange({target:{checked:false}})
   await ui.save()
-  assert.deepEqual(plain(calls[2].body),{revision:'current',enabled:false,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',prepareRatio:0.7,switchRatio:0.8,emergencyRatio:0.9,foldBatchTokens:20000})
+  assert.deepEqual(plain(calls[2].body),{revision:'current',enabled:false,provider_ref:'fixture-provider',model:'summary-model',budgetMode:'ratio',compressionRatio:0.8,foldBatchTokens:20000})
   assert.equal(root.querySelector('#dshControlsOn').checked,false)
   assert.equal(ui.controls.draft.summaryTimeoutMs,120000)
   assert.equal(ui.controls.draft.summaryRetryCooldownMs,45000)
@@ -132,28 +135,31 @@ test('比例策略、普通输入和高级设置都有英文翻译',async()=>{
   const {ui,root,input}=harness({},'en')
   await ui.load()
   assert.doesNotMatch(root.innerHTML,/[一-龥]/)
-  assert.match(root.innerHTML,/70%.*80%/)
+  assert.match(root.innerHTML,/70%.*80%.*90%/)
   input('foldBatchTokens',20.5)
   await ui.save()
   assert.doesNotMatch(root.innerHTML,/[一-龥]/)
   assert.match(root.innerHTML,/Enter a whole number.*Summary granularity/)
 })
 
-test('用户自定百分比保存为模型比例，关闭接管时也能保存并读回',async()=>{
-  const {ui,root,input,calls}=harness({prepareRatio:.55,switchRatio:.75,emergencyRatio:.92})
+test('压缩比例预设与自定义按 Claude 的布局保存，读回后显示原值',async()=>{
+  const {ui,root,input,calls}=harness({switchRatio:.75,prepareRatio:.55,emergencyRatio:.92})
   await ui.load()
-  assert.equal(root.querySelector('#dsh-prepareRatio').value,'55')
   assert.equal(root.querySelector('#dsh-switchRatio').value,'75')
-  assert.equal(root.querySelector('#dsh-emergencyRatio').value,'92')
-  input('prepareRatio',65);input('switchRatio',85);input('emergencyRatio',95)
-  await ui.save()
-  assert.equal(calls[1].body.prepareRatio,.65);assert.equal(calls[1].body.switchRatio,.85);assert.equal(calls[1].body.emergencyRatio,.95)
-  assert.equal(calls[1].body.enabled,false)
+  assert.match(root.innerHTML,/class="custom-size" id="dshRatioCustom"><input/)
+  const preset=()=>root.querySelectorAll('[data-dsh-ratio]')
+  preset().find(n=>n.dataset.dshRatio==='0.9').onclick()
+  assert.equal(root.querySelector('#dsh-switchRatio').value,'90');assert.match(root.innerHTML,/id="dshRatioCustom" hidden/)
+  await ui.save();assert.equal(calls[1].body.compressionRatio,.9)
+  preset().find(n=>n.dataset.dshRatio==='custom').onclick()
+  input('switchRatio',85);await root.querySelector('#dshRatioSave').onclick()
+  assert.equal(calls[2].body.compressionRatio,.85);assert.equal(calls[2].body.enabled,false)
   assert.equal(root.querySelector('#dsh-switchRatio').value,'85')
+  assert.equal(Object.hasOwn(calls[2].body,'prepareRatio'),false);assert.equal(Object.hasOwn(calls[2].body,'emergencyRatio'),false)
 })
-test('百分比越界、小数和逆序被拦截，模型与当前开关保留',async()=>{
-  for(const [key,value] of [['prepareRatio',0],['switchRatio',100],['emergencyRatio',90.5],['prepareRatio',80],['switchRatio',90],['emergencyRatio',79]]){
-    const {ui,root,input,calls}=harness();await ui.load();input(key,value);await ui.save()
+test('自定义百分比越界、小数和空值被拦截，模型与当前开关保留',async()=>{
+  for(const value of [0,100,90.5,'','NaN']){
+    const {ui,root,input,calls}=harness();await ui.load();input('switchRatio',value);await ui.save()
     assert.equal(calls.length,1);assert.match(root.innerHTML,/role="alert"/)
     assert.equal(ui.controls.draft.model,'summary-model');assert.equal(ui.controls.draft.enabled,false)
   }
