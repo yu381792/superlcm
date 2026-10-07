@@ -78,6 +78,14 @@ export class SuperLcmStore {
 
   #migrate() {
     this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS lcm_summary_blocks (
+        session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id,fingerprint)
+      );
+      CREATE TABLE IF NOT EXISTS lcm_compaction_drafts (
+        session_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, data_json TEXT NOT NULL,
+        status TEXT NOT NULL, updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS lcm_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -364,6 +372,31 @@ export class SuperLcmStore {
       ORDER BY e.parent_id, e.position
     `).all(sessionId)
     return { nodeCount, edgeCount, missingChildren }
+  }
+
+  blockSummary(sessionId,fingerprint) {
+    this.#assertOpen()
+    this.#db.prepare('INSERT OR IGNORE INTO lcm_summary_blocks VALUES (?,?,?)').run(sessionId,fingerprint,Date.now())
+  }
+  summaryBlocked(sessionId,fingerprint) {
+    this.#assertOpen()
+    return !!this.#db.prepare('SELECT 1 FROM lcm_summary_blocks WHERE session_id=? AND fingerprint=?').get(sessionId,fingerprint)
+  }
+
+  saveDraft(sessionId, fingerprint, data) {
+    this.#assertOpen()
+    this.#db.prepare(`INSERT INTO lcm_compaction_drafts VALUES (?,?,?,'ready',?)
+      ON CONFLICT(session_id) DO UPDATE SET fingerprint=excluded.fingerprint,
+      data_json=excluded.data_json,status='ready',updated_at=excluded.updated_at`).run(sessionId,fingerprint,data,Date.now())
+  }
+  loadDraft(sessionId) {
+    this.#assertOpen()
+    const row=this.#db.prepare("SELECT fingerprint,data_json FROM lcm_compaction_drafts WHERE session_id=? AND status='ready'").get(sessionId)
+    return row ? {fingerprint:row.fingerprint,data:row.data_json} : null
+  }
+  finishDraft(sessionId,status) {
+    this.#assertOpen()
+    this.#db.prepare('UPDATE lcm_compaction_drafts SET status=?,data_json=?,updated_at=? WHERE session_id=?').run(status,'{}',Date.now(),sessionId)
   }
 
   close() {

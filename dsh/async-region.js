@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
   CompactionId,
@@ -17,6 +17,12 @@ const SUMMARY_OPEN_TAG = '<compacted-summary>'
 const SUMMARY_CLOSE_TAG = '</compacted-summary>'
 
 export class AsyncSurfaceChangedError extends Error {}
+const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+export const sourceFingerprints = (session,seqs) => seqs.map(seq=>[seq,hash(session.eventAt(seq))])
+function noProgress(engine,sessionId,key,message) {
+  engine.superLcmStore.blockSummary(sessionId,key)
+  const error=Error(message);error.code='SUPERLCM_SUMMARY_NO_PROGRESS';return error
+}
 
 function systemHead(session, headSeq) {
   if (headSeq === undefined) return undefined
@@ -52,7 +58,7 @@ export function minimumCheckpointTokens(engine, children = []) {
   }))
 }
 
-function locateStableSpan(engine, session, prepared) {
+export function locateStableSpan(engine, session, prepared) {
   const surfaceNodes = session.surface.nodes
   const startIdx = surfaceNodes.indexOf(prepared.start)
   const endIdx = surfaceNodes.indexOf(prepared.end)
@@ -66,6 +72,7 @@ function locateStableSpan(engine, session, prepared) {
   if (!toolPairingBalancedBefore(session, prepared.start) || !toolPairingBalancedAfter(session, prepared.end)) {
     throw new AsyncSurfaceChangedError('prepared compaction span is no longer tool-pair balanced')
   }
+  if (!isDeepStrictEqual(prepared.sourceFingerprints, sourceFingerprints(session,shadowedSeqs))) throw new AsyncSurfaceChangedError('prepared source content changed while summarization ran')
   const selectedNodes = engine.ctx.tokenMeter.measure(session).nodes.slice(startIdx, endIdx + 1)
   if (!isDeepStrictEqual(selectedNodes, prepared.selectedNodes)) {
     throw new AsyncSurfaceChangedError('prepared compaction span was rewritten while summarization ran')
@@ -130,6 +137,7 @@ export function prepareAsyncRegion(engine, agent, selection) {
     endIdx,
     selectedNodes,
     shadowedSeqs,
+    sourceFingerprints: sourceFingerprints(session,shadowedSeqs),
     trustedChildNodeIds,
     shadowedTokenCount: selectedNodes.reduce((total, node) => total + (node.heuristicTokens ?? node.tokens ?? 0), 0),
     shadowedRouteTokenCount: selectedNodes.reduce((total, node) => total + (node.tokens ?? 0), 0),
@@ -139,6 +147,11 @@ export function prepareAsyncRegion(engine, agent, selection) {
 
 export async function summarizeAsyncRegion(engine, agent, prepared, signal) {
   signal?.throwIfAborted()
+  const attemptKey=hash([prepared.input,prepared.summaryTargetTokens,prepared.summaryDepth,
+    prepared.trustedChildNodeIds,engine.summaryRouteFingerprint(),engine.rollingConfig])
+  if (engine.superLcmStore.summaryBlocked(agent.session.id,attemptKey)) {
+    const error=Error('相同输入的摘要没有节省空间，请调整摘要模型或粒度后重试');error.code='SUPERLCM_SUMMARY_NO_PROGRESS';throw error
+  }
   const compactionId = CompactionId(randomUUID())
   const summaryResult = await engine.summarize(prepared.input, agent, signal, {
     trustedChildNodeIds: prepared.trustedChildNodeIds,
@@ -155,9 +168,9 @@ export async function summarizeAsyncRegion(engine, agent, prepared, signal) {
   })
   const framedSummaryTokenCount = engine.ctx.tokenMeter.estimateMessage(checkpointMessage)
   if (framedSummaryTokenCount >= prepared.shadowedRouteTokenCount) {
-    throw new Error('summary is not smaller than the shadowed content (' + framedSummaryTokenCount + ' estimated framed tokens >= ' + prepared.shadowedRouteTokenCount + ')')
+    throw noProgress(engine,agent.session.id,attemptKey,'summary is not smaller than the shadowed content (' + framedSummaryTokenCount + ' estimated framed tokens >= ' + prepared.shadowedRouteTokenCount + ')')
   }
-  return { ...prepared, ...summaryResult, checkpointMessage, compactionId }
+  return { ...prepared, ...summaryResult, checkpointMessage, compactionId, attemptKey }
 }
 
 export function commitAsyncRegion(engine, agent, summarized) {

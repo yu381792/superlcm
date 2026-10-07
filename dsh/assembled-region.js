@@ -40,6 +40,7 @@ export function assembleRegions(engine, parts) {
     ...first, end: last.end, compactionId, summary, checkpointMessage, usage,
     rawOutput: parts.flatMap(part => part.rawOutput ?? []),
     selectedNodes,
+    sourceFingerprints: [...new Map(parts.flatMap(part => part.sourceFingerprints ?? [])).entries()],
     shadowedSeqs: selectedNodes.map(node => node.seq),
     shadowedTokenCount: selectedNodes.reduce((n, node) => n + (node.heuristicTokens ?? node.tokens ?? 0), 0),
     shadowedRouteTokenCount, preparedBatchCount: parts.length,

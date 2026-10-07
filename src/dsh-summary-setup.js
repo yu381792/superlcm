@@ -7,6 +7,7 @@ import {installDshPackage,removeManagedBlock,packageInfo} from './dsh-install.js
 import {uiManifest,linkUi} from './dsh-ui-install.js'
 import {retireLegacyDshRows} from './dsh-retire-legacy.js'
 import {controlsPath} from './dsh-controls.js'
+import {controlsConfig} from '../dsh/controls-config.js'
 import {enableSummaryOnly} from './integration.js'
 import {runCommand,commandOptions} from './runtime.js'
 
@@ -80,7 +81,9 @@ export async function applyDshArchivePlan(store,plan,{env=process.env,runCommand
         (disconnect?entries.some(ownDsh):!inspectDshTree(tree).configured))throw Error('原生压缩或归档接入验证失败')
     }
     if(saved.controlsRaw!==null) {
-      const doc=JSON.parse(saved.controlsRaw);doc.config.auto=false;doc.revision=randomUUID()
+      const doc=JSON.parse(saved.controlsRaw)
+      doc.config=controlsConfig({...doc.config,auto:false,budgetMode:'ratio',foldBatchTokens:doc.config.budgetMode==='ratio'?doc.config.foldBatchTokens:(store.tuning().target_tokens||20000)})
+      doc.revision=randomUUID()
       write(controlsPath(store),saved.controlsRaw,JSON.stringify(doc,null,2)+'\n')
     }
     if(disconnect)store.setIntegrationEnabled('dsh',false)

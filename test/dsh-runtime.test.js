@@ -37,15 +37,21 @@ async function withHost(config, response, run) {
   ctx.logger.warn = message => warnings.push(message)
   try {
     new SessionStore(ctx); new SessionProjections(ctx)
-    ctx.reflect.provide('llm', { async *stream(options) {
-      calls.push({ provider: options.provider, model: options.model, signal: options.signal, sessionId: options.sessionId })
+    const localStream=async function* (options) {
+      calls.push({ provider: options.provider, model: options.model, signal: options.signal, sessionId: options.sessionId,
+        inputTokens:Math.ceil(JSON.stringify(options.messages).length/4) })
       const text = await response(options)
       yield { type: 'text-delta', index: 0, text }
-    }, imageRequestPricing() {}, fileRequestText() {} })
+    }
+    ctx.reflect.provide('llm', {
+      stream:options=>ctx.waterfall('llm/stream',options,()=>localStream(options)),
+      prepareCall:async config=>({config,context:{contextWindow:config.model==='million'?1000000:100000},stream:options=>ctx.llm.stream(options)}),
+      resolveModelInfo:async (_provider,model)=>({context:{contextWindow:model==='million'?1000000:100000},defaultMaxTokens:0}), imageRequestPricing() {}, fileRequestText() {} })
     new TokenMeter(ctx)
-    new Engine(ctx, { auto: false, summarizationProvider: 'local', summarizationModel: 'fixture', ...config })
+    new Engine(ctx, { budgetMode:'tokens', auto: false, summarizationProvider: 'local', summarizationModel: 'fixture', ...config })
     const session = ctx.sessions.create('optimized-native', { meta: { cwd: '/project' } })
     const agent = { session, options: { provider: 'local', model: 'fixture' } }
+    await tick()
     await run({ ctx, engine: ctx.compaction, session, agent, calls, warnings, dir })
   } finally {
     await ctx.fiber.dispose()
@@ -627,5 +633,266 @@ test('tree condensation receives the existing total-budget target and never leav
     }
     const merge=directives.find(text=>text.includes('semantic depth=1'))
     assert.ok(merge);assert.match(merge,/at most 256 tokens/)
+  })
+})
+
+test('ratio takeover prepares without touching the prefix, freezes at 80%, and commits one complete tree',async()=>{
+  await withHost({budgetMode:'ratio',auto:true,foldBatchTokens:20000},async()=> 'Current task, exact source facts and changed decisions retained.',async({ctx,engine,session,agent,calls})=>{
+    const signal=new AbortController().signal
+    for(let i=0;i<3;i++)append(session,'old exact fact '.repeat(6000)+i)
+    append(session,'latest user request')
+    const before=[...session.surface.nodes]
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{})
+    await engine.settleBackgroundFold(agent)
+    assert.deepEqual(session.surface.nodes,before)
+    assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,0)
+    assert.ok(calls.length)
+    // A new user turn becomes the protected tail; previous user turns become eligible.
+    for(let i=0;i<2;i++)append(session,'more exact facts '.repeat(2000)+i)
+    const latest=append(session,'latest instructions preserved '+ 'x'.repeat(16000))
+    const live=[...session.surface.nodes]
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{})
+    const state=engine.backgroundFolds.get(agent)
+    assert.ok(state.cutoffEnd!==undefined)
+    const cutoff=state.cutoffEnd
+    const fresh=append(session,'arrived after frozen range')
+    await engine.settleBackgroundFold(agent)
+    assert.equal(engine.backgroundFolds.get(agent).summarized.end,cutoff)
+    assert.deepEqual(session.surface.nodes,[...live,fresh.seq])
+    assert.ok(engine.tryCommitBackgroundFold(agent,{allowPressure:true}))
+    assert.ok(session.surface.nodes.includes(latest.seq));assert.ok(session.surface.nodes.includes(fresh.seq))
+    assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,1)
+    assert.deepEqual(engine.superLcmStore.stats(session.id).missingChildren,[])
+    assert.equal(engine.tryCommitBackgroundFold(agent,{allowPressure:true}),null)
+  })
+})
+
+test('a routed model change discards only that session draft and recalculates capacity',async()=>{
+  let release,started
+  const gate=new Promise(resolve=>{release=resolve}), entered=new Promise(resolve=>{started=resolve})
+  await withHost({budgetMode:'ratio',auto:true,foldBatchTokens:20000},async()=>{started();await gate;return 'Old model draft.'},async({ctx,engine,session,agent})=>{
+    const signal=new AbortController().signal
+    append(session,'facts '.repeat(18000));append(session,'latest user')
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{});await entered
+    const prior=engine.backgroundFolds.get(agent)
+    const {resolvePolicy,currentPolicy}=await import('../dsh/ratio-runtime.js')
+    agent.options.model='million'
+    await resolvePolicy(engine,agent,signal)
+    assert.equal(currentPolicy(engine,agent).softActiveTokens,800000)
+    assert.equal(prior.controller.signal.aborted,true)
+    release();await prior.promise
+    assert.equal(engine.backgroundFolds.get(agent),undefined)
+    assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,0)
+  })
+})
+
+test('persisted ratio drafts restore exact source snapshots without another model call',async()=>{
+  await withHost({budgetMode:'ratio',auto:true,foldBatchTokens:20000},async()=> 'Saved exact facts.',async({ctx,engine,session,agent,calls})=>{
+    const signal=new AbortController().signal
+    append(session,'facts '.repeat(18000));append(session,'latest user')
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{});await engine.settleBackgroundFold(agent)
+    const ready=engine.backgroundFolds.get(agent), count=calls.length
+    engine.backgroundFolds.delete(agent)
+    engine.draftRestoreAttempts?.delete(agent)
+    engine.runtimeGeneration++
+    const {resolvePolicy}=await import('../dsh/ratio-runtime.js')
+    await resolvePolicy(engine,agent,signal)
+    assert.equal(engine.restoreDraft(agent),true)
+    assert.equal(calls.length,count)
+    assert.deepEqual(engine.backgroundFolds.get(agent).summarized.shadowedSeqs,ready.summarized.shadowedSeqs)
+    assert.equal(engine.backgroundFolds.get(agent).generation,engine.runtimeGeneration)
+    engine.backgroundFolds.delete(agent);engine.draftRestoreAttempts.delete(agent)
+    // Durable source replacement invalidates the saved draft.
+    const original=ready.summarized.start
+    session.append('user/message',createUserMessage({content:[{type:'text',text:'changed source'}]}),{surfaceOp:{op:'replace',startSeq:original,endSeq:original},sourceEventSeqs:[original]})
+    assert.equal(engine.restoreDraft(agent),false)
+    assert.equal(engine.superLcmStore.loadDraft(session.id),null)
+  })
+})
+
+test('emergency ratio protection blocks an oversized latest turn without a blind provider retry',async()=>{
+  await withHost({budgetMode:'ratio',auto:true,foldBatchTokens:20000},async()=> 'Unused summary.',async({ctx,session,agent,calls})=>{
+    append(session,'latest huge uncompressible turn '.repeat(20000))
+    let requested=false
+    await assert.rejects(ctx.waterfall('agent/pre-step',{agent,signal:new AbortController().signal},()=>{requested=true}),/本轮原文|占用过多空间/)
+    assert.equal(requested,false);assert.equal(calls.length,0)
+  })
+})
+
+test('equal-length source repairs invalidate saved drafts before reuse',async()=>{
+  await withHost({budgetMode:'ratio',auto:true,foldBatchTokens:20000},async()=> 'Saved facts.',async({ctx,engine,session,agent})=>{
+    const signal=new AbortController().signal
+    append(session,'a'.repeat(84000));append(session,'latest user')
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{});await engine.settleBackgroundFold(agent)
+    const state=engine.backgroundFolds.get(agent), before=ctx.tokenMeter.measure(session).totalTokens
+    engine.backgroundFolds.delete(agent);engine.draftRestoreAttempts.delete(agent)
+    const eventAt=session.eventAt.bind(session)
+    session.eventAt=seq=>{
+      const event=eventAt(seq)
+      if(seq!==state.summarized.start)return event
+      const copy=structuredClone(event);copy.data.content[0].text='b'+copy.data.content[0].text.slice(1);return copy
+    }
+    assert.equal(ctx.tokenMeter.measure(session).totalTokens,before)
+    assert.equal(engine.restoreDraft(agent),false)
+    assert.equal(engine.superLcmStore.loadDraft(session.id),null)
+  })
+})
+
+test('a no-progress tree merge never purchases the same input again after cooldown',async()=>{
+  let noProgress=false, merged=0
+  await withHost({budgetMode:'ratio',auto:true,foldBatchTokens:20000},async options=>{
+    if(options.messages.at(-1).content[0].text.includes('semantic depth=1')){
+      merged++;if(noProgress)return 'verbose '.repeat(12000)
+    }
+    return 'leaf useful fact '.repeat(160)
+  },async({ctx,engine,session,agent,calls})=>{
+    const signal=new AbortController().signal
+    // Four 20K leaves produce enough summary input to become an eligible merge.
+    for(let i=0;i<3;i++)append(session,'x'.repeat(84000)+i)
+    append(session,'latest user')
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{});await engine.settleBackgroundFold(agent)
+    noProgress=true
+    // Direct staging mirrors the threshold's final complete suffix while keeping
+    // the provider request out of the emergency path in this local test.
+    const suffix=append(session,'y'.repeat(84000))
+    append(session,'latest user')
+    const {resolvePolicy}=await import('../dsh/ratio-runtime.js')
+    await resolvePolicy(engine,agent,signal)
+    const selection=engine.planRolling(agent);assert.ok(selection)
+    engine.startBackgroundFold(agent,selection);await engine.settleBackgroundFold(agent)
+    assert.ok(merged>0)
+    const purchased=calls.length
+    let now=Date.now()+3600000;engine.summaryGuards.clock=()=>now
+    for(let i=0;i<3;i++){
+      const next=engine.planRolling(agent)
+      if(next)engine.startBackgroundFold(agent,next)
+      await engine.settleBackgroundFold(agent);now+=3600000
+    }
+    assert.equal(calls.length,purchased)
+    assert.ok(session.surface.nodes.includes(suffix.seq))
+    assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,0)
+  })
+})
+
+test('restored checkpoint-only drafts freeze without requiring transient prepared input',async()=>{
+  await withHost({budgetMode:'tokens',minRetainTokens:1000,foldBatchTokens:64000,softActiveTokens:4000,hardActiveTokens:10000},async()=> 'Saved historical facts.',async({engine,session,agent})=>{
+    const raw=append(session,source.slice(0,24000))
+    engine.startBackgroundFold(agent,{start:raw.seq,end:raw.seq,activeTokens:0,eligibleEnd:raw.seq})
+    await engine.settleBackgroundFold(agent)
+    const state=engine.backgroundFolds.get(agent)
+    delete state.prepared;state.cutoffEnd=undefined
+    // Force the no-eligible-range branch while retaining an already saved range.
+    engine.rollingConfig.minRetainTokens=100000
+    assert.doesNotThrow(()=>engine.tryCommitBackgroundFold(agent,{allowPressure:true}))
+  })
+})
+
+async function actualLoop(ctx,model='fixture') {
+  const [{default:Agents},{default:SystemPrompt},{default:Tools},{default:AgentLoop}]=await Promise.all([
+    import('@deepseek-ai/dsh-agent'),import('@deepseek-ai/dsh-system-prompt'),import('@deepseek-ai/dsh-tools'),import('@deepseek-ai/dsh-agent-loop')])
+  new Agents(ctx);new SystemPrompt(ctx,{includeHarnessIdentity:false,includeRuntimeContext:false});new Tools(ctx)
+  new AgentLoop(ctx,{agents:[],maxParallelToolCalls:10})
+  return ctx.agentLoop.create('real-ratio-loop',{provider:'local',model},{cwd:'/fixture'})
+}
+async function actualSend(ctx,agent,text) {
+  const errors=[]
+  let stopStatus,stopError,timer
+  try {
+    await new Promise((resolve,reject)=>{
+      stopError=ctx.on('agent/error',payload=>{if(payload.agent===agent)errors.push(payload.error)})
+      stopStatus=ctx.on('agent/status',payload=>{if(payload.agent===agent&&payload.status==='idle')resolve()})
+      timer=setTimeout(()=>reject(Error('local Agent.send fixture did not finish')),5000)
+      agent.send(createUserMessage({content:[{type:'text',text}]}),'next-turn',true)
+    })
+  }finally{stopStatus?.();stopError?.();clearTimeout(timer)}
+  return errors
+}
+
+test('real Agent.send blocks oversized first input after admission and preserves it in the session',async()=>{
+  await withHost({budgetMode:'ratio',auto:true},async()=> 'Should not dispatch.',async({ctx,calls})=>{
+    const agent=await actualLoop(ctx)
+    const errors=await actualSend(ctx,agent,'huge first input '.repeat(40000))
+    assert.equal(calls.length,0)
+    assert.ok(errors.length)
+    assert.ok(agent.session.surface.nodes.some(seq=>agent.session.eventAt(seq).type==='user/message'))
+  })
+})
+
+test('real Agent.send uses the newly resolved small route instead of the previous large header',async()=>{
+  await withHost({budgetMode:'ratio',auto:true},async()=> 'Main response.',async({ctx,calls,engine})=>{
+    const agent=await actualLoop(ctx,'million')
+    assert.deepEqual(await actualSend(ctx,agent,'normal first input'),[])
+    ctx.on('agent/request',async(payload,next)=>{const config=await next();return payload.agent===agent?{...config,model:'fixture'}:config})
+    const before=calls.length
+    const errors=await actualSend(ctx,agent,'huge new small-model input '.repeat(20000))
+    assert.ok(errors.length)
+    assert.equal(calls.length,before)
+    const {currentPolicy}=await import('../dsh/ratio-runtime.js')
+    assert.equal(currentPolicy(engine,agent).softActiveTokens,80000)
+    assert.equal(agent.session.requestHeader().config.model,'fixture')
+  })
+})
+
+test('real Agent.send replaces ready context before one rebuilt provider request',async()=>{
+  await withHost({budgetMode:'ratio',auto:true},async()=> 'Exact facts and current decisions.',async({ctx,engine,calls})=>{
+    const agent=await actualLoop(ctx),session=agent.session
+    for(let i=0;i<3;i++)append(session,'prior full input '.repeat(5000)+i)
+    assert.deepEqual(await actualSend(ctx,agent,'prepare background'),[])
+    await engine.settleBackgroundFold(agent)
+    const mainBefore=calls.filter(call=>call.sessionId===session.id).length
+    assert.deepEqual(await actualSend(ctx,agent,'fresh complete input '.repeat(5000)),[])
+    await engine.settleBackgroundFold(agent)
+    // The next actual request publishes the ready finite cycle, then the
+    // host reconstructs its frozen request without sending the stale one.
+    assert.deepEqual(await actualSend(ctx,agent,'continue'),[])
+    const main=calls.filter(call=>call.sessionId===session.id)
+    assert.equal(main.length,mainBefore+2)
+    assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,1)
+    assert.ok(main.at(-1).inputTokens<50000)
+    assert.deepEqual(engine.superLcmStore.stats(session.id).missingChildren,[])
+  })
+})
+
+test('runtime snapshots and multiple inputs preserve the whole newest real user turn',async()=>{
+  await withHost({},async()=> 'Unused.',async({session})=>{
+    append(session,'old turn')
+    session.append('turn/start',{turn:1})
+    const first=append(session,'first real input');append(session,'second real input')
+    session.append('user/message',createUserMessage({content:[{type:'text',text:'automatic snapshot'}],source:{kind:'runtime-context'}}),{surfaceOp:'append'})
+    const {latestUserIndex}=await import('../dsh/ratio-runtime.js')
+    assert.equal(session.surface.nodes[latestUserIndex(session)],first.seq)
+  })
+})
+
+test('a million-token window compresses many leaves into a bounded tree and preserves the recent turn',async()=>{
+  await withHost({budgetMode:'ratio',auto:true,foldBatchTokens:20000},async options=>options.messages.at(-1).content[0].text.includes('semantic depth=1')
+    ? 'Condensed exact facts, changed decisions and recall pointers.' : 'leaf exact decision and source '.repeat(200),async({ctx,engine,session,agent,calls})=>{
+    agent.options.model='million'
+    for(let i=0;i<40;i++)append(session,'x'.repeat(80000)+i)
+    const latest=append(session,'recent active turn '+ 'y'.repeat(160000))
+    await ctx.waterfall('agent/pre-step',{agent,signal:new AbortController().signal},()=>{})
+    await engine.settleBackgroundFold(agent)
+    const state=engine.backgroundFolds.get(agent)
+    assert.ok(state.parts.length>=30)
+    assert.ok(state.tree.some(node=>node.kind==='condensed'))
+    assert.ok(engine.tryCommitBackgroundFold(agent,{allowPressure:true}))
+    assert.ok(ctx.tokenMeter.measure(session).totalTokens<120000)
+    assert.ok(session.surface.nodes.includes(latest.seq))
+    assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,1)
+    assert.ok(calls.length<70,'bounded merges avoid deep per-message regeneration')
+    assert.deepEqual(engine.superLcmStore.stats(session.id).missingChildren,[])
+  })
+})
+
+test('real requests honor their bound small adapter capacity during a provider metadata update',async()=>{
+  await withHost({budgetMode:'ratio',auto:true},async()=> 'Must not dispatch.',async({ctx,engine,calls})=>{
+    const agent=await actualLoop(ctx,'million')
+    ctx.llm.prepareCall=async config=>({config,context:{contextWindow:100000},stream:options=>ctx.llm.stream(options)})
+    const errors=await actualSend(ctx,agent,'huge actual small-bound input '.repeat(20000))
+    assert.ok(errors.length)
+    assert.equal(calls.length,0)
+    const {currentPolicy}=await import('../dsh/ratio-runtime.js')
+    assert.equal(currentPolicy(engine,agent).softActiveTokens,80000)
+    assert.equal(agent.session.requestContext().contextWindow,100000)
   })
 })

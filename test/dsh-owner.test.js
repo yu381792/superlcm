@@ -19,7 +19,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
 async function fixture(run, response = async () => 'Current task and exact facts retained.', ownerConfig = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'superlcm-native-owner-')), ctx = new Context(), calls = [], warnings = []
   const file = join(dir, 'controls.json')
-  const config = controlsConfig({auto:false,summarizationProvider:'plugin-provider',summarizationModel:'plugin-model',summaryAdapter:{plugin:'unused'}})
+  const config = controlsConfig({budgetMode:'tokens',auto:false,summarizationProvider:'plugin-provider',summarizationModel:'plugin-model',summaryAdapter:{plugin:'unused'}})
   const publish = (revision, next = {}) => writeFileSync(file,JSON.stringify({format:1,revision,config:{...config,...next}}))
   publish('off-boot')
   ctx.logger.warn = message => warnings.push(message)

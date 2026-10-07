@@ -1,0 +1,48 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { deriveRatioPolicy, ratioOptions } from '../dsh/ratio-policy.js'
+import { selectRollingRange } from '../dsh/rolling.js'
+import { controlsConfig } from '../dsh/controls-config.js'
+
+test('thresholds use current input capacity after output reservation',()=>{
+  const policy=deriveRatioPolicy({foldBatchTokens:20000},{contextWindow:1000000,reservedCompletionTokens:100000})
+  assert.equal(policy.prepareActiveTokens,630000)
+  assert.equal(policy.softActiveTokens,720000)
+  assert.equal(policy.hardActiveTokens,810000)
+  assert.equal(policy.minRetainTokens,36000)
+  assert.equal(policy.summaryPrefixTargetTokens,54000)
+  assert.equal(policy.postTargetTokens,90000)
+})
+test('fixed tools and system costs count toward the post-compaction target',()=>{
+  const policy=deriveRatioPolicy({foldBatchTokens:20000},{contextWindow:100000,fixedTokens:12000})
+  assert.equal(policy.minRetainTokens,4000)
+  assert.equal(policy.postTargetTokens,17024)
+  assert.equal(policy.summaryPrefixTargetTokens,1024)
+  const small=deriveRatioPolicy({foldBatchTokens:20000},{contextWindow:8000})
+  assert.ok(small.foldBatchTokens<20000)
+  assert.ok(small.minRetainTokens+small.summaryPrefixTargetTokens<small.softActiveTokens)
+  assert.throws(()=>deriveRatioPolicy({foldBatchTokens:20000},{contextWindow:8000,fixedTokens:6500}))
+})
+test('unknown capacities and unordered thresholds are rejected',()=>{
+  assert.throws(()=>deriveRatioPolicy({foldBatchTokens:20000},{}))
+  assert.throws(()=>deriveRatioPolicy({foldBatchTokens:20000},{contextWindow:8000,reservedCompletionTokens:8000}))
+  assert.throws(()=>ratioOptions({prepareRatio:.9,switchRatio:.8}))
+})
+test('latest user turn stays verbatim even when it exceeds the usual recent budget',()=>{
+  const nodes=[0,1,2,3,4].map(seq=>({seq,tokens:1000}))
+  const selection=selectRollingRange(nodes,[0,1,2,3,4],{firstFoldableIndex:0,protectedFromIndex:2,
+    minRetainTokens:1000,retainTokenBudget:true,foldBatchTokens:2000,softActiveTokens:3000,hardActiveTokens:4000})
+  assert.equal(selection.end,1)
+  assert.equal(selection.eligibleEnd,1)
+})
+test('fresh controls default to ratios and 20K chunks while old fixed-token controls remain explicit',()=>{
+  assert.equal(controlsConfig({auto:false}).budgetMode,'ratio')
+  assert.equal(controlsConfig({auto:false}).foldBatchTokens,20000)
+  assert.equal(controlsConfig({auto:false,softActiveTokens:260000,hardActiveTokens:280000}).budgetMode,'tokens')
+})
+
+test('a 10K ratio chunk does not inherit an incompatible hidden legacy pressure minimum',()=>{
+  const config=controlsConfig({auto:false,budgetMode:'ratio',foldBatchTokens:10000,pressureFoldTokens:20000})
+  assert.equal(config.foldBatchTokens,10000)
+  assert.equal(config.pressureFoldTokens,10000)
+})

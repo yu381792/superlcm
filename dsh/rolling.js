@@ -111,6 +111,10 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     boundary.keepFromIdx = Math.min(boundary.keepFromIdx, options.lastFoldableIndex + 1)
   }
 
+  if (Number.isSafeInteger(options.protectedFromIndex)) {
+    boundary.keepFromIdx = Math.min(boundary.keepFromIdx, options.protectedFromIndex)
+    while (boundary.keepFromIdx > firstFoldableIndex && !(options.isBalancedBefore?.(surfaceSeqs[boundary.keepFromIdx]) ?? true)) boundary.keepFromIdx--
+  }
   if (boundary.keepFromIdx <= firstFoldableIndex) return null
 
   let foldTokens = 0

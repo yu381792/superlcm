@@ -23,7 +23,7 @@ export function inheritedControls(store,configuration) {
 }
 export function controlDocument(store,plan) {
   const inherited=inheritedControls(store,plan._next.configuration)
-  return {format:1,revision:randomUUID(),config:controlsConfig({...inherited,auto:false,...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})}
+  return {format:1,revision:randomUUID(),config:controlsConfig({...inherited,auto:false,budgetMode:'ratio',foldBatchTokens:inherited.budgetMode==='ratio'?inherited.foldBatchTokens:(store.tuning().target_tokens||20000),...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})}
 }
 const digest=value=>createHash('sha256').update(value).digest('hex')
 const safeError=error=>new Error(/^(?:压缩(?:设置|开关|参数|接管)|强制压缩|原文保留|最小压缩|请先|请选择|当前接入|配置已变化|保存失败且存在并发修改|检测到冲突)/.test(error.message)?error.message:'DSH 压缩配置读取或保存失败，请检查宿主日志')
@@ -43,7 +43,7 @@ async function readSettings(store,options) {
   const acknowledged=!!saved&&live.length>0&&live.every(r=>r.settings_revision===saved.revision&&r.enabled===base.auto&&r.route_ready&&r.version===installedVersion&&r.version===packageInfo.version&&runtimes.some(a=>a.live&&a.kind==='archive'&&a.pid===r.pid&&a.profile===r.profile&&a.version===r.version))
   const revision=digest(JSON.stringify([raw,plan.revision]))
   return {expected_version:packageInfo.version,installed_version:installedVersion,configured:plan.existing||archiveOnly,archive_only:archiveOnly,controls_installed:installed,revision,settings_revision:saved?.revision||null,
-    enabled:archiveOnly?false:base.auto??false,provider_ref:base.summaryAdapter?.ref||plan.provider_ref,provider:base.summarizationProvider||plan.provider,model:base.summarizationModel||plan.model,...fields,
+    enabled:archiveOnly?false:base.auto??false,budgetMode:base.budgetMode||'ratio',prepareRatio:base.prepareRatio??0.7,switchRatio:base.switchRatio??0.8,emergencyRatio:base.emergencyRatio??0.9,provider_ref:base.summaryAdapter?.ref||plan.provider_ref,provider:base.summarizationProvider||plan.provider,model:base.summarizationModel||plan.model,...fields,
     status:!installed?'needs-update':acknowledged?'applied':live.length?'pending':'awaiting-runtime',catalog:plan.catalog,
     _plan:plan,_raw:raw}
 }
@@ -67,7 +67,7 @@ async function saveSettings(store,input,options) {
   const snapshot=p=>JSON.stringify([p._next.raw,p._next.configuration.profiles.map(x=>[x.name,x.manifest,x.patch])])
   if(snapshot(plan)!==snapshot(current._plan))throw Error('配置已变化，请重新读取后保存')
   const before=inheritedControls(store,provider)
-  const config=controlsConfig({...before,...Object.fromEntries(Object.keys(controlFields).filter(k=>input[k]!==undefined).map(k=>[k,input[k]])),auto:input.enabled,...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})
+  const config=controlsConfig({...before,...Object.fromEntries(Object.keys(controlFields).filter(k=>input[k]!==undefined).map(k=>[k,input[k]])),auto:input.enabled,budgetMode:input.budgetMode??before.budgetMode??'ratio',...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})
   if(rawControls(store)!==current._raw)throw Error('压缩设置已变化，请重新读取后保存')
   const backup=join(store.dir,'config-backups','dsh-controls-'+randomUUID());mkdirSync(backup,{recursive:true,mode:0o700})
   if(current._raw!==null)writeFileSync(join(backup,'settings.before.json'),current._raw,{mode:0o600})

@@ -1,4 +1,5 @@
 import z from '@deepseek-ai/schemastery'
+import {ratioOptions} from './ratio-policy.js'
 import { isCompactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { extractChildNodeIds } from './marker.js'
 
@@ -6,6 +7,7 @@ const DEPRECATED_CONFIG_KEYS = new Set(['cacheTtlSeconds', 'thresholdRatio', 're
 const FALLBACK_CONFIG_KEYS = new Set(['fallbackSummarizationProvider', 'fallbackSummarizationModel'])
 
 const ROLLING_CONFIG_KEYS = new Set([
+  'budgetMode','prepareRatio','switchRatio','emergencyRatio',
   'archiveHome',
   'controlFile',
   'summaryAdapter',
@@ -26,10 +28,11 @@ const ROLLING_CONFIG_KEYS = new Set([
 
 const ROLLING_DEFAULTS = Object.freeze({
   mode: 'rolling',
+  budgetMode: 'ratio',prepareRatio:0.7,switchRatio:0.8,emergencyRatio:0.9,
   tailCount: 24,
   minRetainTokens: 32000,
   pressureFoldTokens: 20000,
-  foldBatchTokens: 64000,
+  foldBatchTokens: 20000,
   softActiveTokens: 160000,
   hardActiveTokens: 220000,
   foldTiming: 'background',
@@ -55,6 +58,7 @@ function normalizeRolling(config) {
   if (raw.mode !== undefined && raw.mode !== 'rolling') {
     throw new Error('SuperLcm only supports rolling mode because automatic compaction must remain non-blocking')
   }
+  if (raw.budgetMode !== undefined && !['tokens','ratio'].includes(raw.budgetMode)) throw Error('压缩预算模式无效')
   const mode = 'rolling'
   const foldBatchTokens = positiveInteger(raw.foldBatchTokens, ROLLING_DEFAULTS.foldBatchTokens)
   const pressureFoldTokens = Math.min(
@@ -69,6 +73,8 @@ function normalizeRolling(config) {
 
   return {
     mode,
+    budgetMode:raw.budgetMode??(raw.softActiveTokens!==undefined||raw.hardActiveTokens!==undefined?'tokens':'ratio'),
+    ...ratioOptions(raw),
     tailCount: positiveInteger(raw.tailCount, ROLLING_DEFAULTS.tailCount),
     minRetainTokens: nonNegativeInteger(raw.minRetainTokens, ROLLING_DEFAULTS.minRetainTokens),
     pressureFoldTokens,
