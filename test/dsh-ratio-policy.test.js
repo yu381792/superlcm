@@ -46,3 +46,18 @@ test('a 10K ratio chunk does not inherit an incompatible hidden legacy pressure 
   assert.equal(config.foldBatchTokens,10000)
   assert.equal(config.pressureFoldTokens,10000)
 })
+
+test('user thresholds scale with each model window and its output reservation',()=>{
+  const base={foldBatchTokens:20000,prepareRatio:.6,switchRatio:.82,emergencyRatio:.95}
+  const small=deriveRatioPolicy(base,{contextWindow:100000,reservedCompletionTokens:10000})
+  const large=deriveRatioPolicy(base,{contextWindow:1000000,reservedCompletionTokens:100000})
+  assert.equal(small.prepareActiveTokens,54000);assert.equal(small.softActiveTokens,73800);assert.equal(small.hardActiveTokens,85500)
+  assert.equal(large.prepareActiveTokens,540000);assert.equal(large.softActiveTokens,738000);assert.equal(large.hardActiveTokens,855000)
+})
+
+test('legal early thresholds shrink automatic retention and summary budgets too',()=>{
+  const policy=deriveRatioPolicy({foldBatchTokens:20000,prepareRatio:.01,switchRatio:.02,emergencyRatio:.03},{contextWindow:100000})
+  assert.equal(policy.softActiveTokens,2000);assert.equal(policy.minRetainTokens,300)
+  assert.ok(policy.foldBatchTokens>=512)
+  assert.ok(policy.minRetainTokens+policy.summaryPrefixTargetTokens<policy.softActiveTokens)
+})

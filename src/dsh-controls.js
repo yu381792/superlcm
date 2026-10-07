@@ -5,6 +5,7 @@ import { controlsConfig,readControls,controlFields } from '../dsh/controls-confi
 import { dshEntries,isDshEngine } from './dsh-connection.js'
 import {packageInfo} from './dsh-install.js'
 import {dshHome} from './dsh-connection.js'
+import {RATIO_DEFAULTS} from '../dsh/ratio-policy.js'
 import { compressionSnapshot } from './compression-status.js'
 export const controlsPath=store=>join(store.dir,'dsh-compression.json')
 export const rawControls=store=>existsSync(controlsPath(store))?readFileSync(controlsPath(store),'utf8'):null
@@ -26,7 +27,7 @@ export function controlDocument(store,plan) {
   return {format:1,revision:randomUUID(),config:controlsConfig({...inherited,auto:false,budgetMode:'ratio',foldBatchTokens:inherited.budgetMode==='ratio'?inherited.foldBatchTokens:(store.tuning().target_tokens||20000),...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})}
 }
 const digest=value=>createHash('sha256').update(value).digest('hex')
-const safeError=error=>new Error(/^(?:压缩(?:设置|开关|参数|接管)|强制压缩|原文保留|最小压缩|请先|请选择|当前接入|配置已变化|保存失败且存在并发修改|检测到冲突)/.test(error.message)?error.message:'DSH 压缩配置读取或保存失败，请检查宿主日志')
+const safeError=error=>new Error(/^(?:压缩(?:设置|开关|参数|比例|接管)|强制压缩|原文保留|最小压缩|请先|请选择|当前接入|配置已变化|保存失败且存在并发修改|检测到冲突)/.test(error.message)?error.message:'DSH 压缩配置读取或保存失败，请检查宿主日志')
 export async function dshCompressionSettings(store,options={}) {
   try{return await readSettings(store,options)}catch(error){throw safeError(error)}
 }
@@ -67,7 +68,7 @@ async function saveSettings(store,input,options) {
   const snapshot=p=>JSON.stringify([p._next.raw,p._next.configuration.profiles.map(x=>[x.name,x.manifest,x.patch])])
   if(snapshot(plan)!==snapshot(current._plan))throw Error('配置已变化，请重新读取后保存')
   const before=inheritedControls(store,provider)
-  const config=controlsConfig({...before,...Object.fromEntries(Object.keys(controlFields).filter(k=>input[k]!==undefined).map(k=>[k,input[k]])),auto:input.enabled,budgetMode:input.budgetMode??before.budgetMode??'ratio',...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})
+  const config=controlsConfig({...before,...Object.fromEntries([...Object.keys(controlFields),...Object.keys(RATIO_DEFAULTS)].filter(k=>input[k]!==undefined).map(k=>[k,input[k]])),auto:input.enabled,budgetMode:input.budgetMode??before.budgetMode??'ratio',...plan._next.choice?{summarizationProvider:plan.provider,summarizationModel:plan.model,summaryAdapter:modelSpec(plan)}:{}})
   if(rawControls(store)!==current._raw)throw Error('压缩设置已变化，请重新读取后保存')
   const backup=join(store.dir,'config-backups','dsh-controls-'+randomUUID());mkdirSync(backup,{recursive:true,mode:0o700})
   if(current._raw!==null)writeFileSync(join(backup,'settings.before.json'),current._raw,{mode:0o600})

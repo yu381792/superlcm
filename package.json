@@ -1,6 +1,6 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.5.18",
+  "version": "0.5.19",
   "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness: background layered summaries, exact-source recall and native context compaction by default.",
   "type": "module",
   "publishConfig": {

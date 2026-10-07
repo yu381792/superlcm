@@ -65,7 +65,7 @@ test('previous leaf is context only; changing policy or child body invalidates p
   const file=join(dir,'source.jsonl');writeFileSync(file,Array.from({length:6},(_,i)=>line({role:'user',content:'fact '+i})).join(''));store.ingest('s',file)
   let work=summaryWork(store,'s',{batchSize:2});store.addNode({session:'s',id:work.batch_id,level:0,first:work.first,last:work.last,children:[],summary:'Current constraint: no production deployment.',digest:work.digest,model:'fixture'})
   work=summaryWork(store,'s',{batchSize:2});assert.match(buildSummaryPrompt(work.content,work),/<preceding_summary context_only="true">/)
-  for(let i=1;i<4;i++)store.addNode({session:'s',id:'c'+i,level:0,first:2*i,last:2*i+1,children:[],summary:'facts '+i,digest:'d',model:'fixture'})
+  for(let i=1;i<4;i++)store.addNode({session:'s',id:'c'+i,level:0,first:2*i,last:2*i+1,children:[],summary:('facts '+i+' with exact constraints ').repeat(200),digest:'d',model:'fixture'})
   const before=summaryWork(store,'s').batch_id
   store.db.prepare("UPDATE nodes SET summary=summary || ' Updated constraint.' WHERE id='c3'").run()
   assert.notEqual(summaryWork(store,'s').batch_id,before)

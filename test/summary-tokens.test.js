@@ -58,3 +58,41 @@ test('changing token size rejects a pending model result and keeps original data
   const result=await buildHierarchy(f.store,'pending',{...options,model:'fixture',summarize:async()=>{f.store.setTuning({target_tokens:10000});return 'A late summary that must not be committed.'}})
   assert.equal(result.stopped,'settings-changed');assert.equal(f.store.nodeRows('pending',0).length,0);assert.deepEqual(readFileSync(file),before)
 })
+
+test('short sibling summaries wait for enough combined content and then form one exact parent',t=>{
+  const f=fixture(t);ingest(f,'siblings',Array.from({length:12},()=> 'source original'))
+  for(let i=0;i<4;i++)f.store.addNode({session:'siblings',id:'leaf-'+i,level:0,first:i,last:i,children:[],summary:'Exact fact '+i+'. '+'a'.repeat(1000),digest:'d'+i,model:'fixture'})
+  assert.equal(summaryWork(f.store,'siblings',options),null,'four ~250-token summaries remain readable leaves')
+  assert.equal(summaryEstimate(f.store,'siblings',options).calls,0,'a deferred merge is not shown as pending paid work')
+  for(let i=4;i<8;i++)f.store.addNode({session:'siblings',id:'leaf-'+i,level:0,first:i,last:i,children:[],summary:'Exact fact '+i+'. '+'a'.repeat(1000),digest:'d'+i,model:'fixture'})
+  const work=summaryWork(f.store,'siblings',options)
+  assert.equal(work.level,1);assert.equal(work.children.length,8);assert.equal(work.first,0);assert.equal(work.last,7)
+  for(let i=0;i<8;i++)assert.ok(work.content.includes('Exact fact '+i))
+  assert.ok(work.targetTokens<estimateSummaryTokens(work.content))
+})
+test('owned siblings split groups and complete child content stays within the input budget',async()=>{
+  const {selectSummaryMerge,mergeContent}=await import('../src/summary-merge.js')
+  const nodes=Array.from({length:9},(_,i)=>({id:'n'+i,first:i,last:i,summary:'x'.repeat(2600)}))
+  const group=selectSummaryMerge(nodes,new Set(['n3']),{fanout:4,targetTokens:20000})
+  assert.deepEqual(group.map(n=>n.id),['n4','n5','n6','n7'])
+  const small=selectSummaryMerge(nodes,new Set(),{fanout:4,targetTokens:2000})
+  assert.equal(small,null,'four complete large children cannot be squeezed into a smaller input batch')
+  assert.ok(estimateSummaryTokens(mergeContent(group))<=20000)
+  assert.equal(selectSummaryMerge(nodes.slice(0,3),new Set(),{fanout:4,targetTokens:20000}),null)
+})
+test('an over-budget child does not block later leaves or trigger a truncated merge',async()=>{
+  const {selectSummaryMerge,mergeContent}=await import('../src/summary-merge.js')
+  const nodes=[{id:'big',first:0,last:0,summary:'B'.repeat(90000)},...Array.from({length:4},(_,i)=>({id:'n'+i,first:i+1,last:i+1,summary:'完整约束。'.repeat(100)}))]
+  const group=selectSummaryMerge(nodes,new Set(),{fanout:4,targetTokens:20000})
+  assert.deepEqual(group.map(n=>n.id),['n0','n1','n2','n3'])
+  assert.equal(mergeContent(group).includes('B'),false)
+  assert.ok(group.every(n=>mergeContent(group).includes(n.summary)))
+})
+
+test('mixed large and short siblings select the complete legal adjacent suffix',async()=>{
+  const {selectSummaryMerge,mergeContent}=await import('../src/summary-merge.js')
+  const nodes=[9000,4000,4000,4000,4000].map((tokens,i)=>({id:'m'+i,first:i,last:i,summary:'x'.repeat(tokens*4)}))
+  const group=selectSummaryMerge(nodes,new Set(),{fanout:4,targetTokens:20000})
+  assert.deepEqual(group.map(n=>n.id),['m1','m2','m3','m4'])
+  assert.ok(estimateSummaryTokens(mergeContent(group))<=20000)
+})

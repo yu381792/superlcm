@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { summaryEvents } from './summary-source.js'
+import {selectSummaryMerge,mergeContent} from './summary-merge.js'
 import { nodeId } from './store.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS } from './api-endpoint.js'
 import { MAX_SUMMARY_INPUT } from './runtime.js'
@@ -88,12 +89,13 @@ export function summaryWork(store, session, options = {}) {
     const lower = store.nodeRows(session, level - 1)
     if (lower.length < fanout) break
     const owned = new Set(store.nodeRows(session, level).flatMap(n => JSON.parse(n.children)))
-    const free = lower.filter(n => !owned.has(n.id))
-    if (free.length < fanout) continue
-    const batch = free.slice(0, fanout), digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,...batch.map(n => [n.id,n.digest,hash(n.summary)])]))
-    const content = batch.map(n => `[${n.id}, events ${n.first}-${n.last}]\n${n.summary}`).join('\n\n')
+    const batch=selectSummaryMerge(lower,owned,{fanout,targetTokens:budget.tokens?budget.target:null})
+    if(!batch)continue
+    const digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,...batch.map(n => [n.id,n.digest,hash(n.summary)])]))
+    const content = mergeContent(batch)
     if (content.length > MAX_SUMMARY_INPUT) throw new Error('Complete child summaries exceed the input limit; refusing to truncate them')
-    const task = { level, kind:'condensed', first:batch[0].first, last:batch.at(-1).last }
+    const task = { level, kind:'condensed', first:batch[0].first, last:batch.at(-1).last,
+      ...(budget.tokens?{targetTokens:Math.max(128,Math.min(1200,Math.floor(estimateSummaryTokens(content)/2)))}:{}) }
     const sources=store.metadata(session).harness==='dsh'?store.db.prepare('SELECT DISTINCT seq FROM dsh_node_sources WHERE session=? AND id IN ('+batch.map(()=>'?').join(',')+') ORDER BY seq').all(session,...batch.map(n=>n.id)).map(r=>r.seq):undefined
     return { session, batch_id: nodeId(session, level, task.first, task.last, digest), ...task, children: batch.map(n => n.id), digest,source_records:sources,
       content, notice:summaryInstructions(task), policy_version:SUMMARY_POLICY_VERSION }
@@ -135,8 +137,9 @@ export function summaryEstimate(store, session, options={}) {
     calls += Math.max(0, total - store.nodeRows(session, level).length)
     below = total
   }
+  if(!segments&&!summaryWork(store,session,options))calls=0
   const tokens=events.slice(from).filter(visibleEvent).reduce((a,e)=>a+estimateSummaryTokens(eventPrefix(e)+e.summaryText+'\n'),0)
-  return { records, segments, calls, tail: pending, tail_chars: chars, tail_tokens:tokens, target_chars:tuning.target_chars,target_tokens:tuning.target_tokens??null,tokens_estimated:true }
+  return { records, segments, calls, tail: pending, tail_chars: chars, tail_tokens:tokens, target_chars:tuning.target_chars,target_tokens:tuning.target_tokens??null,tokens_estimated:true,calls_upper_bound:budget.tokens }
 }
 export function summarySettingsRevision(store, session, env = process.env) {
   const setting = store.effectiveSetting(session, env)

@@ -896,3 +896,20 @@ test('real requests honor their bound small adapter capacity during a provider m
     assert.equal(agent.session.requestContext().contextWindow,100000)
   })
 })
+
+test('custom replacement percentage keeps ready drafts private until its own threshold',async()=>{
+  await withHost({budgetMode:'ratio',auto:true,prepareRatio:.6,switchRatio:.85,emergencyRatio:.95},async()=> 'Exact facts and current constraint.',async({ctx,engine,session,agent})=>{
+    for(let i=0;i<4;i++)append(session,'x'.repeat(78000)+i)
+    append(session,'latest user')
+    const signal=new AbortController().signal
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{});await engine.settleBackgroundFold(agent)
+    const surface=[...session.surface.nodes]
+    assert.ok(ctx.tokenMeter.measure(session).totalTokens>70000)
+    assert.equal(engine.tryCommitBackgroundFold(agent,{allowPressure:true}),null)
+    assert.deepEqual(session.surface.nodes,surface)
+    append(session,'more previous instructions '+ 'y'.repeat(40000));append(session,'new latest user')
+    await ctx.waterfall('agent/pre-step',{agent,signal},()=>{});await engine.settleBackgroundFold(agent)
+    assert.ok(engine.tryCommitBackgroundFold(agent,{allowPressure:true}))
+    assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,1)
+  })
+})
