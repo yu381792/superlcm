@@ -16,6 +16,8 @@ The top-level navigation is **对话 → 接入 → 压缩 → 设置** (Convers
 
 The list shows every stored conversation, newest activity first, with its tool logo, record count, last update and summary coverage. Filter chips are built from the tools that actually have conversations. The search box (shortcut `/`) matches conversation names, `#codes`, summaries and original text (substring match, works for Chinese).
 
+Names follow the host’s saved display title, including Claude’s separate rename files and Paseo names bound to the exact native session ID. The list, search and detail refresh names without sending a message. A name set manually in SuperLcm stays authoritative; the first user message is only a fallback when no host name is available.
+
 The detail view shows:
 
 - **摘要层级** — one lane per summary level plus the raw-record lane. Higher-level segments are clickable and jump to that summary. The hatched tail is records not yet summarized; their originals are still readable.

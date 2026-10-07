@@ -1,4 +1,5 @@
 import { initializeEventCounts } from './event-counts.js'
+import { claudeSidecarTitle } from './conversation-names.js'
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
 import { dshCoverage, dshNodeSources, dshVisibleNodes } from './dsh-summaries.js'
@@ -67,6 +68,7 @@ export class ClaudeStore {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sources(session TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL, offset INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ok');
       CREATE TABLE IF NOT EXISTS events(session TEXT NOT NULL, ordinal INTEGER NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, digest TEXT NOT NULL, preview TEXT NOT NULL, PRIMARY KEY(session, ordinal));
+      CREATE INDEX IF NOT EXISTS events_native_titles ON events(session,ordinal) WHERE preview GLOB 'custom-title: *' OR preview GLOB 'ai-title: *';
       CREATE VIRTUAL TABLE IF NOT EXISTS event_fts USING fts5(session UNINDEXED, ordinal UNINDEXED, preview);
       CREATE TABLE IF NOT EXISTS nodes(session TEXT NOT NULL, id TEXT NOT NULL, level INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, children TEXT NOT NULL, summary TEXT NOT NULL, digest TEXT NOT NULL, model TEXT NOT NULL, PRIMARY KEY(session,id));
       CREATE INDEX IF NOT EXISTS nodes_level ON nodes(session,level,first);
@@ -299,8 +301,11 @@ export class ClaudeStore {
     this.db.prepare('UPDATE session_origins SET external_id=COALESCE(external_id,?),display_name=?,name_source=? WHERE session=?').run(externalId,replace ? title : old.display_name,replace ? nameSource : old.name_source,session)
   }
   nativeClaudeTitle(session) {
-    const rows=this.eventRows(session)
-    return (rows.filter(e=>e.preview.startsWith('custom-title: ')).at(-1) || rows.filter(e=>e.preview.startsWith('ai-title: ')).at(-1))?.preview.replace(/^(custom-title|ai-title):\s*/,'') || null
+    const sidecar=claudeSidecarTitle(session,this.source(session)?.path)
+    if(sidecar)return sidecar
+    const rows=this.db.prepare("SELECT preview FROM events WHERE session=? AND (preview GLOB 'custom-title: *' OR preview GLOB 'ai-title: *') ORDER BY ordinal DESC").all(session)
+    const ai=rows.find(e=>e.preview.startsWith('custom-title: '))||rows.find(e=>e.preview.startsWith('ai-title: '))
+    return ai?.preview.replace(/^(custom-title|ai-title):\s*/,'').trim() || null
   }
   nameSession(session,name) {
     const origin=this.metadata(session)

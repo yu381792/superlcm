@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { ClaudeStore, claudeTranscript } from './store.js'
-import { codexTranscript, codexNativeName, codexSessionKey } from './codex.js'
+import { codexTranscript, codexSessionKey } from './codex.js'
+import { nativeConversationName } from './conversation-names.js'
 import { buildHierarchy, summaryWork, summarySettingsRevision } from './summarize.js'
 import { SUMMARY_SYSTEM, buildSummaryPrompt, checkedSummary } from './summary-policy.js'
 import { summarizeWith, writerTool, WRITER_CLI } from './cli-writers.js'
@@ -114,7 +115,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           if (shouldIndex && file && !store.isDeleted(session)) result=store.ingest(session,file)
           if (store.source(session)) {
             store.markClient(codex?'codex':'claude-code','hook')
-            const title=codex ? (file?codexNativeName(input.session_id,file):null) : store.nativeClaudeTitle(session)
+            const title=nativeConversationName(store,{harness:codex?'codex':'claude-code',id:input.session_id,file:file||store.source(session).path})
             store.setMetadata(session,{harness:codex?'codex':'claude-code',externalId:input.session_id,name:title||derivedTitle(store,session),nameSource:title?'native':'derived'})
             const {mode,model}=effective(store,session)
             if (['off','cli','api'].includes(mode)) store.setSummaryMode(session,mode)
@@ -144,7 +145,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       const codex=command==='index-codex', key=codex?codexSessionKey(session):session
       const file=codex?codexTranscript(path,{cwd:process.cwd()}):claudeTranscript(path)
       result=store.ingest(key,file)
-      const title=codex ? codexNativeName(session,file) : store.nativeClaudeTitle(key)
+      const title=nativeConversationName(store,{harness:codex?'codex':'claude-code',id:session,file})
       store.setMetadata(key,{harness:codex?'codex':'claude-code',externalId:session,name:title||derivedTitle(store,key),nameSource:title?'native':'derived'})
       // Indexing alone never starts a paid summarizer.
     } else if (command==='summarize') {

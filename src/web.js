@@ -26,6 +26,7 @@ import { openInTerminal } from './open-terminal.js'
 import { compressionSnapshot, compressionCapabilities, runtimeVersion } from './compression-status.js'
 import { dshCompressionSettings,publicCompressionSettings,saveDshCompression } from './dsh-controls.js'
 import {defaultConsolePort,recordConsoleLocation} from './console-location.js'
+import { refreshConversationNames } from './conversation-names.js'
 export { probeMcp } from './mcp-probe.js'
 
 const nonce = () => randomBytes(18).toString('hex')
@@ -45,18 +46,18 @@ const int = (value, fallback) => { const n = value === null || value === undefin
 const shortName = name => { const flat = String(name).replace(/\s+/g, ' ').trim(); return flat.length > 24 ? flat.slice(0, 23) + '…' : flat }
 const continueLine = source => `通过 SuperLcm 接续对话 #${source.code}「${shortName(source.name)}」，继续之前的任务。`
 
-export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', env = process.env, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, probeModel = o => summarizeWithModel('User: Hello.\nAssistant: Hello! How can I help?', { ...o, timeoutMs: 45000 }), spawnWorker = spawn, terminal = {} } = {}) {
+export async function startWeb({ store = new ClaudeStore(), port = 0, host = '127.0.0.1', env = process.env, nameRefreshMs = 15000, discovery = harnessConnections, catalog = modelCatalog, claudeProbe = probeClaudeConnection, probeModel = o => summarizeWithModel('User: Hello.\nAssistant: Hello! How can I help?', { ...o, timeoutMs: 45000 }), spawnWorker = spawn, terminal = {} } = {}) {
   if (host !== '127.0.0.1') throw new Error('Web console is loopback-only')
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local Web port')
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
   // One-off catch-up methods this computer can actually run for a conversation.
   const backends = id => [...(writerTool(store.metadata(id).harness, env) ? ['cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
   const routes = {
-    'GET /api/conversations': url => ({ ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() }),
-    'GET /api/conversation': url => { const id = session(url); return { ...store.outline(id), writer_tool: writerTool(store.metadata(id).harness, env), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id), estimate: summaryEstimate(store, id) } },
+    'GET /api/conversations': url => { refreshConversationNames(store,{env,minIntervalMs:nameRefreshMs});return { ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() } },
+    'GET /api/conversation': url => { const id = session(url);refreshConversationNames(store,{env,session:id,minIntervalMs:nameRefreshMs});return { ...store.outline(id), writer_tool: writerTool(store.metadata(id).harness, env), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, backends: backends(id), estimate: summaryEstimate(store, id) } },
     'GET /api/outline': url => store.outline(session(url), url.searchParams.get('node') || undefined),
     'GET /api/events': url => { const id = session(url); return { source: store.metadata(id), events: store.eventPreviews(id, int(url.searchParams.get('from'), 0), int(url.searchParams.get('to'), 0)) } },
-    'GET /api/search': url => store.find(url.searchParams.get('q') || '', { harness: url.searchParams.get('harness') || undefined, limit: 30 }),
+    'GET /api/search': url => { refreshConversationNames(store,{env,minIntervalMs:nameRefreshMs});return store.find(url.searchParams.get('q') || '', { harness: url.searchParams.get('harness') || undefined, limit: 30 }) },
     'GET /api/continue': url => { const id = session(url), packet = continuePacket(store, id); return { line: continueLine(packet.source), code: packet.source.code, name: shortName(packet.source.name), packet } },
     'POST /api/rename': async req => { const x = await body(req); if (!store.source(x.session)) throw new Error('Unknown conversation'); return store.nameSession(x.session, x.name) },
     'POST /api/summarize': async req => {
