@@ -237,7 +237,7 @@ function renderDetail() {
     '<div class="actions"><button type="button" class="btn icon" id="delete" title="' + t('删除对话') + '" aria-label="' + t('删除对话') + '">' + TRASH + '</button><button type="button" class="btn" id="rename">' + t('重命名') + '</button><button type="button" class="btn primary" id="continue">' + t('换个工具继续') + '</button></div></div>'
   html += stripHtml(d)
   if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
-  else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
+  else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + (d.summary_error_detail ? '<br>' + esc(d.summary_error_detail) : '') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
   // Count pending work, not records: most records are tool calls with no text and need no summary.
   else if (d.summary_count && d.estimate?.calls >= 2 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后：还差约 {n} 次摘要（含向上合并）。', { n: fmt(d.estimate.calls) }) + '</b>' + t('对话模型生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
   if (d.summary_count) {

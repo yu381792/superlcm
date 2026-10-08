@@ -173,7 +173,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           })()
         if (!result.busy) store.setStatus(rest[0],'ok')
       }
-      catch(error) {store.setStatus(rest[0],'summary_error');throw error}
+      catch(error) {store.recordSummaryError(rest[0],error);store.setStatus(rest[0],'summary_error');throw error}
     } else if (command==='import') {
       const {importFile}=await import('./store.js');result=importFile(store,rest[0],rest[1],rest[2] || 'import',rest[3])
     } else if (command==='name') result=store.nameSession(rest[0],rest.slice(1).join(' '))
@@ -193,7 +193,9 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     else {
       if(existsSync(src.path))store.ingest(session,src.path) // the newest turns, written since the last hook
       const {planCompaction}=await import('./compaction.js')
-      reply=planCompaction({meta:store.metadata(session),events:store.eventRows(session),nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:input.messages||[],instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||setting.window,setting.window),keepTokens:setting.keep})
+      const {verifiedCompactionInput}=await import('./claude-compaction-input.js')
+      const context=verifiedCompactionInput(store,session,input.messages||[])
+      reply=planCompaction({meta:store.metadata(session),events:context.events,nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:context.messages,instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||setting.window,setting.window),keepTokens:setting.keep})
       if(reply.use)store.noteTakeover(session,input.tokens||0,reply.after||0)
     }
   } catch(error) { reply={use:false,reason:error.message} }

@@ -139,7 +139,21 @@ export class ClaudeStore {
     }
   }
   close() { this.db.close() }
-  setStatus(session,status) { this.db.prepare('UPDATE sources SET status=? WHERE session=?').run(status,session) }
+  recordSummaryError(session, error) {
+    // Only locally constructed protocol diagnostics are safe to persist. Other
+    // exceptions can contain upstream bodies, source text or credentials.
+    this.db.exec('CREATE TABLE IF NOT EXISTS summary_errors(session TEXT PRIMARY KEY,detail TEXT NOT NULL)')
+    const detail = error.summaryDiagnostic === true ? error.message.slice(0, 500) : 'Summary generation failed; see the explicit summarize command for details'
+    this.db.prepare('INSERT INTO summary_errors(session,detail) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET detail=excluded.detail').run(session, detail)
+  }
+  summaryError(session) {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_errors'").get()) return null
+    return this.db.prepare('SELECT detail FROM summary_errors WHERE session=?').get(session)?.detail || null
+  }
+  setStatus(session,status) {
+    this.db.prepare('UPDATE sources SET status=? WHERE session=?').run(status,session)
+    if (status === 'ok' && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_errors'").get()) this.db.prepare("UPDATE summary_errors SET detail='' WHERE session=?").run(session)
+  }
   setSummaryMode(session,mode) {
     if (!['off','cli','api'].includes(mode) || !this.source(session)) throw new Error('Invalid session summary mode')
     this.db.prepare('INSERT INTO summary_policies(session,mode) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET mode=excluded.mode').run(session,mode)
@@ -593,7 +607,7 @@ export class ClaudeStore {
       }
       this.db.prepare('INSERT INTO events VALUES(?,?,?,?,?,?)').run(session, ordinal, start, end, hash(raw), preview)
       this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
-      this.db.prepare("UPDATE sources SET offset=?,status='ok',updated_ms=? WHERE session=?").run(end, Date.now(), session)
+      this.db.prepare("UPDATE sources SET offset=?,status=CASE WHEN status='summary_error' THEN status ELSE 'ok' END,updated_ms=? WHERE session=?").run(end, Date.now(), session)
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }

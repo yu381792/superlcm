@@ -15,7 +15,8 @@ const KEEP_TURNS = 2 // the newest user prompts are always kept word for word
 const key = text => String(text || '').replace(/\s+/g, '').slice(0, 600)
 const isPacket = m => m.role === 'user' && m.text.trimStart().startsWith(`<${PACKET_TAG} `)
 // A prompt the person typed: a user message with text and no tool results.
-const isPrompt = m => m.role === 'user' && m.text.trim() && !m.toolResults && !isPacket(m)
+const isSynthetic = m => isPacket(m) || m.nativeSummary === true
+const isPrompt = m => m.role === 'user' && m.text.trim() && !m.toolResults && !isSynthetic(m)
 const escapeAttr = s => String(s).replace(/[&"<>]/g, c => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c])
 
 // Records 0..through are covered when level-0 summaries chain from record 0 without a gap.
@@ -43,19 +44,19 @@ export function frontier(nodes, through) {
 // mistaken for an earlier copy and drop what came between.
 function cutCandidates(messages, events, through) {
   // Only messages can be found in context; title records (written every turn by the desktop app) cannot.
-  const visible = events.filter(e => /^(user|assistant): /.test(e.preview))
+  const visible = events.filter(e => !e.nativeSummary && /^(user|assistant): /.test(e.preview))
   const covered = visible.filter(e => e.ordinal <= through).map(e => key(e.preview))
   const later = visible.filter(e => e.ordinal > through).map(e => key(e.preview))
   const keys = messages.map(m => m.text.trim() ? key(`${m.role}: ${m.text.trim()}`) : null)
   const matches = (list, at, index) => { // list[at] matches keys[index]; up to 3 earlier ones agree
     if (keys[index] !== list[at]) return false
     for (let back = 1, i = index - 1, j = at - 1; back <= 3 && j >= 0 && i >= 0; i--) {
-      if (keys[i] === null || isPacket(messages[i])) continue
+      if (keys[i] === null || isSynthetic(messages[i])) continue
       if (keys[i] !== list[j]) return false
       back++; j--
     }
     if (!later.length) return true
-    for (let i = index + 1; i < keys.length; i++) if (keys[i] !== null && !isPacket(messages[i])) return keys[i] === later[0]
+    for (let i = index + 1; i < keys.length; i++) if (keys[i] !== null && !isSynthetic(messages[i])) return keys[i] === later[0]
     return true
   }
   const candidates = []
@@ -65,14 +66,22 @@ function cutCandidates(messages, events, through) {
   // records after it agree too (a repeated message such as a heartbeat prompt has earlier copies).
   const follows = index => {
     for (let n = 1, i = index + 1; n <= 3 && n < later.length && i < keys.length; i++) {
-      if (keys[i] === null || isPacket(messages[i])) continue
+      if (keys[i] === null || isSynthetic(messages[i])) continue
       if (keys[i] !== later[n]) return false
       n++
     }
     return true
   }
   if (later.length) for (let i = 0; i < keys.length; i++) if (keys[i] === later[0] && follows(i)) candidates.push(i)
-  return [...new Set(candidates)]
+  // Tool-only messages do not define a second visible boundary. Keep the earlier
+  // position, so the existing turn-boundary logic retains complete tool groups.
+  const merged = []
+  for (const candidate of [...new Set(candidates)].sort((a, b) => a - b)) {
+    const previous = merged.at(-1)
+    if (previous !== undefined && keys.slice(previous, candidate).every((k, offset) => k === null || isSynthetic(messages[previous + offset]))) continue
+    merged.push(candidate)
+  }
+  return merged
 }
 export function cutIndex(messages, events, through) {
   const candidates = cutCandidates(messages, events, through)
@@ -88,7 +97,7 @@ export function tailStart(messages, cut) {
 }
 // The dialogue after the summaries, one line per record; a long record keeps its head and tail.
 function recentText(events, through) {
-  return events.filter(e => e.ordinal > through && /^(user|assistant): /.test(e.preview)).map(e => {
+  return events.filter(e => !e.nativeSummary && e.ordinal > through && /^(user|assistant): /.test(e.preview)).map(e => {
     const t = e.preview.replace(/\s+/g, ' ').trim(), h = Math.ceil(RECENT_RECORD * 0.6)
     return `[record ${e.ordinal}] ` + (t.length <= RECENT_RECORD ? t : t.slice(0, h) + ` …[${t.length - RECENT_RECORD} characters omitted; lcm_read record ${e.ordinal}]… ` + t.slice(t.length - (RECENT_RECORD - h)))
   }).join('\n')
@@ -147,8 +156,8 @@ function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0
   // One very long turn (a big task run in one go) would pull its whole length in: then keep less instead.
   if (wide > 0 && newest <= want * 2) start = Math.min(start, wide)
   if (recent) { // the context must be this record: what is dropped, and the newest message, are all in it
-    const known = new Set(events.filter(e => /^(user|assistant): /.test(e.preview)).map(e => key(e.preview)))
-    const text = messages.map(m => m.text.trim() && !isPacket(m) ? key(`${m.role}: ${m.text.trim()}`) : null)
+    const known = new Set(events.filter(e => !e.nativeSummary && /^(user|assistant): /.test(e.preview)).map(e => key(e.preview)))
+    const text = messages.map(m => m.text.trim() && !isSynthetic(m) ? key(`${m.role}: ${m.text.trim()}`) : null)
     const newest = text.findLast(k => k !== null)
     if (!newest || !known.has(newest) || text.slice(0, start).some(k => k !== null && !known.has(k))) return { use: false, reason: 'the conversation in context does not match the record' }
   }

@@ -1,3 +1,4 @@
+import { readOpenAICompletion, summaryFailure } from './summary-response.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { summaryEvents } from './summary-source.js'
 import {selectSummaryMerge,mergeContent} from './summary-merge.js'
@@ -31,10 +32,18 @@ export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL,
     body.max_completion_tokens=body.max_tokens;delete body.max_tokens;response=await post()
   }
   if(!response.ok)throw new Error(`Summarization HTTP ${response.status}: ${await detail(response)}`)
-  const result=await response.json()
+  const result=openai?await readOpenAICompletion(response,model):await response.json()
   const output=openai?result.choices?.[0]?.message?.content:result.content?.filter(x=>x.type==='text').map(x=>x.text).join('\n')
   const summary=typeof output==='string'?output:Array.isArray(output)?output.filter(x=>x?.type==='text').map(x=>x.text).join('\n'):''
-  return checkedSummary(summary,{finishReason:openai?result.choices?.[0]?.finish_reason:result.stop_reason})
+  const finishReason=openai?result.choices?.[0]?.finish_reason:result.stop_reason
+  try {
+    if (finishReason != null && !['stop','end_turn','stop_sequence'].includes(finishReason)) throw Error('Summary generation was incomplete or used an unsupported finish reason; original content retained, retry required')
+    return checkedSummary(summary,{finishReason})
+  }
+  catch(error) {
+    // Report protocol metadata only; never echo the source, partial answer or credentials.
+    throw summaryFailure(error.message, model, finishReason)
+  }
 }
 // Deterministic work planner shared by background workers and in-conversation agents.
 // Merges come first so the layered outline grows while the conversation is still running.

@@ -40,7 +40,7 @@ export function buildSummaryPrompt(text, task = {}) {
 export function checkedSummary(text, { finishReason, maxChars = SUMMARY_MAX_CHARS } = {}) {
   const reason=typeof finishReason === 'object' ? finishReason?.kind ?? finishReason?.type ?? finishReason?.reason : finishReason
   const normalized=typeof reason==='string' ? reason.toLowerCase().replace(/-/g,'_') : reason
-  if (['length', 'max_tokens', 'maxtokens', 'max_output_tokens', 'incomplete', 'content_filter', 'error', 'aborted', 'tool_calls', 'tool_use'].includes(normalized)) {
+  if (['length', 'max_tokens', 'maxtokens', 'max_output_tokens', 'incomplete', 'content_filter', 'error', 'aborted', 'tool_calls', 'tool_use', 'function_call', 'in_progress', 'queued', 'pending', 'cancelled', 'failed'].includes(normalized)) {
     throw new Error('Summary generation was incomplete; original content retained, retry required')
   }
   if (typeof text !== 'string' || !text.trim()) throw new Error('Summarizer returned no text')
