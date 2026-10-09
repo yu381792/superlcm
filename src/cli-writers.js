@@ -25,7 +25,7 @@ function check(name, text, model, timeoutMs) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error(`Invalid ${name} timeout`)
 }
 // Runs one CLI with the prompt on stdin and hands its stdout to parse(); stderr is drained, never kept.
-function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess }, parse) {
+function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess, summaryTask }, parse) {
   mkdirSync(cwd, { recursive: true, mode: 0o700 })
   return new Promise((resolve, reject) => {
     let child, out = '', settled = false, timedOut = false, overflow = false
@@ -43,7 +43,7 @@ function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess }, pars
       if (code !== 0) return finish(new Error(`${name} summarization failed (exit ${code}); check its login and model`))
       let text; try { text = parse(out) } catch { text = null }
       if (!text?.trim()) return finish(new Error(`${name} returned no summary`))
-      try { finish(null, checkedSummary(text)) } catch(error) { finish(error) }
+      try { finish(null, checkedSummary(text,{maxChars:summaryTask?.allowOversize?null:6000})) } catch(error) { finish(error) }
     })
     child.stdin.on('error', () => {})
     child.stdin.end(input)
@@ -54,16 +54,17 @@ function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess }, pars
 export function summarizeWithHermes(text, { model = '', bin = findCli('hermes') || 'hermes', env = process.env, timeoutMs = 180000, cwd = join(home(), 'writer-cwd'), spawnProcess = spawn, summaryTask } = {}) {
   check('Hermes', text, model, timeoutMs)
   const args = ['chat', '--query-file', '-', '--format', 'stream-json', '--source', 'tool', '--ignore-rules', '--max-turns', '1', ...(model ? ['-m', model] : [])]
-  return run('Hermes', bin, args, SUMMARY_SYSTEM + '\n\n' + buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess }, out => {
+  return run('Hermes', bin, args, SUMMARY_SYSTEM + '\n\n' + buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess, summaryTask }, out => {
     const result = out.trim().split('\n').map(line => { try { return JSON.parse(line) } catch { return null } }).findLast(e => e?.type === 'result')
-    return result && !result.exit_code ? result.text : null
+    if(result?.exit_code || !result) return null
+    return checkedSummary(result.text,{finishReason:result.finish_reason ?? result.stop_reason,maxChars:summaryTask?.allowOversize?null:6000})
   })
 }
 // Pi: print mode, no saved session, and no tools, extensions (so not SuperLcm's own), skills or context files.
 export function summarizeWithPi(text, { model = '', bin = findCli('pi') || 'pi', env = process.env, timeoutMs = 180000, cwd = join(home(), 'writer-cwd'), spawnProcess = spawn, summaryTask } = {}) {
   check('Pi', text, model, timeoutMs)
   const args = ['-p', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-context-files', '--no-prompt-templates', '--no-themes', '--system-prompt', SUMMARY_SYSTEM, ...(model ? ['--model', model] : [])]
-  return run('Pi', bin, args, buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess }, out => out)
+  return run('Pi', bin, args, buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess, summaryTask }, out => out)
 }
 
 export function summarizeWith(tool, text, { model = '', env = process.env, summaryTask } = {}) {

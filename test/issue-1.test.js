@@ -143,7 +143,7 @@ for (const [name, raw, pattern] of [
 
 test('empty and nonempty in_progress JSON report the configured model and reason', async () => {
   for (const content of ['', 'partial summary']) await assert.rejects(call(new Response(JSON.stringify({ model: 'upstream-model', choices: [{ message: { content }, finish_reason: 'in_progress' }] }))), /model requested-model, finish_reason in_progress/)
-  assert.equal(await call(new Response(JSON.stringify({ choices: [{ message: { content: 'Legacy JSON summary' } }] }))), 'Legacy JSON summary')
+  await assert.rejects(call(new Response(JSON.stringify({ choices: [{ message: { content: 'JSON without terminal evidence' } }] }))), /no terminal finish reason/)
 })
 
 test('stream bytes can arrive across UTF-8 and event boundaries', async () => {

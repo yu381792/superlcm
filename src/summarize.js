@@ -1,49 +1,74 @@
-import { readOpenAICompletion, summaryFailure } from './summary-response.js'
+import { profileKey, readSummaryProfile, updateSummaryProfile, visibleOutputRoom, adaptiveSummaryTask, repairSummaryPrompt, fitSummary, isReducedSummary, reducedNotice } from './summary-generation.js'
+import { readOpenAICompletion, summaryFailure, STREAM_COMPLETE } from './summary-response.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { summaryEvents } from './summary-source.js'
 import {selectSummaryMerge,mergeContent} from './summary-merge.js'
 import { nodeId } from './store.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS } from './api-endpoint.js'
 import { MAX_SUMMARY_INPUT } from './runtime.js'
-import { SUMMARY_POLICY_VERSION, SUMMARY_SYSTEM, SUMMARY_OUTPUT_TOKENS, buildSummaryPrompt, summaryInstructions, checkedSummary } from './summary-policy.js'
+import { SUMMARY_POLICY_VERSION, SUMMARY_SYSTEM, buildSummaryPrompt, summaryInstructions, checkedSummary } from './summary-policy.js'
 import { estimateSummaryTokens,takeTokenPrefix,takeTokenSuffix } from './summary-tokens.js'
 const hash = value => createHash('sha256').update(value).digest('hex')
 const head = (text, chars) => String(text || '').replace(/\s+/g,' ').slice(0,chars)
-// 思考程度: sent as OpenAI's reasoning_effort, or as an Anthropic thinking budget; the output cap grows with
-// it so thinking cannot use up the room for the summary. Unset sends nothing, as before.
 const THINKING={low:2048,medium:6144,high:16384,xhigh:32768}
-export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL, apiProvider='anthropic', effort=null, fetchImpl=fetch, timeoutMs=90000, summaryTask } = {}) {
+export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL, apiProvider='anthropic', effort=null, fetchImpl=fetch, timeoutMs=90000, summaryTask={}, profileStore, onQuality, shouldContinue } = {}) {
   const endpoint=normalizeApiEndpoint(apiProvider,apiURL||baseURL||(apiProvider==='openai'?'https://api.openai.com':'https://api.anthropic.com'))
   if (!model || (!apiKey && !loopbackEndpoint(endpoint))) throw new Error('Explicit summary model ID and API credential required; no agent fallback')
   if (effort!==null && !EFFORTS.includes(effort)) throw new Error('Unknown reasoning effort')
-  const prompt=SUMMARY_SYSTEM+'\n\n'+buildSummaryPrompt(text,summaryTask)
-  const budget=THINKING[effort]||0, openai=apiProvider==='openai'
-  const body={model,max_tokens:SUMMARY_OUTPUT_TOKENS+budget,messages:[{role:'user',content:prompt}]}
-  if(openai&&effort)body.reasoning_effort=effort
-  if(!openai&&budget)body.thinking={type:'enabled',budget_tokens:budget}
+  const openai=apiProvider==='openai', key=profileKey(endpoint,model,effort), profile=readSummaryProfile(key,profileStore)
+  const task=adaptiveSummaryTask(summaryTask,profile), visible=visibleOutputRoom(text)
+  const signal=AbortSignal.timeout(timeoutMs)
+  let reasoningRoom=Math.max(THINKING[effort]||0,profile.reasoning_room), retried=false, completionParam='max_tokens'
   const headers=openai?{'content-type':'application/json',...(apiKey?{authorization:`Bearer ${apiKey}`}:{})}:{'content-type':'application/json',...(apiKey?{'x-api-key':apiKey}:{}),'anthropic-version':'2023-06-01'}
-  const post=()=>fetchImpl(endpoint,{method:'POST',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(timeoutMs)})
   const detail=async r=>{try{return (await r.text()).replace(/\s+/g,' ').slice(0,300)}catch{return ''}}
-  let response=await post()
-  if(!response.ok&&openai&&response.status===400){
-    // OpenAI's reasoning models take max_completion_tokens instead of max_tokens.
-    const why=await detail(response)
-    if(!/max_completion_tokens|max_tokens/.test(why))throw new Error(`Summarization HTTP 400: ${why}`)
-    body.max_completion_tokens=body.max_tokens;delete body.max_tokens;response=await post()
+  const generate=async prompt=>{
+    for (;;) {
+      signal.throwIfAborted()
+      if(shouldContinue&&!shouldContinue())throw Error('Summary setting changed; additional generation cancelled')
+      const cap=Math.min(49152,visible+reasoningRoom)
+      const body={model,[completionParam]:cap,messages:[{role:'user',content:prompt}]}
+      if(openai&&effort)body.reasoning_effort=effort
+      if(!openai&&THINKING[effort])body.thinking={type:'enabled',budget_tokens:THINKING[effort]}
+      const post=async()=>{
+        signal.throwIfAborted()
+        if(shouldContinue&&!shouldContinue())throw Error('Summary setting changed; additional generation cancelled')
+        try{return await fetchImpl(endpoint,{method:'POST',headers,body:JSON.stringify(body),signal})}
+        catch{throw summaryFailure(signal.aborted?'Summary request timed out':'Summary request transport failed',model,null)}
+      }
+      let response=await post()
+      if(!response.ok&&openai&&response.status===400){
+        const why=await detail(response)
+        if(completionParam!=='max_tokens'||!/max_completion_tokens|max_tokens/.test(why))throw summaryFailure('Summarization HTTP 400: request rejected; check model and endpoint configuration',model,null)
+        completionParam='max_completion_tokens';body.max_completion_tokens=body.max_tokens;delete body.max_tokens;response=await post()
+      }
+      if(!response.ok)throw summaryFailure(`Summarization HTTP ${Number.isSafeInteger(response.status)?response.status:0}: request failed; check endpoint, credential and model configuration`,model,null)
+      let result
+      try { result=openai?await readOpenAICompletion(response,model):await response.json() }
+      catch(error){if(error.summaryDiagnostic)throw error;throw summaryFailure('Malformed summary response; original content retained',model,null)}
+      if(!result||typeof result!=='object')throw summaryFailure('Malformed summary response; original content retained',model,null)
+      const choice=result.choices?.find(c=>c.index===0)??result.choices?.[0]
+      const output=openai?choice?.message?.content:result.content?.filter(x=>x.type==='text').map(x=>x.text).join('\n')
+      const summary=typeof output==='string'?output:Array.isArray(output)?output.filter(x=>x?.type==='text').map(x=>x.text).join('\n'):''
+      const finishReason=openai?choice?.finish_reason:result.stop_reason
+      const number=n=>Number.isSafeInteger(n)&&n>=0?Math.min(10000000,n):0
+      const evidence={reasoning_tokens:number(result.usage?.completion_tokens_details?.reasoning_tokens),completion_tokens:number(result.usage?.completion_tokens)}
+      const reasoningSeen=openai&&(evidence.reasoning_tokens>0||result.reasoningSeen||choice?.message?.reasoning_content||choice?.message?.reasoning)
+      const incomplete=['length','max_tokens','max_output_tokens'].includes(finishReason)
+      if(reasoningSeen) {
+        const room=Math.min(32768,Math.max(reasoningRoom,evidence.reasoning_tokens+2048,incomplete?Math.max(8192,cap*2):2048))
+        updateSummaryProfile(key,{reasoning_room:room},profileStore)
+        if(incomplete&&!retried&&visible+room>cap){retried=true;reasoningRoom=room;continue}
+        reasoningRoom=room
+      }
+      try {
+        if(finishReason==null&&!(openai&&result[STREAM_COMPLETE]))throw Error('Summary generation was incomplete; no terminal finish reason, original content retained')
+        if(finishReason!=null&&!['stop','end_turn','stop_sequence'].includes(finishReason))throw Error('Summary generation was incomplete or used an unsupported finish reason; original content retained, retry required')
+        return checkedSummary(summary,{finishReason,maxChars:null})
+      }catch(error){throw summaryFailure(error.message,model,finishReason,evidence)}
+    }
   }
-  if(!response.ok)throw new Error(`Summarization HTTP ${response.status}: ${await detail(response)}`)
-  const result=openai?await readOpenAICompletion(response,model):await response.json()
-  const output=openai?result.choices?.[0]?.message?.content:result.content?.filter(x=>x.type==='text').map(x=>x.text).join('\n')
-  const summary=typeof output==='string'?output:Array.isArray(output)?output.filter(x=>x?.type==='text').map(x=>x.text).join('\n'):''
-  const finishReason=openai?result.choices?.[0]?.finish_reason:result.stop_reason
-  try {
-    if (finishReason != null && !['stop','end_turn','stop_sequence'].includes(finishReason)) throw Error('Summary generation was incomplete or used an unsupported finish reason; original content retained, retry required')
-    return checkedSummary(summary,{finishReason})
-  }
-  catch(error) {
-    // Report protocol metadata only; never echo the source, partial answer or credentials.
-    throw summaryFailure(error.message, model, finishReason)
-  }
+  const initial=await generate(SUMMARY_SYSTEM+'\n\n'+buildSummaryPrompt(text,task))
+  return fitSummary(initial,draft=>generate(repairSummaryPrompt(draft,task)),{task,onQuality,onOvershoot:overshoot=>updateSummaryProfile(key,{overshoot},profileStore)})
 }
 // Deterministic work planner shared by background workers and in-conversation agents.
 // Merges come first so the layered outline grows while the conversation is still running.
@@ -103,7 +128,7 @@ export function summaryWork(store, session, options = {}) {
     const digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,...batch.map(n => [n.id,n.digest,hash(n.summary)])]))
     const content = mergeContent(batch)
     if (content.length > MAX_SUMMARY_INPUT) throw new Error('Complete child summaries exceed the input limit; refusing to truncate them')
-    const task = { level, kind:'condensed', first:batch[0].first, last:batch.at(-1).last,
+    const task = { reducedSources:batch.some(n=>isReducedSummary(n.summary)), level, kind:'condensed', first:batch[0].first, last:batch.at(-1).last,
       ...(budget.tokens?{targetTokens:Math.max(128,Math.min(1200,Math.floor(estimateSummaryTokens(content)/2)))}:{}) }
     const sources=store.metadata(session).harness==='dsh'?store.db.prepare('SELECT DISTINCT seq FROM dsh_node_sources WHERE session=? AND id IN ('+batch.map(()=>'?').join(',')+') ORDER BY seq').all(session,...batch.map(n=>n.id)).map(r=>r.seq):undefined
     return { session, batch_id: nodeId(session, level, task.first, task.last, digest), ...task, children: batch.map(n => n.id), digest,source_records:sources,
@@ -154,7 +179,7 @@ export function summarySettingsRevision(store, session, env = process.env) {
   const setting = store.effectiveSetting(session, env)
   return hash(JSON.stringify([setting,store.tuning(),store.integrationRevision(setting.harness), setting.mode === 'api' ? store.apiCredential(session, env) : null]))
 }
-export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000 } = {}) {
+export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, fetchImpl, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000 } = {}) {
   if (!model || (apiKey == null && summarize === summarizeWithModel)) throw new Error('Explicit summarizer model and API key required')
   if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 10000) throw new Error('batchSize must be 2–10000')
   if (!Number.isSafeInteger(fanout) || fanout < 2 || fanout > 8) throw new Error('fanout must be 2–8')
@@ -178,7 +203,15 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
       // Fail closed if the on-disk original changed after indexing or during model execution.
       const verify = () => { if (work.level === 0) for (let i = work.first; i <= work.last; i++) store.exact(session, i) }
       verify()
-      const summary = checkedSummary(await summarize(work.content, { model, apiKey, baseURL, apiURL, apiProvider, effort, summaryTask:work }))
+      const cliKey=profileKey('cli',model,null),task=summarize===summarizeWithModel?work:adaptiveSummaryTask(work,readSummaryProfile(cliKey,store))
+      const options={model,apiKey,baseURL,apiURL,apiProvider,effort,fetchImpl,profileStore:store,shouldContinue:()=>{checkLease();return mayContinue()},summaryTask:{...task,allowOversize:true}}
+      const generateCli=async(content,repairDraft=false)=>{
+        checkLease()
+        if(!mayContinue())throw Error('Summary setting changed; additional generation cancelled')
+        return summarize(content,{...options,summaryTask:{...options.summaryTask,repairDraft}})
+      }
+      let summary = summarize===summarizeWithModel ? await summarize(work.content,options) : await fitSummary(await generateCli(work.content),draft=>generateCli(draft,true),{task,onOvershoot:overshoot=>updateSummaryProfile(cliKey,{overshoot},store)})
+      if(work.reducedSources&&!isReducedSummary(summary))summary=checkedSummary(reducedNotice(work)+'\n'+summary.slice(0,5600))
       checkLease()
       if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
       verify()

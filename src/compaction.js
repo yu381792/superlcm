@@ -1,3 +1,4 @@
+import { isReducedSummary } from './summary-fitting.js'
 // 接管压缩 (compaction takeover), the lossless-claw way: summaries are written in the background as the
 // conversation goes; when Claude Code compacts (its own threshold, or /compact), the summaries already
 // written replace the part they cover, everything newer stays word for word, and no model is called.
@@ -133,6 +134,7 @@ export function planCompaction(input) {
 }
 function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0, window = takeoverDefaults.window, keepTokens = takeoverDefaults.keep }, recent) {
   const through = coveredThrough(nodes)
+  if(nodes.some(n=>n.first<=through&&isReducedSummary(n.summary)))return {use:false,reason:'mechanically shortened summaries are navigation only; use native compaction'}
   if (through < 0 && !recent) return { use: false, reason: 'no summaries written yet' }
   // With the dialogue carried along, every message in context is covered: the cut is at the end.
   const candidates = recent ? [messages.length] : cutCandidates(messages, events, through)

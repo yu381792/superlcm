@@ -239,7 +239,7 @@ test('Codex Stop schedules an isolated fake CLI summary worker', {skip:process.p
   writeFileSync(file,Array.from({length:8},(_,i)=>JSON.stringify({role:i%2?'assistant':'user',content:'isolated detail '+i})+'\n').join(''))
   const fake=join(dir,'fake-summary-cli')
   // 本工具后台写: a Codex conversation is summarized by (a fake) Codex.
-  writeFileSync(fake,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Isolated Codex summary from background worker.'}})+'\\n'));\n`)
+  writeFileSync(fake,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Isolated Codex summary from background worker.'}})+'\\n'+JSON.stringify({type:'turn.completed'})+'\\n'));\n`)
   chmodSync(fake,0o700)
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
   const env={...process.env,CODEX_HOME:codexHome,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CODEX_CLI_BIN:fake}
@@ -325,26 +325,26 @@ test('custom API settings require scoped endpoint, model and private write-only 
   saveApiKey(store.dir,'harness:codex','codex-secret-7890');assert.equal(store.apiCredential('api-session',{}),'codex-secret-7890')
 }))
 test('Anthropic and OpenAI custom API requests use configured URL/model/key only',async()=>{
-  const sent=[];const fetchImpl=async(url,init)=>{sent.push({url,init});return {ok:true,json:async()=>sent.length===1?{content:[{type:'text',text:'Anthropic summary'}]}:{choices:[{message:{content:'OpenAI summary'}}]}}}
+  const sent=[];const fetchImpl=async(url,init)=>{sent.push({url,init});return {ok:true,json:async()=>sent.length===1?{stop_reason:'end_turn',content:[{type:'text',text:'Anthropic summary'}]}:{choices:[{finish_reason:'stop',message:{content:'OpenAI summary'}}]}}}
   assert.equal(await summarizeWithModel('source',{model:'claude-test',apiKey:'key-a',apiProvider:'anthropic',apiURL:'https://api.example.test',fetchImpl}),'Anthropic summary')
   assert.equal(await summarizeWithModel('source',{model:'gpt-test',apiKey:'key-b',apiProvider:'openai',apiURL:'https://api.example.test/v1/chat/completions',fetchImpl}),'OpenAI summary')
   assert.equal(sent[0].url,'https://api.example.test/v1/messages');assert.equal(sent[1].url,'https://api.example.test/v1/chat/completions')
   assert.equal(sent[0].init.headers['x-api-key'],'key-a');assert.equal(sent[1].init.headers.authorization,'Bearer key-b')
   assert.equal(JSON.parse(sent[1].init.body).model,'gpt-test')
   // 思考程度 and base URLs: OpenAI reasoning_effort, Anthropic thinking budget, SDK-style path completion.
-  const bodies=[];const ok=async(url,init)=>{bodies.push({url,body:JSON.parse(init.body)});return {ok:true,json:async()=>({choices:[{message:{content:'x'}}],content:[{type:'thinking',thinking:'t'},{type:'text',text:'y'}]})}}
+  const bodies=[];const ok=async(url,init)=>{bodies.push({url,body:JSON.parse(init.body)});return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'x'}}],stop_reason:'end_turn',content:[{type:'thinking',thinking:'t'},{type:'text',text:'y'}]})}}
   await summarizeWithModel('s',{model:'g',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://gen.example.test/v1beta/openai',effort:'high',fetchImpl:ok})
   assert.equal(bodies[0].url,'https://gen.example.test/v1beta/openai/chat/completions');assert.equal(bodies[0].body.reasoning_effort,'high');assert.ok(bodies[0].body.max_tokens>750)
   assert.equal(await summarizeWithModel('s',{model:'c',apiKey:'k-123456789',apiProvider:'anthropic',apiURL:'https://mm.example.test/anthropic',effort:'low',fetchImpl:ok}),'y')
   assert.equal(bodies[1].url,'https://mm.example.test/anthropic/v1/messages');assert.deepEqual(bodies[1].body.thinking,{type:'enabled',budget_tokens:2048});assert.ok(bodies[1].body.max_tokens>2048)
   await summarizeWithModel('s',{model:'g',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:ok});assert.equal(bodies[2].body.reasoning_effort,undefined,'unset sends nothing')
   // A reasoning model that refuses max_tokens is retried once with max_completion_tokens.
-  const tries=[];const picky=async(url,init)=>{const b=JSON.parse(init.body);tries.push(b);return b.max_tokens?{ok:false,status:400,text:async()=>'Unsupported parameter: max_tokens; use max_completion_tokens'}:{ok:true,json:async()=>({choices:[{message:{content:'z'}}]})}}
+  const tries=[];const picky=async(url,init)=>{const b=JSON.parse(init.body);tries.push(b);return b.max_tokens?{ok:false,status:400,text:async()=>'Unsupported parameter: max_tokens; use max_completion_tokens'}:{ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'z'}}]})}}
   assert.equal(await summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:picky}),'z');assert.equal(tries.length,2);assert.equal(tries[1].max_completion_tokens,2048)
-  await assert.rejects(summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:async()=>({ok:false,status:401,text:async()=>'{"error":"invalid key"}'})}),/HTTP 401: .*invalid key/)
+  await assert.rejects(summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:async()=>({ok:false,status:401,text:async()=>'{"error":"invalid key"}'})}),/HTTP 401: .*check endpoint/)
 })
 test('background worker actually uses saved API settings against a local fake endpoint',fixture(async ({dir,store})=>{
-  const received=[];const server=createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{received.push({url:req.url,auth:req.headers.authorization,body:JSON.parse(body)});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:'The decisions were preserved in a local fake response.'}}]}))})})
+  const received=[];const server=createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{received.push({url:req.url,auth:req.headers.authorization,body:JSON.parse(body)});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:'The decisions were preserved in a local fake response.'}}]}))})})
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
   try {
     const file=join(dir,'api-worker.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'record '+i+'\n').join(''));importFile(store,file,'api-worker','codex')
@@ -401,14 +401,14 @@ test('main-agent summary mode requires explicit opt-in and exact unchanged sourc
 }))
 test('Codex CLI backend follows the user config and captures final JSONL item',fixture(async ({dir})=>{
   let seen
-  const spawnProcess=(bin,args,options)=>{seen={bin,args,options};const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:()=>{}});queueMicrotask(()=>{child.stdout.end(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Codex factual summary'}})+'\n');child.stderr.end();child.emit('close',0)});return child}
+  const spawnProcess=(bin,args,options)=>{seen={bin,args,options};const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:()=>{}});queueMicrotask(()=>{child.stdout.end(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Codex factual summary'}})+'\n'+JSON.stringify({type:'turn.completed'})+'\n');child.stderr.end();child.emit('close',0)});return child}
   const value=await summarizeWithCodexCli('decision',{model:'gpt-model',bin:'fake-codex',cwd:join(dir,'scratch'),env:{OPENAI_API_KEY:'secret',OPENAI_BASE_URL:'https://paid.example',CODEX_API_KEY:'paid',ANTHROPIC_API_KEY:'other',CODEX_HOME:'safe-home'},spawnProcess})
   assert.equal(value,'Codex factual summary');assert.ok(seen.args.includes('--ephemeral'));assert.ok(!seen.args.includes('--ignore-user-config'));assert.ok(seen.args.includes('mcp_servers={}'));assert.ok(seen.args.includes('read-only'));assert.deepEqual(seen.args.slice(-4),['-m','gpt-model','--json','-']);assert.equal(seen.options.env.OPENAI_BASE_URL,'https://paid.example');assert.equal(seen.options.env.CODEX_HOME,'safe-home');assert.equal(seen.options.env.SUPERLCM_CLI_WORKER,'1')
 }))
 test('session Codex CLI choice dispatches through an isolated fake executable',fixture(async ({dir,store})=>{
   const file=join(dir,'codex-backend.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
   importFile(store,file,'chosen-backend','codex');store.setGlobalSetting('off');store.setHarnessSetting('codex','cli','gpt-test')
-  const bin=join(dir,'fake-codex');writeFileSync(bin,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\'item.completed\',item:{type:\'agent_message\',text:\'Independent Codex worker summary recorded decisions.\'}})+\'\\n\')\n',{mode:0o700})
+  const bin=join(dir,'fake-codex');writeFileSync(bin,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\'item.completed\',item:{type:\'agent_message\',text:\'Independent Codex worker summary recorded decisions.\'}})+\'\\n\'+JSON.stringify({type:\'turn.completed\'})+\'\\n\')\n',{mode:0o700})
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'summarize','chosen-backend'],{encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_CODEX_CLI_BIN:bin,SUPERLCM_SUMMARY_MODE:'off'},timeout:15000})
   assert.equal(r.status,0,r.stderr);assert.match(store.summaries('chosen-backend').nodes[0].model,/codex-cli:gpt-test/)
   // Hermes and Pi write through their own one-shot modes, marked so SuperLcm's hooks skip the run.
@@ -729,7 +729,7 @@ test('a card warns when the tool wrote a conversation after the last SuperLcm ho
 })
 
 test('a local gateway on this computer needs no API key',fixture(async ({dir,store})=>{
-  let seen;const fetchImpl=async(url,init)=>{seen={url,headers:init.headers};return {ok:true,json:async()=>({choices:[{message:{content:'Local gateway summary'}}]})}}
+  let seen;const fetchImpl=async(url,init)=>{seen={url,headers:init.headers};return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'Local gateway summary'}}]})}}
   assert.equal(await summarizeWithModel('decision',{model:'gpt-6-luna',apiProvider:'openai',apiURL:'http://127.0.0.1:10100/v1',fetchImpl}),'Local gateway summary')
   assert.equal(seen.url,'http://127.0.0.1:10100/v1/chat/completions');assert.equal(seen.headers.authorization,undefined)
   await assert.rejects(summarizeWithModel('decision',{model:'m',apiProvider:'openai',apiURL:'https://api.example.com/v1',fetchImpl}),/credential/)

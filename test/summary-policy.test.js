@@ -70,11 +70,13 @@ test('previous leaf is context only; changing policy or child body invalidates p
   store.db.prepare("UPDATE nodes SET summary=summary || ' Updated constraint.' WHERE id='c3'").run()
   assert.notEqual(summaryWork(store,'s').batch_id,before)
 }))
-test('overlength or incomplete model output cannot publish a node or silently cut its last constraint',fixture(async ({store,dir})=>{
+test('complete overlength output is marked as reduced navigation; incomplete output is still refused',fixture(async ({store,dir})=>{
   const file=join(dir,'source.jsonl'),raw=line({role:'user',content:'Original constraint'})+line({role:'assistant',content:'Pending, not done'})
   writeFileSync(file,raw);store.ingest('s',file)
-  await assert.rejects(buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=> 'a'.repeat(6001)}),/refusing silent truncation/)
-  assert.equal(store.nodeRows('s',0).length,0);assert.equal(store.exact('s',0),raw.split('\n')[0]+'\n')
+  await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=> 'a'.repeat(6001)})
+  assert.equal(store.nodeRows('s',0).length,1)
+  assert.match(store.nodeRows('s',0)[0].summary,/SuperLcm reduced navigation/)
+  assert.equal(store.exact('s',0),raw.split('\n')[0]+'\n')
   const fetchImpl=async()=>({ok:true,json:async()=>({choices:[{finish_reason:'length',message:{content:'Deployment completed.'}}]})})
   await assert.rejects(summarizeWithModel('facts',{model:'fixture',apiKey:'fixture',apiProvider:'openai',fetchImpl}),/incomplete/)
   assert.throws(()=>checkedSummary('plausible partial',{finishReason:{kind:'max-tokens'}}),/incomplete/)

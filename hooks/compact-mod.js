@@ -1,3 +1,5 @@
+import { fitSummary, repairSummaryPrompt } from '../src/summary-fitting.js'
+import { checkedSummary } from '../src/summary-policy.js'
 // A Claude Code module (2.1.286+), two jobs:
 // 接管压缩: when the main conversation compacts, SuperLcm answers with its own summaries plus the newest
 // messages word for word (see src/compaction.js). Anything unexpected, the setting being off, a subagent, or
@@ -19,21 +21,28 @@ async function writeSummaries($, id) {
     for (let n = 0; n < MAX_PIECES; n++) {
       const claim = await cli($, 'summary-claim', id)
       if (!claim.work) return
-      const { batch_id, system, prompt, model } = claim.work
+      const { batch_id, system, prompt, model, task = {}, maxTokens = 2048 } = claim.work
       const use = model || await $.session.model()
-      const r = await $.model.complete({ model: use, system, prompt, maxTokens: 2048, timeoutMs: 180000 })
-      if (!r.isAnswered) return void await cli($, 'summary-handoff', id)
-      const saved = await cli($, 'summary-save', id, JSON.stringify({ batch_id, summary: r.text, model: use, isAnswered: r.isAnswered, finishReason: r.stopReason ?? r.stop_reason ?? r.finishReason ?? r.finish_reason }))
+      let overshoot=1
+      const generate = async prompt => {
+        const checked=await cli($,'summary-check',id,JSON.stringify({batch_id}))
+        if(!checked.valid)throw Error('Summary settings changed or claim expired')
+        const r = await $.model.complete({ model: use, system, prompt, maxTokens, timeoutMs: 180000 })
+        if (!r.isAnswered) throw Error('Summary generation was incomplete')
+        return checkedSummary(r.text,{finishReason:r.stopReason ?? r.stop_reason ?? r.finishReason ?? r.finish_reason,maxChars:null})
+      }
+      const summary=await fitSummary(await generate(prompt),draft=>generate(repairSummaryPrompt(draft,task)),{task,onOvershoot:ratio=>{overshoot=ratio}})
+      const saved = await cli($, 'summary-save', id, JSON.stringify({ batch_id, summary, overshoot, model: use, isAnswered: true }))
       if (!saved.saved) return void await cli($, 'summary-handoff', id) // refused: the separate worker takes over
       if (!saved.more) return
     }
-  } catch { try { await cli($, 'summary-handoff', id) } catch {} }
+  } catch { try { await cli($, 'summary-host-error', id); await cli($, 'summary-handoff', id) } catch {} }
   finally { writing.delete(id) }
 }
 const toInput = messages => messages.map(m => ({ role: m.role, text: m.text.slice(0, 2000), toolResults: m.toolResults?.length ? 1 : 0, size: m.text.length + JSON.stringify(m.toolUses || []).length + JSON.stringify(m.toolResults || []).length + 200 }))
-async function packet($, id, messages, instructions) {
+async function packet($, id, messages, instructions, trigger) {
   const usage = await $.session.usage()
-  const input = JSON.stringify({ messages: toInput(messages), instructions: instructions || '', tokens: usage.context.tokens || 0, window: usage.context.window || 0 })
+  const input = JSON.stringify({ messages: toInput(messages), instructions: instructions || '', trigger, tokens: usage.context.tokens || 0, window: usage.context.window || 0 })
   const run = await $.process.run(['node', `${$.plugin.root}/src/launch.js`, 'compact-packet', id], { stdin: input, timeoutMs: 60000 })
   return JSON.parse(run.stdout.trim().split('\n').at(-1) || '{}')
 }
@@ -57,8 +66,8 @@ export function register(on) {
     if (e.agentId) return next(e)
     let plan
     try {
-      plan = await packet($, await $.session.id(), e.messages, e.instructions)
-    } catch { plan = null }
+      plan = await packet($, await $.session.id(), e.messages, e.instructions, e.trigger)
+    } catch { plan = null;try{await cli($,'compact-diagnostic',await $.session.id())}catch{} }
     if (plan?.use && plan.start > 0 && plan.start < e.messages.length)
       return { messages: [{ role: 'user', text: plan.packet, toolUses: [] }, ...e.messages.slice(plan.start)] }
     return next(e)

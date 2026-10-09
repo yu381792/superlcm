@@ -46,7 +46,7 @@ export function summarizeWithClaudeCli(text, { model = '', bin = process.env.SUP
         result = Array.isArray(decoded) ? decoded.findLast(item => item?.type === 'result') : decoded
       } catch { return finish(new Error('Claude CLI did not return a JSON result envelope')) }
       if (result?.is_error || result?.type !== 'result' || typeof result.result !== 'string' || !result.result.trim()) return finish(new Error('Claude CLI summarization returned an error or empty result'))
-      try { finish(null, checkedSummary(result.result,{finishReason:result.stop_reason})) }
+      try { finish(null, checkedSummary(result.result,{finishReason:result.stop_reason,maxChars:summaryTask?.allowOversize?null:6000})) }
       catch(error) { finish(error) }
     })
     child.stdin.on('error', () => { /* a rejected child will be reported by error/close */ })

@@ -1,13 +1,16 @@
 const MAX_RESPONSE_BYTES = 1024 * 1024
+// A parsed JSON response cannot forge this local completion proof.
+export const STREAM_COMPLETE = Symbol('verified summary stream completion')
 const safe = value => String(value ?? 'none').replace(/[^a-zA-Z0-9._:/-]/g, '?').slice(0, 120)
 const REASONS = new Set(['stop', 'end_turn', 'stop_sequence', 'length', 'max_tokens', 'maxtokens', 'max_output_tokens', 'incomplete', 'content_filter', 'error', 'aborted', 'tool_calls', 'tool_use', 'function_call', 'in_progress', 'queued', 'pending', 'cancelled', 'failed'])
-export function summaryFailure(message, model, finishReason) {
+export function summaryFailure(message, model, finishReason, evidence = {}) {
   const raw = typeof finishReason === 'object' ? finishReason?.kind ?? finishReason?.type ?? finishReason?.reason : finishReason
   const normalized = typeof raw === 'string' ? raw.toLowerCase().replace(/-/g, '_') : raw
   const reason = normalized == null ? 'none' : REASONS.has(normalized) ? normalized : 'unsupported'
   // Only the configured model is trusted. Routers can echo credentials or
   // source fragments into either model or finish_reason response metadata.
-  return Object.assign(Error(`${message} (model ${safe(model)}, finish_reason ${reason})`), { summaryDiagnostic: true })
+  const numeric = key => Number.isSafeInteger(evidence[key]) && evidence[key] >= 0 ? Math.min(10000000, evidence[key]) : 0
+  return Object.assign(Error(`${message} (model ${safe(model)}, finish_reason ${reason}, reasoning_tokens ${numeric('reasoning_tokens')}, completion_tokens ${numeric('completion_tokens')})`), { summaryDiagnostic: true })
 }
 const contentText = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : ''
 
@@ -33,7 +36,7 @@ async function responseText(response) {
 
 export async function readOpenAICompletion(response, requestedModel) {
   if (!/text\/event-stream/i.test(response.headers?.get?.('content-type') || '')) return response.json()
-  let content = '', finish = null, done = false, received = false
+  let content = '', finish = null, done = false, received = false, reasoningSeen = false, usage = {}
   const fail = reason => summaryFailure(reason, requestedModel, finish)
   let raw
   try { raw = (await responseText(response)).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n') }
@@ -49,9 +52,11 @@ export async function readOpenAICompletion(response, requestedModel) {
     try { chunk = JSON.parse(data) } catch { throw fail('Malformed summary stream event') }
     if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) throw fail('Malformed summary stream event')
     if (chunk.error) throw fail('Summary stream reported an upstream error')
+    if (chunk.usage && typeof chunk.usage === 'object') usage = chunk.usage
     if (!Array.isArray(chunk.choices)) throw fail('Summary stream event has no choices')
     const choice = chunk.choices?.find(c => c.index === 0) ?? chunk.choices?.find(c => c.index === undefined)
     if (!choice) continue // usage-only frames, or another choice
+    if (choice.delta?.reasoning_content || choice.delta?.reasoning || choice.message?.reasoning_content || choice.message?.reasoning) reasoningSeen = true
     const text = contentText(choice.delta?.content ?? choice.message?.content)
     if (finish !== null && (text || choice.finish_reason != null)) throw fail('Summary stream continues after its final choice')
     content += text
@@ -62,5 +67,5 @@ export async function readOpenAICompletion(response, requestedModel) {
   if (finish !== null && !['stop', 'length', 'content_filter', 'tool_calls', 'function_call'].includes(finish)) throw fail('Summary stream has a nonterminal or unsupported finish reason')
   // A DONE marker alone is accepted by OpenAI-compatible gateways; explicit
   // incomplete reasons are still checked by the shared summary validator.
-  return { model: requestedModel, choices: [{ message: { content }, finish_reason: finish }] }
+  return { model: requestedModel, reasoningSeen, usage, [STREAM_COMPLETE]: true, choices: [{ message: { content }, finish_reason: finish }] }
 }

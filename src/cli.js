@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { visibleOutputRoom, isReducedSummary, reducedNotice, adaptiveSummaryTask, profileKey, readSummaryProfile, updateSummaryProfile } from './summary-generation.js'
+import { compactionDiagnostic } from './compaction-diagnostic.js'
 import { ClaudeStore, claudeTranscript } from './store.js'
 import { codexTranscript, codexSessionKey } from './codex.js'
 import { nativeConversationName } from './conversation-names.js'
@@ -54,7 +56,7 @@ if (command==='setup' || command==='doctor-local') {
   const store=new ClaudeStore()
   try {
     const {harnessConnections}=await import('./harness.js')
-    if(command==='doctor-local'||!rest[0]) console.log(JSON.stringify(await harnessConnections(store),null,2))
+    if(command==='doctor-local'||!rest[0]) console.log(JSON.stringify({...await harnessConnections(store),compaction_diagnostics:store.db.prepare("SELECT session FROM sources WHERE session IN (SELECT session FROM session_origins WHERE harness='claude-code')").all().map(({session})=>({session,...store.lastCompactionDiagnostic(session)})).filter(x=>x.status)},null,2))
     else {
       const {setupPreview,publicPreview,applySetup}=await import('./setup.js')
       const option = flag => { const i=rest.indexOf(flag); if(i<0)return undefined; if(!rest[i+1]||rest[i+1].startsWith('--'))throw Error('Missing '+flag+' value');return rest[i+1] }
@@ -180,6 +182,22 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     else result=store.overview(rest[0])
     if (command!=='hook' && command!=='codex-hook') process.stdout.write(JSON.stringify(result)+'\n')
   } catch(error) {process.stderr.write(`SuperLcm: ${error.message}\n`);process.exitCode=1} finally {store.close()}
+} else if (command==='compact-diagnostic'||command==='summary-host-error') {
+  const store=new ClaudeStore(),session=rest[0]
+  try {
+    if(session&&store.source(session)){
+      if(command==='compact-diagnostic')store.noteCompaction(session,compactionDiagnostic({error:true},{records:store.stats(session).records}))
+      else {
+        const claim=store.db.prepare('SELECT revision FROM host_summary_claims WHERE session=?').get(session)
+        // Cancellation or another writer taking ownership is not a failure of
+        // the current settings. Do not overwrite that writer's healthy status.
+        if(store.ownsLease(session,'host')&&claim?.revision===summarySettingsRevision(store,session)){
+          store.recordSummaryError(session,Error('Host summary failed'));store.setStatus(session,'summary_error')
+        }
+      }
+    }
+    process.stdout.write('{}\n')
+  }finally{store.close()}
 } else if (command==='compact-packet') {
   // Called by the plugin's compaction module (hooks/compact-mod.js) with the live transcript on stdin.
   // Always answers JSON; { use:false, reason } hands the compaction back to Claude Code.
@@ -198,10 +216,11 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       reply=planCompaction({meta:store.metadata(session),events:context.events,nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:context.messages,instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||setting.window,setting.window),keepTokens:setting.keep})
       if(reply.use)store.noteTakeover(session,input.tokens||0,reply.after||0)
     }
-  } catch(error) { reply={use:false,reason:error.message} }
+    if(src)store.noteCompaction(session,compactionDiagnostic(reply,{nodes:store.nodeRows(session,0),records:store.stats(session).records,before:input.tokens||0,trigger:input.trigger}))
+  } catch(error) { reply={use:false,reason:'compaction planner failed; originals retained',error:true};if(rest[0]&&store.source(rest[0]))store.noteCompaction(rest[0],compactionDiagnostic(reply,{records:store.stats(rest[0]).records})) }
   finally { store.close() }
   process.stdout.write(JSON.stringify(reply)+'\n')
-} else if (['summary-host','summary-claim','summary-save','summary-handoff'].includes(command)) {
+} else if (['summary-host','summary-claim','summary-save','summary-handoff','summary-check'].includes(command)) {
   // 本工具后台写 inside Claude Code (hooks/compact-mod.js, 2.1.286+): the module asks for the next piece
   // (summary-claim), writes it with $.model.complete on the session's own login, and hands it back
   // (summary-save). summary-host marks the session at its start so the Stop hook does not also start a
@@ -221,7 +240,12 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if(!src||store.isDeleted(session))throw Object.assign(new Error('conversation not recorded by SuperLcm'),{none:true})
       const {mode,model}=effective(store,session)
       if(mode!=='cli'||writerTool(store.metadata(session).harness)!=='claude-code')throw Object.assign(new Error('summaries are not written by Claude Code for this conversation'),{none:true})
-      if(command==='summary-claim'){
+      if(command==='summary-check'){
+        const input=await readHook(),claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
+        const valid=!!claim&&claim.batch_id===input.batch_id&&claim.revision===summarySettingsRevision(store,session)&&store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner==='host'&&store.summarizing(session)
+        if(valid)store.renewLease(session,300000,'host')
+        reply={valid}
+      }else if(command==='summary-claim'){
         store.setHostWriter(session,true)
         if(existsSync(src.path))store.ingest(session,src.path)
         const work=summaryWork(store,session)
@@ -229,18 +253,21 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         else if(!store.lease(session,300000,'host'))reply={none:'busy'}
         else {
           store.db.prepare('INSERT INTO host_summary_claims VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision').run(session,work.batch_id,summarySettingsRevision(store,session))
-          reply={work:{batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,work),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
+          const task=adaptiveSummaryTask(work,readSummaryProfile(profileKey('claude-host',model||'configured',null),store))
+          reply={work:{task:{level:work.level,first:work.first,last:work.last,maxChars:task.maxChars},maxTokens:visibleOutputRoom(work.content),batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,task),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
         }
       } else {
         const input=await readHook()
         try {
           if (input.isAnswered === false) throw new Error('Summary generation was incomplete')
-          const summary=checkedSummary(input.summary,{finishReason:input.finishReason})
+          let summary=checkedSummary(input.summary,{finishReason:input.finishReason})
           const work=summaryWork(store,session)
           if(!store.summarizing(session)||store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner!=='host')throw new Error('no summary claimed in this conversation')
           if(!work||work.batch_id!==input.batch_id)throw new Error('stale summary batch')
           const claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
           if(!claim||claim.batch_id!==input.batch_id||claim.revision!==summarySettingsRevision(store,session))throw Error('Summary setting changed; result not saved')
+          if(work.reducedSources&&!isReducedSummary(summary))summary=checkedSummary(reducedNotice(work)+'\n'+summary.slice(0,5600))
+          if(Number.isFinite(input.overshoot))updateSummaryProfile(profileKey('claude-host',model||'configured',null),{overshoot:input.overshoot},store)
           if(summary.length<20)throw new Error('summary too short')
           if(work.level===0)for(let i=work.first;i<=work.last;i++)store.exact(session,i)
           store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`},{leaseOwner:'host',validate:()=>claim.revision===summarySettingsRevision(store,session)})

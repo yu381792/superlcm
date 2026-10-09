@@ -199,6 +199,15 @@ export class ClaudeStore {
   }
   // The newest packet SuperLcm handed Claude Code for a conversation, so the SessionStart hook after the
   // compaction can tell the user it was ours and how much it freed. Taken (read and cleared) once.
+  noteCompaction(session,{status,code,reason,through=-1,records=0,before=0,trigger='unknown'}) {
+    this.db.exec('CREATE TABLE IF NOT EXISTS compaction_diagnostics(session TEXT PRIMARY KEY,status TEXT NOT NULL,code TEXT NOT NULL,reason TEXT NOT NULL,at_ms INTEGER NOT NULL,through_record INTEGER NOT NULL,records INTEGER NOT NULL,before_tokens INTEGER NOT NULL,trigger TEXT NOT NULL)')
+    this.db.prepare('INSERT INTO compaction_diagnostics VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET status=excluded.status,code=excluded.code,reason=excluded.reason,at_ms=excluded.at_ms,through_record=excluded.through_record,records=excluded.records,before_tokens=excluded.before_tokens,trigger=excluded.trigger').run(session,status,code,reason,Date.now(),through,records,Math.round(before)||0,['auto','manual','precompute'].includes(trigger)?trigger:'unknown')
+  }
+  lastCompactionDiagnostic(session) {
+    if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='compaction_diagnostics'").get())return null
+    return this.db.prepare('SELECT status,code,reason,at_ms,through_record,records,before_tokens,trigger FROM compaction_diagnostics WHERE session=?').get(session)||null
+  }
+  reducedSummaryCount(session) { return this.db.prepare("SELECT count(*) AS n FROM nodes WHERE session=? AND instr(summary,'[SuperLcm reduced navigation]')>0").get(session).n }
   noteTakeover(session,before,after) { this.db.prepare('INSERT INTO takeover_runs(session,at_ms,before,after) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET at_ms=excluded.at_ms,before=excluded.before,after=excluded.after').run(session,Date.now(),Math.round(before)||0,Math.round(after)||0) }
   takeTakeover(session,maxAge=3600000) { const r=this.db.prepare('SELECT at_ms,before,after FROM takeover_runs WHERE session=?').get(session); this.db.prepare('DELETE FROM takeover_runs WHERE session=?').run(session); return r&&Date.now()-r.at_ms<=maxAge?{before:r.before,after:r.after}:null }
   markCompaction(session,ordinal=this.stats(session).records) { if(this.source(session))this.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session,ordinal) }

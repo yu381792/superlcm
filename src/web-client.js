@@ -236,6 +236,12 @@ function renderDetail() {
     '<div class="d-head"><div class="d-title"><h1 title="' + esc(c.name) + '">' + esc(c.name) + '</h1><div class="d-meta">' + mark(c.harness, 'sm') + '<span>' + esc(toolName(c.harness)) + '</span><span class="tag" title="' + t('对话编号，接续时使用') + '">#' + esc(c.code) + '</span><span class="num">' + t('{n} 条原文', { n: fmt(d.records) }) + '</span><span>' + t('更新于 {t}', { t: ago(d.updated_ms) }) + '</span></div></div>' +
     '<div class="actions"><button type="button" class="btn icon" id="delete" title="' + t('删除对话') + '" aria-label="' + t('删除对话') + '">' + TRASH + '</button><button type="button" class="btn" id="rename">' + t('重命名') + '</button><button type="button" class="btn primary" id="continue">' + t('换个工具继续') + '</button></div></div>'
   html += stripHtml(d)
+  if(d.last_compaction&&c.harness==='claude-code'){
+    const x=d.last_compaction
+    const title=x.status==='takeover'?'最近接管判断：SuperLcm 已提供摘要':x.status==='error'?'最近接管判断：发生错误，交回 Claude Code':'最近接管判断：使用 Claude Code 原生压缩'
+    html+='<div class="notice"><span><b>'+t(title)+(x.trigger==='precompute'?' '+t('（预计算）'):'')+'</b><br>'+esc(t(x.reason))+' · '+esc(ago(x.at_ms))+'<br>'+t('已覆盖 {n} / {total} 条原文',{n:esc(Math.max(0,x.through_record+1)),total:esc(x.records)})+'</span></div>'
+  }
+  if(d.reduced_summary_count)html+='<div class="notice bad"><span>'+t('部分摘要已机械缩短，仅供查询导航；关键约束请查回原文。')+' ('+esc(d.reduced_summary_count)+')</span></div>'
   if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
   else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + (d.summary_error_detail ? '<br>' + esc(d.summary_error_detail) : '') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
   // Count pending work, not records: most records are tool calls with no text and need no summary.
