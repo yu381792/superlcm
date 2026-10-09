@@ -66,7 +66,7 @@ test('cold capture reads raw persistence and excludes synthetic interrupted-turn
     sessionPersistence: { open: async (_id, access) => { assert.equal(access, 'read'); return { header, read: async () => ({ events: originals }), close: async () => { closed = true } } } },
   }
   const observation = await readRawDshSession(ctx, header.id)
-  assert.equal(disposed, true); assert.deepEqual(observation.events, originals)
+  assert.equal(disposed, false, 'raw persistence is read before query projections'); assert.deepEqual(observation.events, originals)
   await observation.close(); assert.equal(closed, true)
 })
 

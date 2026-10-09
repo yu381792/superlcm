@@ -124,3 +124,5 @@ DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话�
 [MIT](LICENSE)，版权所有 2026 ygc381792 及贡献者。可以自由使用、修改和再发布（包括商用），保留版权声明即可。本项目由个人维护、刻意保持精简：欢迎提 [issue](https://github.com/yu381792/superlcm/issues) 反馈问题和需求，但不保证每条都采纳，一般不合并代码请求（PR）。
 
 Claude、Claude Code、Codex、Hermes、Pi 的名称和标志归各自所有者，这里只用来说明兼容的工具；SuperLcm 是独立项目，与它们没有隶属或背书关系。
+
+完整版与 DSH 独立版的关系、修复同步及验证范围见 [修复同步说明](docs/REPAIR-SYNC-0.5.23.md)。

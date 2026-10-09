@@ -2,6 +2,7 @@ import { initializeEventCounts } from './event-counts.js'
 import { claudeSidecarTitle } from './conversation-names.js'
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
+import {legacyDshSource} from './dsh-evidence.js'
 import { dshCoverage, dshNodeSources, dshVisibleNodes } from './dsh-summaries.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS, validApiModel } from './api-endpoint.js'
 import { readApiKey, saveApiKey, removeApiKey } from './api-credentials.js'
@@ -273,6 +274,7 @@ export class ClaudeStore {
   effectiveSetting(session,env=process.env) {
     if(!this.source(session))throw new Error('Unknown session')
     const harness=this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness||'legacy'
+    if(legacyDshSource(this.db,session))return {mode:'off',model:null,scope:'historical-originals',harness}
     if(!this.integrationEnabled(harness))return {mode:'off',model:null,scope:'disconnected',harness}
     const specific=harness!=='legacy'?this.harnessSetting(harness):null
     const choice=specific||this.globalSetting()
@@ -340,7 +342,7 @@ export class ClaudeStore {
     if (!this.source(session)) throw new Error('Unknown session')
     const row=this.db.prepare('SELECT harness,external_id,display_name,name_source FROM session_origins WHERE session=?').get(session)
     const first=row?.display_name&&row.name_source?null:this.db.prepare("SELECT preview FROM events WHERE session=? AND preview<>'' ORDER BY ordinal LIMIT 1").get(session)?.preview
-    return {session,code:shortCode(session),harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
+    return {session,...(legacyDshSource(this.db,session)?{historical_archive:legacyDshSource(this.db,session)}:{}),code:shortCode(session),harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
   }
   sources() { return this.listSessions(2147483647,0).sessions }
   listSessions(limit=20,offset=0,harness) {
@@ -648,7 +650,7 @@ export class ClaudeStore {
     const raw = this.exact(session,ordinal), cap = bounded(maxChars,12000,50000)
     if (charOffset > raw.length) throw new Error('Offset past end of event')
     const content = raw.slice(charOffset,charOffset+cap)
-    return {session,source:this.metadata(session),ordinal,charOffset,content,next:charOffset+content.length < raw.length ? {ordinal,charOffset:charOffset+content.length} : null}
+    return {session,source:this.metadata(session),...(legacyDshSource(this.db,session)?{sequenceMode:legacyDshSource(this.db,session).sequence_mode}:{}),ordinal,charOffset,content,next:charOffset+content.length < raw.length ? {ordinal,charOffset:charOffset+content.length} : null}
   }
   eventRows(session) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? ORDER BY ordinal').all(session) }
   eventRowsFrom(session, start) { return this.db.prepare('SELECT ordinal,digest,preview FROM events WHERE session=? AND ordinal>=? ORDER BY ordinal').all(session, start) }

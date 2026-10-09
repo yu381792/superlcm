@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.23
+
+- Align DSH historical reads with the standalone adapter: preserve all frames, originals and overlapping source sequences without rewriting host logs.
+- Shared archive recall uses explicit physical positions; old logs are excluded from summary generation and compaction reconstruction. Source bytes, header identity and already archived prefixes are verified before indexing.
+- Read accepted live originals before pending persistence writes, and accept only missing header defaults across storage versions.
+- Keep normal Claude, Codex, Hermes and Pi capture and current DSH compression settings unchanged.
+
 ## 0.5.22
 
 - 修复思考模型把摘要输出额度耗在隐藏推理上的问题：可见输出按原文语言密度估算；有实际推理证据且被截断时最多补额重试一次，按端点、模型和思考程度保存所需额度，失败显示推理及总输出用量。

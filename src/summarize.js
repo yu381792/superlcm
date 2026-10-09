@@ -1,3 +1,4 @@
+import {legacyDshSource} from './dsh-evidence.js'
 import { profileKey, readSummaryProfile, updateSummaryProfile, visibleOutputRoom, adaptiveSummaryTask, repairSummaryPrompt, fitSummary, isReducedSummary, reducedNotice } from './summary-generation.js'
 import { readOpenAICompletion, summaryFailure, STREAM_COMPLETE } from './summary-response.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -116,6 +117,7 @@ function recordText(e, budget) {
 }
 export function summaryWork(store, session, options = {}) {
   if (!store.source(session)) throw new Error('Unknown session')
+  if(legacyDshSource(store.db,session))return null
   const saved = store.tuning()
   const { batchSize = segmentMessages(), fanout = saved.fanout } = options
   const budget=budgetFor(saved,options)

@@ -149,3 +149,5 @@ Every tool is marked with MCP annotations: the four lookups are read-only, the t
 - License: [MIT](LICENSE). Copyright 2026 ygc381792 and contributors. Free to use, modify and redistribute, including commercially; keep the copyright notice.
 
 Claude, Claude Code, Codex, Hermes and Pi names and logos belong to their respective owners and are used only to identify compatible tools. SuperLcm is an independent project and is not affiliated with or endorsed by them.
+
+完整版与 DSH 独立版的关系、修复同步及验证范围见 [修复同步说明](docs/REPAIR-SYNC-0.5.23.md)。

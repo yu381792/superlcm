@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { dshHost,dshHome } from './dsh-connection.js'
 import { captureDshPacket,dshSessionKey,projectDshEvent } from './dsh.js'
+import {readRawDshSession} from '../dsh/raw-session.js'
+import {captureLegacyDshSource} from './dsh-legacy.js'
 import { maxFile } from './store.js'
 import { SuperLcmStore } from '../dsh/store.js'
 const keyFor=path=>createHash('sha256').update('dsh\0'+path).digest('hex')
@@ -27,6 +29,7 @@ async function reader(env) {
   try {return {ctx,persistence:new Persistence(ctx,{root:join(dshHome(env),'sessions'),compression:compression(join(dshHome(env),'sessions'))}),extract:extractSessionEventText}}
   catch(error){await ctx.fiber.dispose();throw error}
 }
+const rawContext=native=>({sessionPersistence:native.persistence,sessionQuery:{listSessions:async()=>(await native.persistence.listArtifacts()).map(row=>({header:row.header}))}})
 async function artifacts(persistence,root) {
   const rows=await persistence.listArtifacts()
   return rows.filter(row=>row.header.origin!=='subagent').map(row=>{
@@ -52,8 +55,8 @@ export async function dshConversations(store,{env=process.env,offset=0,limit=30}
       if(!error) {
         let handle
         try {
-          handle=await native.persistence.open(id,'read')
-          const {events}=await handle.read(0)
+          handle=await readRawDshSession(rawContext(native),id)
+          const {events}=handle
           if(!events.length)error='暂无已保存记录'
           const title=events.filter(e=>e.type==='session/title').at(-1)?.data?.title
           const first=events.find(e=>e.type==='user/message')
@@ -73,8 +76,12 @@ export async function importDshConversation(store,key,{env=process.env}={}) {
     const row=(await artifacts(native.persistence,root)).find(row=>keyFor(row.path)===key)
     if(!row)throw Error('会话已变化，请重新读取列表')
     if(row.bytes>maxFile)throw Error('超过单会话 4 GiB 限制')
-    handle=await native.persistence.open(row.header.id,'read')
-    const {events}=await handle.read(0),header=handle.header
+    handle=await readRawDshSession(rawContext(native),row.header.id)
+    const {events,header}=handle
+    if(handle.legacySource){
+      const result=await captureLegacyDshSource(store,{path:handle.legacySource.path,currentPath:handle.legacySource.currentPath,compressed:handle.legacySource.compressed,sha256:handle.legacySource.sha256,header},{clientKind:'import'})
+      return {...result,source:store.metadata(result.session),summary_count:0,note:'历史原文完整保存，原编号保留，位置按归档顺序读取。此档案仅供原文检索。'}
+    }
     if(!events.length)throw Error('暂无已保存记录')
     const title=events.filter(e=>e.type==='session/title').at(-1)?.data?.title
     let records=[],bytes=0,result,added=0

@@ -7,3 +7,4 @@ node_modules/
 .trash/
 tsconfig.json
 .claude-plugin/types/
+scratchpad/

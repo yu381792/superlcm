@@ -67,15 +67,21 @@ export function apply(ctx,config={}) {
     // After initial replay, use the live immutable event feed by seq. Copying
     // a whole long log after every tool event would turn capture into O(n²).
     const incremental = live && cursor !== undefined
-    const observation = incremental ? {
+    const observation = live ? {
       header: live.header,
-      events: Array.from({ length: Math.max(0, live.seq - cursor) }, (_, index) => live.eventAt(cursor + index)),
+      events: incremental?Array.from({ length: Math.max(0, live.seq - cursor) }, (_, index) => live.eventAt(cursor + index)):live.snapshotEvents(),
       close() {},
     } : await readRawDshSession(ctx, id)
     try {
+      if(observation.legacySource){
+        const result=await worker.request({method:'capture-legacy',source:{path:observation.legacySource.path,currentPath:observation.legacySource.currentPath,compressed:observation.legacySource.compressed,sha256:observation.legacySource.sha256,header:observation.header}})
+        settled.delete(id);cursors.delete(id)
+        reporter.report(id,result.skipped||'synced',{end:(result.records??0)-1});return
+      }
       const events = observation.events, header = observation.header
       const session = { id, header, snapshotEvents: () => events }
       if (!incremental) {
+        if(await worker.request({method:'historical',session:dshSessionKey(id)}))throw Error('Historical DSH source changed; refusing to mix generations')
         const indexed = reindexSession(native, session)
         if (indexed.errors.length) warn(Error('DSH 摘要索引：' + JSON.stringify(indexed.errors)))
       }

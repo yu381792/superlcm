@@ -1,5 +1,6 @@
 // Reuse the summaries already committed by the DSH compaction engine. No model
 // calls, and no attempt to reinterpret an incomplete compaction as a success.
+import {legacyDshSource,archivePosition} from './dsh-evidence.js'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { jsonlTail } from './jsonl-tail.js'
@@ -8,7 +9,7 @@ import { semanticKind, semanticFrontier, semanticLevel } from '../dsh/tree-seman
 const hasTable = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
 export function dshVisibleNodes(db, alias = 'n') {
   const visible=hasTable(db,'dsh_shared_nodes')?`NOT EXISTS (SELECT 1 FROM dsh_shared_nodes v WHERE v.session=${alias}.session AND v.id=${alias}.id AND v.visible=0)`:'1'
-  return visible
+  return hasTable(db,'dsh_legacy_sources')?`(${visible}) AND NOT EXISTS(SELECT 1 FROM dsh_legacy_sources h WHERE h.session=${alias}.session)`:visible
 }
 
 export function dshRecordCategory(event) {
@@ -42,12 +43,12 @@ function recordCategories(store, session, records) {
   const file = archive && existsSync(archive) ? archive : source.path
   for (const item of jsonlTail(file)) {
     if (item.end > source.offset) break
-    const event = item.record.event
-    if (!Number.isSafeInteger(event?.seq) || event.seq < 0 || event.seq >= records) throw Error('Invalid archived DSH event identity')
+    const event = item.record.event,seq=archivePosition(item.record)
+    if (!Number.isSafeInteger(seq) || seq < 0 || seq >= records) throw Error('Invalid archived DSH event identity')
     const category = dshRecordCategory(event)
-    if (categories.has(event.seq) && categories.get(event.seq) !== category) throw Error('Previously classified DSH event changed')
-    categories.set(event.seq, category)
-    categories.revisionEvents.set(event.seq, revisionMetadata(event))
+    if (categories.has(seq) && categories.get(seq) !== category) throw Error('Previously classified DSH event changed')
+    categories.set(seq, category)
+    categories.revisionEvents.set(seq, revisionMetadata(event))
     if (item.end === source.offset) break
   }
   if (categories.size !== records) throw Error('DSH archive classification is incomplete')
@@ -174,8 +175,8 @@ export function syncDshSummaries(store, session, id) {
 }
 
 export function dshCoverage(store, session, records) {
-  const db = store.db, categories = recordCategories(store, session, records), revisions = recordRevisions(store, session, records, categories)
-  const seqs = hasTable(db, 'dsh_node_sources') ? db.prepare(`SELECT DISTINCT s.seq FROM dsh_node_sources s WHERE s.session=? AND ${dshVisibleNodes(db, 's')} ORDER BY s.seq`).all(session).map(row => row.seq).filter(seq => seq < records && categories.get(seq) !== 'checkpoint') : []
+  const db = store.db,legacy=legacyDshSource(db,session),categories = recordCategories(store, session, records), revisions = legacy?new Map():recordRevisions(store, session, records, categories)
+  const seqs = !legacy&&hasTable(db, 'dsh_node_sources') ? db.prepare(`SELECT DISTINCT s.seq FROM dsh_node_sources s WHERE s.session=? AND ${dshVisibleNodes(db, 's')} ORDER BY s.seq`).all(session).map(row => row.seq).filter(seq => seq < records && categories.get(seq) !== 'checkpoint') : []
   const selected = new Set(seqs)
   const originals = [], covered = [], uncovered = [], persistent = [], checkpoints = [], nonMessages = [], superseded = []
   for (const [seq, category] of [...categories].sort((a, b) => a[0] - b[0])) {
@@ -186,7 +187,7 @@ export function dshCoverage(store, session, records) {
     else nonMessages.push(seq)
   }
   const lastCovered = covered.at(-1) ?? -1, latest = uncovered.filter(seq => seq > lastCovered)
-  return { coverage: 'selected-records', summarized_to: uncovered[0] ?? records,
+  return { ...(legacy?{historical_archive:legacy,sequence_mode:legacy.sequence_mode}:{}),coverage: 'selected-records', summarized_to: uncovered[0] ?? records,
     raw_records: originals.length, summarized_records: covered.length, unsummarized_records: uncovered.length,
     covered_ranges: ranges(covered), unsummarized_ranges: ranges(uncovered), selected_source_ranges: ranges(seqs),
     persistent_records: persistent.length, persistent_ranges: ranges(persistent),
