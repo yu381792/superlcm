@@ -26,14 +26,15 @@ function check(name, text, model, timeoutMs) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error(`Invalid ${name} timeout`)
 }
 // Runs one CLI with the prompt on stdin and hands its stdout to parse(); stderr is drained, never kept.
-function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess, summaryTask }, parse) {
+function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess, summaryTask, signal }, parse) {
+  signal?.throwIfAborted()
   mkdirSync(cwd, { recursive: true, mode: 0o700 })
   return new Promise((resolve, reject) => {
     let child, out = '', settled = false, timedOut = false, overflow = false
     const finish = (error, value) => { if (settled) return; settled = true; deadline.clear(); error ? reject(error) : resolve(value) }
     try { child = spawnProcess(bin, args, { cwd, env: workerEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }) }
     catch (error) { return reject(new Error(`${name} could not start: ${error.message}`)) }
-    const deadline = cliDeadline(child,timeoutMs,error=>finish(error),name)
+    const deadline = cliDeadline(child,timeoutMs,error=>finish(error),name,signal)
     child.on('error', error => finish(new Error(`${name} could not start: ${error.message}`)))
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', chunk => { if (overflow) return; out += chunk; if (Buffer.byteLength(out) > 1024 * 1024) { overflow = true; deadline.stop(`${name} output exceeded 1 MiB`) } })
@@ -52,27 +53,27 @@ function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess, summar
 }
 
 // Hermes: one query from stdin, tagged source "tool" so it stays out of the user's session list.
-export function summarizeWithHermes(text, { model = '', bin = findCli('hermes') || 'hermes', env = process.env, timeoutMs = 180000, cwd = join(home(), 'writer-cwd'), spawnProcess = spawn, summaryTask } = {}) {
+export function summarizeWithHermes(text, { model = '', bin = findCli('hermes') || 'hermes', env = process.env, timeoutMs = 180000, cwd = join(home(), 'writer-cwd'), spawnProcess = spawn, summaryTask, signal } = {}) {
   check('Hermes', text, model, timeoutMs)
   const args = ['chat', '--query-file', '-', '--format', 'stream-json', '--source', 'tool', '--ignore-rules', '--max-turns', '1', ...(model ? ['-m', model] : [])]
-  return run('Hermes', bin, args, SUMMARY_SYSTEM + '\n\n' + buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess, summaryTask }, out => {
+  return run('Hermes', bin, args, SUMMARY_SYSTEM + '\n\n' + buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess, summaryTask, signal }, out => {
     const result = out.trim().split('\n').map(line => { try { return JSON.parse(line) } catch { return null } }).findLast(e => e?.type === 'result')
     if(result?.exit_code || !result) return null
     return checkedSummary(result.text,{...summaryTask,finishReason:result.finish_reason ?? result.stop_reason,maxChars:summaryTask?.allowOversize?null:6000})
   })
 }
 // Pi: print mode, no saved session, and no tools, extensions (so not SuperLcm's own), skills or context files.
-export function summarizeWithPi(text, { model = '', bin = findCli('pi') || 'pi', env = process.env, timeoutMs = 180000, cwd = join(home(), 'writer-cwd'), spawnProcess = spawn, summaryTask } = {}) {
+export function summarizeWithPi(text, { model = '', bin = findCli('pi') || 'pi', env = process.env, timeoutMs = 180000, cwd = join(home(), 'writer-cwd'), spawnProcess = spawn, summaryTask, signal } = {}) {
   check('Pi', text, model, timeoutMs)
   const args = ['-p', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-context-files', '--no-prompt-templates', '--no-themes', '--system-prompt', SUMMARY_SYSTEM, ...(model ? ['--model', model] : [])]
-  return run('Pi', bin, args, buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess, summaryTask }, out => out)
+  return run('Pi', bin, args, buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess, summaryTask, signal }, out => out)
 }
 
-export function summarizeWith(tool, text, { model = '', env = process.env, summaryTask } = {}) {
+export function summarizeWith(tool, text, { model = '', env = process.env, summaryTask,signal } = {}) {
   const bin = findCli(WRITER_CLI[tool], env)
-  if (tool === 'claude-code') return summarizeWithClaudeCli(text, { model, bin, env, summaryTask })
-  if (tool === 'codex') return summarizeWithCodexCli(text, { model, bin, env, summaryTask })
-  if (tool === 'hermes') return summarizeWithHermes(text, { model, bin, env, summaryTask })
-  if (tool === 'pi') return summarizeWithPi(text, { model, bin, env, summaryTask })
+  if (tool === 'claude-code') return summarizeWithClaudeCli(text, { model, bin, env, summaryTask,signal })
+  if (tool === 'codex') return summarizeWithCodexCli(text, { model, bin, env, summaryTask,signal })
+  if (tool === 'hermes') return summarizeWithHermes(text, { model, bin, env, summaryTask,signal })
+  if (tool === 'pi') return summarizeWithPi(text, { model, bin, env, summaryTask,signal })
   throw new Error('No tool can write summaries on this computer')
 }

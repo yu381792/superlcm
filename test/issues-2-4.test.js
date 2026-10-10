@@ -199,7 +199,7 @@ test('Claude in-host writer repairs complete overshoot and validates each call a
  }}}
  await hooks.get('turn.complete')($,{},async()=>({}))
  await completed
- assert.equal(calls,2);assert.equal(checks,2);assert.ok(saved.isAnswered);assert.ok(isReducedSummary(saved.summary));assert.ok(saved.summary.length<=6000)
+ assert.equal(calls,2);assert.equal(checks,4);assert.ok(saved.isAnswered);assert.ok(isReducedSummary(saved.summary));assert.ok(saved.summary.length<=6000)
 })
 
 test('Claude in-host writer never caps incomplete text or makes a call after claim invalidation',async()=>{
@@ -218,7 +218,7 @@ test('Claude in-host writer never caps incomplete text or makes a call after cla
    return {stdout:'{}'}
   }}}
   await hooks.get('turn.complete')($,{},async()=>({}));await completed
-  assert.equal(calls,1);assert.equal(saves,0);assert.equal(errors,1)
+  assert.equal(calls,1);assert.equal(checks,2);assert.equal(saves,0);assert.equal(errors,1)
  }
 })
 
@@ -247,7 +247,7 @@ test('a real summary-check renews the lease and rejects stale setting revisions'
  store.setGlobalSetting('cli')
  const work=summaryWork(store,'s',{batchSize:2})
  store.lease('s',20000,'host')
- store.db.prepare('INSERT INTO host_summary_claims VALUES(?,?,?)').run('s',work.batch_id,summarySettingsRevision(store,'s'))
+ store.db.prepare('INSERT INTO host_summary_claims(session,batch_id,revision) VALUES(?,?,?)').run('s',work.batch_id,summarySettingsRevision(store,'s'))
  const before=store.db.prepare('SELECT until_ms FROM leases WHERE session=?').get('s').until_ms
  const run=()=>JSON.parse(spawnSync(process.execPath,['src/cli.js','summary-check','s'],{env,input:JSON.stringify({batch_id:work.batch_id}),encoding:'utf8'}).stdout)
  assert.equal(run().valid,true)
@@ -322,7 +322,7 @@ test('the first evidence retry leaves room for the reported seven-thousand-token
 test('a cancelled in-host writer does not report a failure against the new settings',t=>{
  const {store}=fixture(t)
  store.setGlobalSetting('cli');store.lease('s',300000,'host')
- store.db.prepare('INSERT INTO host_summary_claims VALUES(?,?,?)').run('s','synthetic',summarySettings.summarySettingsRevision(store,'s'))
+ store.db.prepare('INSERT INTO host_summary_claims(session,batch_id,revision) VALUES(?,?,?)').run('s','synthetic',summarySettings.summarySettingsRevision(store,'s'))
  store.setGlobalSetting('off')
  const run=spawnSync(process.execPath,['src/cli.js','summary-host-error','s'],{env:{...process.env,SUPERLCM_HOME:store.dir},encoding:'utf8'})
  assert.equal(run.status,0,run.stderr);assert.equal(store.source('s').status,'ok');assert.equal(store.summaryError('s'),null)

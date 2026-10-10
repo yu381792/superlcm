@@ -10,10 +10,11 @@ const MAX_OUTPUT_BYTES = 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 180000
 export { SUMMARY_SYSTEM }
 
-export function summarizeWithClaudeCli(text, { model = '', bin = process.env.SUPERLCM_CLAUDE_CLI_BIN || 'claude', env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, cwd = join(home(), 'claude-cli-cwd'), spawnProcess = spawn, summaryTask } = {}) {
+export function summarizeWithClaudeCli(text, { model = '', bin = process.env.SUPERLCM_CLAUDE_CLI_BIN || 'claude', env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, cwd = join(home(), 'claude-cli-cwd'), spawnProcess = spawn, summaryTask, signal } = {}) {
   if (typeof text !== 'string' || !text.trim() || text.length > MAX_SUMMARY_INPUT) throw new Error(`Claude CLI summary input must be nonempty and at most ${MAX_SUMMARY_INPUT} characters`)
   if (typeof model !== 'string' || (model && !validModel(model))) throw new Error('Invalid SUPERLCM_CLAUDE_CLI_MODEL')
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error('Invalid Claude CLI timeout')
+  signal?.throwIfAborted()
   mkdirSync(cwd, { recursive: true, mode: 0o700 })
   // No session file and no hooks: the run leaves nothing in the user's Claude history.
   const args = ['--print', '--output-format', 'json', ...(model ? ['--model', model] : []), '--no-session-persistence', '--settings', '{"disableAllHooks":true}', '--disable-slash-commands', '--tools', '', '--strict-mcp-config', '--system-prompt', SUMMARY_SYSTEM]
@@ -28,7 +29,7 @@ export function summarizeWithClaudeCli(text, { model = '', bin = process.env.SUP
       if (error) reject(error)
       else resolve(value)
     }
-    const deadline=cliDeadline(child,timeoutMs,error=>finish(error),'Claude CLI')
+    const deadline=cliDeadline(child,timeoutMs,error=>finish(error),'Claude CLI',signal)
     child.on('error', error => finish(new Error(`Claude CLI could not start: ${error.message}`)))
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', chunk => {

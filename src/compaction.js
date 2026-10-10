@@ -1,10 +1,11 @@
 import { isReducedSummary } from './summary-fitting.js'
 // 接管压缩 (compaction takeover), the lossless-claw way: summaries are written in the background as the
 // conversation goes; when Claude Code compacts (its own threshold, or /compact), the summaries already
-// written replace the part they cover, everything newer stays word for word, and no model is called.
+// written replace the part they cover, everything newer stays word for word. A bounded caller catch-up can finish a few missing pieces.
 // When the summaries do not cover enough, the caller hands the compaction back to Claude Code.
 export const PACKET_TAG = 'superlcm-context'
 import { RECALL_POLICY } from './summary-policy.js'
+import { estimateSummaryTokens } from './summary-tokens.js'
 export const takeoverDefaults = { enabled: false, window: 300000, keep: 40000 } // keep: newest tokens left word for word
 export const takeoverLimits = { window: [100000, 950000], keep: [5000, 200000] }
 const MAX_PACKET_CHARS = 120000
@@ -12,9 +13,10 @@ const MAX_PACKET_CHARS = 120000
 // summary segment. Dialogue up to this size goes into the packet word for word instead (tool output stays
 // readable through lcm_read), so such a stretch does not hand the compaction back to Claude Code.
 const RECENT_CHARS = 40000, RECENT_RECORD = 3000
+const TARGET_AFTER = 0.25, MAX_AFTER = 0.35
 const KEEP_TURNS = 2 // the newest user prompts are always kept word for word
 const key = text => String(text || '').replace(/\s+/g, '').slice(0, 600)
-const isPacket = m => m.role === 'user' && m.text.trimStart().startsWith(`<${PACKET_TAG} `)
+const isPacket = m => m.role === 'user' && m.packetSummary !== false && m.text.trimStart().startsWith(`<${PACKET_TAG} `)
 // A prompt the person typed: a user message with text and no tool results.
 const isSynthetic = m => isPacket(m) || m.nativeSummary === true
 const isPrompt = m => m.role === 'user' && m.text.trim() && !m.toolResults && !isSynthetic(m)
@@ -103,9 +105,9 @@ function recentText(events, through) {
     return `[record ${e.ordinal}] ` + (t.length <= RECENT_RECORD ? t : t.slice(0, h) + ` …[${t.length - RECENT_RECORD} characters omitted; lcm_read record ${e.ordinal}]… ` + t.slice(t.length - (RECENT_RECORD - h)))
   }).join('\n')
 }
-export function renderPacket({ meta, summaries, through, keep, instructions, recent = null }) {
+export function renderPacket({ meta, summaries, through, keep, instructions, recent = null, request = null }) {
   const code = meta.code
-  const head = `<${PACKET_TAG} conversation="#${code}" keep="${keep}" through="${through}">\n` +
+  const head = `<${PACKET_TAG} conversation="#${code}" keep="${keep}" through="${through}"${request?` request="${request.ordinal}"`: ''}>\n` +
     `This session is being continued from a previous conversation that ran out of context. The summaries below cover the earlier portion of the conversation (records 0-${through}), written by SuperLcm, the user's conversation-memory plugin, as the conversation went; the messages after this one continue it word for word. ` +
     `The complete original of the earlier portion is preserved: summaries are navigation, not proof, so before relying on a detail call lcm_read {"conversation":"#${code}","from":<first>,"to":<last>} with a summary's record range (or lcm_find / lcm_outline) and quote the original.\n` +
     RECALL_POLICY+'\n'+
@@ -118,7 +120,9 @@ export function renderPacket({ meta, summaries, through, keep, instructions, rec
   }
   if (omitted) body += `(${omitted} more summaries did not fit; lcm_outline {"conversation":"#${code}"} lists them.)\n`
   if (recent) body += `<recent records="${recent.first}-${recent.last}">\nNot summarized yet: the dialogue of records ${recent.first}-${recent.last} word for word, tool calls and their output left out (lcm_read has them).\n${recent.text}\n</recent>\n`
-  return head + body + `</${PACKET_TAG}>`
+  if(request)body+=`<current-request record="${request.ordinal}">\n${request.text}\n</current-request>\n`
+  const packet=head + body + `</${PACKET_TAG}>`
+  return packet.length<=MAX_PACKET_CHARS?packet:null
 }
 // tokens: Claude Code's own count of the context now; window: the auto-compact window in tokens.
 // Returns { use:true, packet, start } or { use:false, reason }.
@@ -130,7 +134,7 @@ export function planCompaction(input) {
   const text = recentText(events, through)
   if (last <= through || !text || text.length > RECENT_CHARS) return plan
   const inline = planWith(input, { first: through + 1, last, text })
-  return inline.use ? inline : plan
+  return inline.use ? {...inline,inline:true,stage:'inline',initial:{use:false,reason:plan.reason,after:plan.after??null}} : plan
 }
 function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0, window = takeoverDefaults.window, keepTokens = takeoverDefaults.keep }, recent) {
   const through = coveredThrough(nodes)
@@ -147,8 +151,8 @@ function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0
   let start = tailStart(messages, cut)
   // tailStart moves forward only when the context opens with an unfinished turn; if that turn is not
   // covered by the summaries, dropping it would lose it.
-  if (start > cut) return { use: false, reason: 'the oldest messages in context are not summarized yet' }
-  if (start >= messages.length) return { use: false, reason: 'nothing recent to keep' }
+  const oldestUncovered=start>cut
+  const emptyTail=start>=messages.length
   // The newest keepTokens (at most half of the context) also stay word for word, from the start of a turn,
   // even where summaries already cover them, so the work in hand continues with its full detail.
   const want = Math.min(keepTokens, tokens / 2)
@@ -163,12 +167,66 @@ function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0
     const newest = text.findLast(k => k !== null)
     if (!newest || !known.has(newest) || text.slice(0, start).some(k => k !== null && !known.has(k))) return { use: false, reason: 'the conversation in context does not match the record' }
   }
-  const keep = messages.length - start
-  const packet = renderPacket({ meta, summaries: frontier(nodes, through), through: recent ? recent.last : through, keep, instructions, recent })
-  // Size check: the kept part's share of Claude Code's own count, plus the packet at ~2 characters a token
-  // (Chinese is denser than English). Past 60% of the window the compaction would barely help.
-  const kept = messages.slice(start).reduce((s, m) => s + size(m), 0)
-  const after = Math.round(tokens * kept / total + packet.length / 2)
-  if (after > window * 0.6) return { use: false, reason: `the summaries lag behind: about ${after} tokens would remain` }
-  return { use: true, packet, start, keep, through: recent ? recent.last : through, after, ...(recent ? { recent: true } : {}) }
+  const finish=(at,request=null)=>{
+    const keep=messages.length-at
+    const packet=renderPacket({meta,summaries:frontier(nodes,through),through:recent?recent.last:through,keep,instructions,recent,request})
+    if(!packet)return {use:false,reason:'complete request and packet exceed safe size; use native compaction'}
+    const kept=messages.slice(at).reduce((s,m)=>s+size(m),0)
+    const after=Math.round(tokens*kept/total+estimateSummaryTokens(packet))
+    if(after>window*MAX_AFTER)return {use:false,reason:`the compacted context is too large: about ${after} tokens would remain`}
+    return {use:true,packet,start:at,keep,through:recent?recent.last:through,after,...(recent?{recent:true}:{}),...(request?{inTurn:true}:{})}
+  }
+  const normal=oldestUncovered?{use:false,reason:'the oldest messages in context are not summarized yet'}:emptyTail?{use:false,reason:'nothing recent to keep'}:finish(start)
+  if(normal.use&&normal.after<=window*TARGET_AFTER)return normal
+  const within=turnTail({messages,events,cut,tokens,total,size,keepTokens,window})
+  if(within){const compacted=finish(within.start,within.request);if(compacted.use&&(!normal.use||compacted.after<normal.after))return compacted}
+  return normal
+}
+
+// Keep a complete tool group at the start of the retained suffix, even when
+// several assistant chunks contribute to one call or tools return in parallel.
+function safeAssistantStarts(messages) {
+ const safe=[],pending=new Set()
+ for(let i=0;i<messages.length;i++){
+  const m=messages[i]
+  if(m.role==='assistant'&&!pending.size)safe.push(i)
+  for(const tool of m.toolUses||[]){const id=tool.tool_use_id||tool.id||tool.call_id;if(id)pending.add(id)}
+  if(Array.isArray(m.toolResultIds)){for(const id of m.toolResultIds)pending.delete(id)}
+  else if(m.toolResults&&pending.size<=m.toolResults)pending.clear()
+ }
+ return safe
+}
+function requestAt(events,ordinal) {
+ const e=events.find(e=>e.ordinal===ordinal)
+ if(!e||e.nativeSummary||!e.preview.startsWith('user: ')||e.toolResults||e.humanPrompt===false)return null
+ return {ordinal:e.ordinal,text:e.text??e.preview.slice(6)}
+}
+function turnTail({messages,events,cut,tokens,total,size,keepTokens,window}) {
+ const p=messages.findLastIndex(m=>isPrompt(m)||isPacket(m)||m.nativeSummary)
+ if(p<0)return null
+ const anchor=messages[p],synthetic=isPacket(anchor)||anchor.nativeSummary
+ const span=messages.slice(p).reduce((s,m)=>s+size(m),0)*tokens/total
+ if(!synthetic&&span<=Math.max(keepTokens*2,window*TARGET_AFTER))return null
+ let request
+ if(isPacket(anchor)){
+  const ordinal=Number(/^\s*<superlcm-context [^>]*\brequest="(\d+)"/.exec(anchor.text)?.[1])
+  if(!Number.isSafeInteger(ordinal))return null
+  request=requestAt(events,ordinal)
+ }else{
+  const match=events.filter(e=>key(e.preview)===key('user: '+anchor.text.trim()))
+  // A repeated prompt cannot identify which task we are preserving. Prefer
+  // keeping the complete turn over guessing an authorization from another one.
+  if(match.length!==1)return null
+  const event=match[0]
+  request=anchor.nativeSummary?null:requestAt(events,event.ordinal)
+  if(anchor.nativeSummary&&!request){const candidates=events.filter(e=>e.ordinal<event.ordinal).reverse();for(const e of candidates){request=requestAt(events,e.ordinal);if(request)break}}
+ }
+ if(!request)return null
+ let start=messages.length,newest=0
+ const want=Math.min(keepTokens,tokens/2)
+ while(start>p+1&&newest<want)newest+=size(messages[--start])*tokens/total
+ start=Math.min(start,cut)
+ const safe=safeAssistantStarts(messages).filter(i=>i>p&&i<=start)
+ if(!safe.length)return null
+ return {start:safe.at(-1),request}
 }

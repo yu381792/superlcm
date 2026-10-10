@@ -1,5 +1,5 @@
 import {legacyDshSource} from './dsh-evidence.js'
-import { profileKey, readSummaryProfile, updateSummaryProfile, visibleOutputRoom, adaptiveSummaryTask, repairSummaryPrompt, fitSummary, isReducedSummary, reducedNotice } from './summary-generation.js'
+import { profileKey, readSummaryProfile, updateSummaryProfile, visibleOutputRoom, adaptiveSummaryTask, fitSummary, isReducedSummary, reducedNotice } from './summary-generation.js'
 import { readOpenAICompletion, summaryFailure, STREAM_COMPLETE } from './summary-response.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { detectSummaryLanguage, userTextFromRecord, excerptUserTexts } from './summary-language.js'
@@ -8,28 +8,34 @@ import {selectSummaryMerge,mergeContent} from './summary-merge.js'
 import { nodeId } from './store.js'
 import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS } from './api-endpoint.js'
 import { MAX_SUMMARY_INPUT } from './runtime.js'
-import { SUMMARY_POLICY_VERSION, SUMMARY_SYSTEM, buildSummaryPrompt, summaryInstructions, checkedSummary } from './summary-policy.js'
+import { SUMMARY_POLICY_VERSION, SUMMARY_SYSTEM, summaryInstructions, checkedSummary, summaryPromptParts, joinSummaryPrompt, withSummaryRetry } from './summary-policy.js'
+import { repairSummaryPromptParts } from './summary-fitting.js'
 import { estimateSummaryTokens,takeTokenPrefix,takeTokenSuffix } from './summary-tokens.js'
 const hash = value => createHash('sha256').update(value).digest('hex')
 const head = (text, chars) => String(text || '').replace(/\s+/g,' ').slice(0,chars)
 const THINKING={low:2048,medium:6144,high:16384,xhigh:32768}
-export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL, apiProvider='anthropic', effort=null, fetchImpl=fetch, timeoutMs=90000, summaryTask={}, profileStore, onQuality, shouldContinue } = {}) {
+export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL, apiProvider='anthropic', effort=null, fetchImpl=fetch, timeoutMs=90000, summaryTask={}, profileStore, onQuality, shouldContinue, signal: outerSignal } = {}) {
   const endpoint=normalizeApiEndpoint(apiProvider,apiURL||baseURL||(apiProvider==='openai'?'https://api.openai.com':'https://api.anthropic.com'))
   if (!model || (!apiKey && !loopbackEndpoint(endpoint))) throw new Error('Explicit summary model ID and API credential required; no agent fallback')
   if (effort!==null && !EFFORTS.includes(effort)) throw new Error('Unknown reasoning effort')
   const openai=apiProvider==='openai', key=profileKey(endpoint,model,effort), profile=readSummaryProfile(key,profileStore)
   const task=adaptiveSummaryTask({requireHeading:true,language:detectSummaryLanguage(excerptUserTexts(text)),...summaryTask},profile), visible=visibleOutputRoom(text)
-  const signal=AbortSignal.timeout(timeoutMs)
+  const signal=outerSignal?AbortSignal.any([AbortSignal.timeout(timeoutMs),outerSignal]):AbortSignal.timeout(timeoutMs)
   let qualityRetried=false
   let reasoningRoom=Math.max(THINKING[effort]||0,profile.reasoning_room), retried=false, completionParam='max_tokens'
   const headers=openai?{'content-type':'application/json',...(apiKey?{authorization:`Bearer ${apiKey}`}:{})}:{'content-type':'application/json',...(apiKey?{'x-api-key':apiKey}:{}),'anthropic-version':'2023-06-01'}
   const detail=async r=>{try{return (await r.text()).replace(/\s+/g,' ').slice(0,300)}catch{return ''}}
-  const generate=async prompt=>{
+  const generate=async initialParts=>{
+    let parts=initialParts
     for (;;) {
       signal.throwIfAborted()
       if(shouldContinue&&!shouldContinue())throw Error('Summary setting changed; additional generation cancelled')
       const cap=Math.min(49152,visible+reasoningRoom)
-      const body={model,[completionParam]:cap,messages:openai?[{role:'system',content:SUMMARY_SYSTEM},{role:'user',content:prompt}]:[{role:'user',content:prompt}],...(!openai?{system:SUMMARY_SYSTEM}:{})}
+      const content=openai?joinSummaryPrompt(parts):[
+        {type:'text',text:parts.prefix,cache_control:{type:'ephemeral'}},
+        {type:'text',text:parts.source,cache_control:{type:'ephemeral'}},
+        {type:'text',text:parts.tail+parts.closing}]
+      const body={model,[completionParam]:cap,messages:openai?[{role:'system',content:SUMMARY_SYSTEM},{role:'user',content}]:[{role:'user',content}],...(!openai?{system:[{type:'text',text:SUMMARY_SYSTEM,cache_control:{type:'ephemeral'}}]}:{})}
       if(openai&&effort)body.reasoning_effort=effort
       if(!openai&&THINKING[effort])body.thinking={type:'enabled',budget_tokens:THINKING[effort]}
       const post=async()=>{
@@ -48,6 +54,7 @@ export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL,
       let result
       try { result=openai?await readOpenAICompletion(response,model):await response.json() }
       catch(error){if(error.summaryDiagnostic)throw error;throw summaryFailure('Malformed summary response; original content retained',model,null)}
+      signal.throwIfAborted()
       if(!result||typeof result!=='object')throw summaryFailure('Malformed summary response; original content retained',model,null)
       const choice=result.choices?.find(c=>c.index===0)??result.choices?.[0]
       const output=openai?choice?.message?.content:result.content?.filter(x=>x.type==='text').map(x=>x.text).join('\n')
@@ -68,16 +75,16 @@ export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL,
         if(finishReason!=null&&!['stop','end_turn','stop_sequence'].includes(finishReason))throw Error('Summary generation was incomplete or used an unsupported finish reason; original content retained, retry required')
         return checkedSummary(summary,{...task,finishReason,maxChars:null})
       }catch(error){
-        if(error.summaryQuality&&!qualityRetried){qualityRetried=true;prompt+='\nThe previous response failed the summary language or heading check. Follow the summary job above; produce a factual summary with the required language and first heading.';continue}
+        if(error.summaryQuality&&!qualityRetried){qualityRetried=true;parts=withSummaryRetry(initialParts,'The previous response failed the summary language or heading check. Follow the summary job above; produce a factual summary with the required language and first heading.');continue}
         throw summaryFailure(error.message,model,finishReason,evidence)
       }
     }
   }
-  const initial=await generate(SUMMARY_SYSTEM+'\n\n'+buildSummaryPrompt(text,task))
-  return fitSummary(initial,draft=>generate(repairSummaryPrompt(draft,task)),{task,onQuality,onOvershoot:overshoot=>updateSummaryProfile(key,{overshoot},profileStore)})
+  const initial=await generate(summaryPromptParts(text,task))
+  return fitSummary(initial,draft=>generate(repairSummaryPromptParts(draft,task)),{task,onQuality,onOvershoot:overshoot=>updateSummaryProfile(key,{overshoot},profileStore)})
 }
 // Deterministic work planner shared by background workers and in-conversation agents.
-// Merges come first so the layered outline grows while the conversation is still running.
+// Complete source batches take priority; merges run once raw coverage is current.
 const visibleEvent = e => e.summaryText.trim()
 // Token budgets include the rendered record labels; saved character settings
 // remain supported. The message cap is only a wide safety net, not a trigger
@@ -131,27 +138,11 @@ export function summaryWork(store, session, options = {}) {
   const saved = store.tuning()
   const { batchSize = segmentMessages(), fanout = saved.fanout } = options
   const budget=budgetFor(saved,options)
-  for (let level = 1; level <= 12; level++) {
-    const lower = store.nodeRows(session, level - 1)
-    if (lower.length < fanout) break
-    const owned = new Set(store.nodeRows(session, level).flatMap(n => JSON.parse(n.children)))
-    const batch=selectSummaryMerge(lower,owned,{fanout,targetTokens:budget.tokens?budget.target:null})
-    if(!batch)continue
-    const language=detectSummaryLanguage(fallback())
-    const digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,language.code,...batch.map(n => [n.id,n.digest,hash(n.summary)])]))
-    const content = mergeContent(batch)
-    if (content.length > MAX_SUMMARY_INPUT) throw new Error('Complete child summaries exceed the input limit; refusing to truncate them')
-    const task = { language, requireHeading:true, reducedSources:batch.some(n=>isReducedSummary(n.summary)), level, kind:'condensed', first:batch[0].first, last:batch.at(-1).last,
-      ...(budget.tokens?{targetTokens:Math.max(128,Math.min(1200,Math.floor(estimateSummaryTokens(content)/2)))}:{}) }
-    const sources=store.metadata(session).harness==='dsh'?store.db.prepare('SELECT DISTINCT seq FROM dsh_node_sources WHERE session=? AND id IN ('+batch.map(()=>'?').join(',')+') ORDER BY seq').all(session,...batch.map(n=>n.id)).map(r=>r.seq):undefined
-    return { session, batch_id: nodeId(session, level, task.first, task.last, digest), ...task, children: batch.map(n => n.id), digest,source_records:sources,
-      content, notice:summaryInstructions(task), policy_version:SUMMARY_POLICY_VERSION }
-  }
   const done = store.nodeRows(session, 0)
   const start = done.length ? Math.max(...done.map(n => n.last)) + 1 : 0
   const events = summaryEvents(store, session, start)
   const end = segmentEnd(events, 0, budget, batchSize)
-  if (end < 0) return null // wait for a complete batch; the unsummarized tail stays readable as raw events
+  if (end >= 0) {
   const batch = events.slice(0, end + 1)
   const language=detectSummaryLanguage(store.source(session).kind==='text'?excerptUserTexts(batch.map(e=>store.exact(session,e.ordinal)).join('')):batch.map(e=>userTextFromRecord(store.exact(session,e.ordinal))),fallback)
   const digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,language.code,...batch.map(e => e.digest)]))
@@ -170,6 +161,25 @@ export function summaryWork(store, session, options = {}) {
   return { ...task,
     content: batch.filter(visibleEvent).map(e => eventPrefix(e)+recordText(e, budget)).join('\n'),
     notice: summaryInstructions(task)+'\nUse lcm_read when a truncated excerpt needs verification.' }
+  }
+  if(options.leafOnly)return null
+  for (let level = 1; level <= 12; level++) {
+    const lower = store.nodeRows(session, level - 1)
+    if (lower.length < fanout) break
+    const owned = new Set(store.nodeRows(session, level).flatMap(n => JSON.parse(n.children)))
+    const batch=selectSummaryMerge(lower,owned,{fanout,targetTokens:budget.tokens?budget.target:null})
+    if(!batch)continue
+    const language=detectSummaryLanguage(fallback())
+    const digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,language.code,...batch.map(n => [n.id,n.digest,hash(n.summary)])]))
+    const content = mergeContent(batch)
+    if (content.length > MAX_SUMMARY_INPUT) throw new Error('Complete child summaries exceed the input limit; refusing to truncate them')
+    const task = { language, requireHeading:true, reducedSources:batch.some(n=>isReducedSummary(n.summary)), level, kind:'condensed', first:batch[0].first, last:batch.at(-1).last,
+      ...(budget.tokens?{targetTokens:Math.max(128,Math.min(1200,Math.floor(estimateSummaryTokens(content)/2)))}:{}) }
+    const sources=store.metadata(session).harness==='dsh'?store.db.prepare('SELECT DISTINCT seq FROM dsh_node_sources WHERE session=? AND id IN ('+batch.map(()=>'?').join(',')+') ORDER BY seq').all(session,...batch.map(n=>n.id)).map(r=>r.seq):undefined
+    return { session, batch_id: nodeId(session, level, task.first, task.last, digest), ...task, children: batch.map(n => n.id), digest,source_records:sources,
+      content, notice:summaryInstructions(task), policy_version:SUMMARY_POLICY_VERSION }
+  }
+  return null
 }
 // Dry-run estimate of a background pass: how many records it covers and how many model calls it makes.
 export function summaryEstimate(store, session, options={}) {
@@ -194,7 +204,7 @@ export function summarySettingsRevision(store, session, env = process.env) {
   const setting = store.effectiveSetting(session, env)
   return hash(JSON.stringify([setting,store.tuning(),store.integrationRevision(setting.harness), setting.mode === 'api' ? store.apiCredential(session, env) : null]))
 }
-export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, fetchImpl, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000, retryFailed = false } = {}) {
+export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, fetchImpl, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000, retryFailed = false, leafOnly = false, maxPieces = Infinity, signal } = {}) {
   if (!model || (apiKey == null && summarize === summarizeWithModel)) throw new Error('Explicit summarizer model and API key required')
   if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 10000) throw new Error('batchSize must be 2–10000')
   if (!Number.isSafeInteger(fanout) || fanout < 2 || fanout > 8) throw new Error('fanout must be 2–8')
@@ -205,14 +215,15 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
   if (!store.lease(session, leaseDurationMs, owner)) return { session, busy:true }
   let created = 0
   let lostLease = false, activeWork = null
-  const checkLease = () => { if (lostLease || !store.ownsLease(session, owner)) throw new Error('Summary writer lost its lease; result not saved') }
+  const checkLease = () => { signal?.throwIfAborted(); if (lostLease || !store.ownsLease(session, owner)) throw new Error('Summary writer lost its lease; result not saved') }
   const timer = setInterval(() => {
     try { if (!store.renewLease(session, leaseDurationMs, owner)) lostLease = true }
     catch { lostLease = true }
   }, leaseHeartbeatMs)
   timer.unref()
   try {
-    for (let work; (work = summaryWork(store, session, { batchSize, targetChars,targetTokens, fanout })); ) {
+    for (let work; (work = summaryWork(store, session, { batchSize, targetChars,targetTokens, fanout,leafOnly })); ) {
+      if (created>=maxPieces) return {session,created,stopped:'piece-limit'}
       if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
       checkLease()
       const retry=store.summaryRetry(session,work.batch_id,revision)
@@ -222,7 +233,7 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
       const verify = () => { if (work.level === 0) for (let i = work.first; i <= work.last; i++) store.exact(session, i) }
       verify()
       const cliKey=profileKey('cli',model,null),task=summarize===summarizeWithModel?work:adaptiveSummaryTask(work,readSummaryProfile(cliKey,store))
-      const options={model,apiKey,baseURL,apiURL,apiProvider,effort,fetchImpl,profileStore:store,shouldContinue:()=>{checkLease();return mayContinue()},summaryTask:{...task,allowOversize:true}}
+      const options={signal,model,apiKey,baseURL,apiURL,apiProvider,effort,fetchImpl,profileStore:store,shouldContinue:()=>{checkLease();return mayContinue()},summaryTask:{...task,allowOversize:true}}
       const generateCli=async(content,repairDraft=false)=>{
         checkLease()
         if(!mayContinue())throw Error('Summary setting changed; additional generation cancelled')
@@ -242,7 +253,7 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
     }
     return { session, created, overview: store.overview(session) }
   } catch(error) {
-    if(activeWork&&!lostLease&&store.ownsLease(session,owner)&&mayContinue())store.failSummaryBatch(session,activeWork.batch_id,revision)
+    if(activeWork&&!signal?.aborted&&!lostLease&&store.ownsLease(session,owner)&&mayContinue())store.failSummaryBatch(session,activeWork.batch_id,revision)
     throw error
   } finally { clearInterval(timer); store.release(session, owner) }
 }

@@ -609,12 +609,12 @@ test('mode defaults to background writing and preserves explicit CLI or API choi
   assert.equal(workerEnv({SUPERLCM_ANTHROPIC_API_KEY:'secret'}).SUPERLCM_ANTHROPIC_API_KEY,undefined)
   assert.equal(summaryMode({}),'cli');assert.equal(summaryMode({SUPERLCM_SUMMARY_MODE:'codex-cli'}),'cli')
 })
-test('merge work is planned as soon as four summaries exist, before the next raw batch',fixture(async ({dir,store})=>{
+test('raw coverage completes before merging already available summaries',fixture(async ({dir,store})=>{
   const src=join(dir,'long.jsonl');writeFileSync(src,Array.from({length:48},(_,i)=>line(i)).join(''))
   store.ingest('long',src);store.setGlobalSetting('agent')
   const levels=[]
   for(let i=0;i<7;i++){const {work}=await call(store,'lcm_summary_task',{conversation:'long'});if(!work)break;levels.push(work.level);await call(store,'lcm_summary_submit',{conversation:'long',batch_id:work.batch_id,summary:'# Summary of level '+work.level+' covering '+work.first+'-'+work.last})}
-  assert.deepEqual(levels,[0,0,0,0,1,0,0],'fifth task merges before summarizing records 32-47')
+  assert.deepEqual(levels,[0,0,0,0,0,0,1],'six leaf tasks cover all raw records before merging')
   const outline=store.outline('long');assert.deepEqual(outline.nodes.map(n=>n.level),[1,0,0]);assert.equal(outline.unsummarized,null)
   assert.throws(()=>store.setTuning({target_chars:100,batch_size:8,fanout:4}),/Unsupported/)
   assert.equal(store.setTuning({target_chars:24000,batch_size:64,fanout:6}).fanout,6)

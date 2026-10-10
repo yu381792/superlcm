@@ -16,11 +16,16 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { scheduleSummary } from './summary-scheduler.js'
+import { summaryTick, catchUp, catchupDeadlineMs, pendingLeaves } from './summary-background.js'
+import { randomUUID } from 'node:crypto'
 const [command,...rest]=process.argv.slice(2)
 const homeFlag=rest.indexOf('--home')
 if(homeFlag>=0){if(!rest[homeFlag+1])throw Error('--home requires a path');process.env.SUPERLCM_HOME=rest[homeFlag+1];rest.splice(homeFlag,2)}
 const effective=(store,session)=>store.effectiveSetting(session)
-const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>resolve(JSON.parse(text)))})
+// Only migrated claims with an empty ID accept the legacy protocol. A newly
+// issued claim always requires its exact UUID, even when the batch is unchanged.
+const hostClaimMatches=(claim,input,revision)=>!!claim&&(claim.claim_id?input.claim_id===claim.claim_id:!input.claim_id&&claim.revision===revision)
+const readHook=()=>new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>{text+=part;if(text.length>200000)reject(new Error('Oversized hook input'))});process.stdin.on('end',()=>{try{const input=JSON.parse(text);if(!input||typeof input!=='object'||Array.isArray(input))throw Error('Invalid hook input');resolve(input)}catch(error){reject(error)}});process.stdin.on('error',reject)})
 // 对话模型生成: one short note per turn, only when a whole piece is waiting. The AI writes it from memory
 // (it has just been through that part); a piece that straddles a compaction comes with its text instead.
 // Written as what it is, a note from the plugin the user installed, so a model does not read it as an injection.
@@ -56,7 +61,7 @@ if (command==='setup' || command==='doctor-local') {
   const store=new ClaudeStore()
   try {
     const {harnessConnections}=await import('./harness.js')
-    if(command==='doctor-local'||!rest[0]) console.log(JSON.stringify({...await harnessConnections(store),compaction_diagnostics:store.db.prepare("SELECT session FROM sources WHERE session IN (SELECT session FROM session_origins WHERE harness='claude-code')").all().map(({session})=>({session,...store.lastCompactionDiagnostic(session)})).filter(x=>x.status)},null,2))
+    if(command==='doctor-local'||!rest[0]) console.log(JSON.stringify({...await harnessConnections(store),compaction_diagnostics:store.db.prepare("SELECT session FROM sources WHERE session IN (SELECT session FROM session_origins WHERE harness='claude-code')").all().map(({session})=>({session,...store.lastCompactionDiagnostic(session),compaction_stats:store.compactionStats(session)})).filter(x=>x.status)},null,2))
     else {
       const {setupPreview,publicPreview,applySetup}=await import('./setup.js')
       const option = flag => { const i=rest.indexOf(flag); if(i<0)return undefined; if(!rest[i+1]||rest[i+1].startsWith('--'))throw Error('Missing '+flag+' value');return rest[i+1] }
@@ -188,11 +193,14 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     if(session&&store.source(session)){
       if(command==='compact-diagnostic')store.noteCompaction(session,compactionDiagnostic({error:true},{records:store.stats(session).records}))
       else {
-        const claim=store.db.prepare('SELECT revision FROM host_summary_claims WHERE session=?').get(session)
+        const input=await readHook().catch(()=>({}))
+        const claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
         // Cancellation or another writer taking ownership is not a failure of
         // the current settings. Do not overwrite that writer's healthy status.
-        if(store.ownsLease(session,'host')&&claim?.revision===summarySettingsRevision(store,session)){
+        const revision=summarySettingsRevision(store,session)
+        if(store.ownsLease(session,'host')&&claim?.revision===revision&&hostClaimMatches(claim,input,revision)&&(!claim.deadline_ms||Date.now()<claim.deadline_ms)){
           store.recordSummaryError(session,Error('Host summary failed'));store.setStatus(session,'summary_error')
+          store.failSummaryBatch(session,claim.batch_id,claim.revision)
         }
       }
     }
@@ -212,15 +220,45 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if(existsSync(src.path))store.ingest(session,src.path) // the newest turns, written since the last hook
       const {planCompaction}=await import('./compaction.js')
       const {verifiedCompactionInput}=await import('./claude-compaction-input.js')
-      const context=verifiedCompactionInput(store,session,input.messages||[])
-      reply=planCompaction({meta:store.metadata(session),events:context.events,nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:context.messages,instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||setting.window,setting.window),keepTokens:setting.keep})
+      const plan=()=>{
+        const current=store.takeover()
+        if(!current.enabled)return {use:false,reason:'compaction takeover is off'}
+        const context=verifiedCompactionInput(store,session,input.messages||[])
+        return planCompaction({meta:store.metadata(session),events:context.events,nodes:store.db.prepare('SELECT id,level,first,last,summary FROM nodes WHERE session=?').all(session),messages:context.messages,instructions:input.instructions||'',tokens:input.tokens||0,window:Math.min(input.window||current.window,current.window),keepTokens:current.keep})
+      }
+      const note=(result,stage,catchupMs=null)=>store.noteCompaction(session,{...compactionDiagnostic(result,{nodes:store.nodeRows(session,0),records:store.stats(session).records,before:input.tokens||0,trigger:input.trigger}),stage:stage||(result.stage==='inline'||result.inline?'inline':'first'),pending:pendingLeaves(store,session),after:result.after??null,catchupMs})
+      const notePlan=(result,stage,ms=null)=>{
+        if(result.initial){note(result.initial,stage||'first',ms);note(result,'inline',ms)}
+        else note(result,stage,ms)
+      }
+      reply=plan()
+      notePlan(reply,input.afterCatchup?'catchup':null,input.afterCatchup&&Number.isFinite(input.catchupMs)?input.catchupMs:null)
+      const eligible=['coverage_lag','uncovered_oldest','no_summaries','context_too_large'].includes(compactionDiagnostic(reply).code)
+      if(!input.afterCatchup&&!reply.use&&!reply.ambiguous&&reply.stage!=='inline'&&!reply.inline&&eligible){
+        const pending=pendingLeaves(store,session),deadlineMs=catchupDeadlineMs(),chosen=effective(store,session),harness=store.metadata(session).harness
+        if(deadlineMs>0&&pending>=1&&pending<=4&&store.integrationEnabled(harness)&&['cli','api'].includes(chosen.mode)){
+          if(chosen.mode==='cli'&&writerTool(harness)==='claude-code')reply={...reply,catchup:{host:true,deadlineMs,maxPieces:4}}
+          else {
+            const started=Date.now()
+            try{await catchUp(store,session,{deadlineMs,maxPieces:4})}catch{}
+            reply=plan();reply.catchup=true
+            notePlan(reply,'catchup',Date.now()-started)
+          }
+        }
+      }
       if(reply.use)store.noteTakeover(session,input.tokens||0,reply.after||0)
     }
-    if(src)store.noteCompaction(session,compactionDiagnostic(reply,{nodes:store.nodeRows(session,0),records:store.stats(session).records,before:input.tokens||0,trigger:input.trigger}))
+    if(src&&(!setting.enabled||store.isDeleted(session)))store.noteCompaction(session,compactionDiagnostic(reply,{nodes:store.nodeRows(session,0),records:store.stats(session).records,before:input.tokens||0,trigger:input.trigger}))
   } catch(error) { reply={use:false,reason:'compaction planner failed; originals retained',error:true};if(rest[0]&&store.source(rest[0]))store.noteCompaction(rest[0],compactionDiagnostic(reply,{records:store.stats(rest[0]).records})) }
   finally { store.close() }
   process.stdout.write(JSON.stringify(reply)+'\n')
-} else if (['summary-host','summary-claim','summary-save','summary-handoff','summary-check'].includes(command)) {
+} else if (command==='summary-tick') {
+  const store=new ClaudeStore()
+  let reply
+  try{reply=summaryTick(store,rest[0])}catch{reply={error:'Summary tick failed; originals retained'}}
+  finally{store.close()}
+  process.stdout.write(JSON.stringify(reply)+'\n')
+} else if (['summary-host','summary-claim','summary-save','summary-handoff','summary-check','summary-release'].includes(command)) {
   // 本工具后台写 inside Claude Code (hooks/compact-mod.js, 2.1.286+): the module asks for the next piece
   // (summary-claim), writes it with $.model.complete on the session's own login, and hands it back
   // (summary-save). summary-host marks the session at its start so the Stop hook does not also start a
@@ -232,9 +270,17 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     if(!session)throw new Error('Usage: '+command+' <session>')
     if(!store.integrationEnabled(store.metadata(session).harness))throw Object.assign(Error('Integration is disconnected'),{none:true})
     if(command==='summary-host')store.setHostWriter(session,true)
+    else if(command==='summary-release'){
+      const input=await readHook(),claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
+      if(hostClaimMatches(claim,input,summarySettingsRevision(store,session))&&input.batch_id===claim.batch_id)store.releaseHostClaim(session,claim.claim_id)
+    }
     else if(command==='summary-handoff'){
-      if(store.hostWriter(session)){store.setHostWriter(session,false);store.release(session,'host')}
-      if(store.source(session)&&!store.isDeleted(session)){const {mode,model}=effective(store,session);scheduleSummary(store,session,mode,model)}
+      const input=await readHook().catch(()=>({})),claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
+      const active=store.ownsLease(session,'host'),revision=summarySettingsRevision(store,session)
+      if(hostClaimMatches(claim,input,revision)||!input.claim_id&&!active){
+        if(store.hostWriter(session)){store.setHostWriter(session,false);if(claim)store.releaseHostClaim(session,claim.claim_id);else store.release(session,'host')}
+        if(store.source(session)&&!store.isDeleted(session)){const {mode,model}=effective(store,session);scheduleSummary(store,session,mode,model)}
+      }
     } else {
       const src=store.source(session)
       if(!src||store.isDeleted(session))throw Object.assign(new Error('conversation not recorded by SuperLcm'),{none:true})
@@ -242,39 +288,51 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       if(mode!=='cli'||writerTool(store.metadata(session).harness)!=='claude-code')throw Object.assign(new Error('summaries are not written by Claude Code for this conversation'),{none:true})
       if(command==='summary-check'){
         const input=await readHook(),claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
-        const valid=!!claim&&claim.batch_id===input.batch_id&&claim.revision===summarySettingsRevision(store,session)&&store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner==='host'&&store.summarizing(session)
+        const revision=summarySettingsRevision(store,session)
+        const valid=!!claim&&claim.batch_id===input.batch_id&&hostClaimMatches(claim,input,revision)&&(!claim.deadline_ms||Date.now()<claim.deadline_ms)&&claim.revision===revision&&store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner==='host'&&store.summarizing(session)
         if(valid)store.renewLease(session,300000,'host')
-        reply={valid}
+        reply={valid,...(claim?.claim_id&&!input.claim_id?{reason:'Summary claim ID required; reload the SuperLcm plugin in this session'}:{})}
       }else if(command==='summary-claim'){
         store.setHostWriter(session,true)
         if(existsSync(src.path))store.ingest(session,src.path)
-        const work=summaryWork(store,session)
+        const leafOnly=rest.includes('--leaf'),deadlineAt=rest.indexOf('--deadline'),deadline=deadlineAt<0?0:Number(rest[deadlineAt+1])
+        if(!Number.isSafeInteger(deadline)||deadline<0||(deadline&&deadline<=Date.now()))throw Object.assign(Error('Catch-up deadline reached'),{none:true})
+        const work=summaryWork(store,session,{leafOnly}),revision=summarySettingsRevision(store,session)
         if(!work)reply={none:'nothing to summarize yet'}
+        else if(store.summaryRetry(session,work.batch_id,revision))reply={none:'summary retry cooldown'}
         else if(!store.lease(session,300000,'host'))reply={none:'busy'}
         else {
-          store.db.prepare('INSERT INTO host_summary_claims VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision').run(session,work.batch_id,summarySettingsRevision(store,session))
+          const claimId=randomUUID()
+          store.db.prepare('INSERT INTO host_summary_claims(session,batch_id,revision,claim_id,leaf_only,deadline_ms) VALUES(?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision,claim_id=excluded.claim_id,leaf_only=excluded.leaf_only,deadline_ms=excluded.deadline_ms').run(session,work.batch_id,revision,claimId,leafOnly?1:0,deadline)
           const task=adaptiveSummaryTask(work,readSummaryProfile(profileKey('claude-host',model||'configured',null),store))
-          reply={work:{task:{level:work.level,first:work.first,last:work.last,maxChars:task.maxChars,language:task.language,requireHeading:true},maxTokens:visibleOutputRoom(work.content),batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,task),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
+          reply={work:{task:{level:work.level,first:work.first,last:work.last,maxChars:task.maxChars,language:task.language,requireHeading:true},maxTokens:visibleOutputRoom(work.content),batch_id:work.batch_id,claim_id:claimId,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,task),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
         }
       } else {
         const input=await readHook()
+        const claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
+        const current=()=>{
+          const active=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
+          const revision=summarySettingsRevision(store,session)
+          return !!claim&&active?.claim_id===claim.claim_id&&active.batch_id===input.batch_id&&hostClaimMatches(claim,input,revision)&&claim.revision===revision&&(!claim.deadline_ms||Date.now()<claim.deadline_ms)&&(!input.deadline_ms||Date.now()<input.deadline_ms)
+        }
         try {
           if (input.isAnswered === false) throw new Error('Summary generation was incomplete')
           let summary=checkedSummary(input.summary,{finishReason:input.finishReason})
-          const work=summaryWork(store,session)
+          const work=summaryWork(store,session,{leafOnly:!!claim?.leaf_only})
           if(!store.summarizing(session)||store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner!=='host')throw new Error('no summary claimed in this conversation')
           if(!work||work.batch_id!==input.batch_id)throw new Error('stale summary batch')
-          const claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
-          if(!claim||claim.batch_id!==input.batch_id||claim.revision!==summarySettingsRevision(store,session))throw Error('Summary setting changed; result not saved')
+          if(claim?.claim_id&&!input.claim_id)throw Error('Summary claim ID required; reload the SuperLcm plugin in this session')
+          if(!claim||claim.batch_id!==input.batch_id||!current())throw Error('Summary setting changed, claim replaced or deadline reached; result not saved')
           summary=checkedSummary(summary,work)
           if(work.reducedSources&&!isReducedSummary(summary))summary=checkedSummary(summary.slice(0,5500)+'\n\n'+reducedNotice(work))
           if(Number.isFinite(input.overshoot))updateSummaryProfile(profileKey('claude-host',model||'configured',null),{overshoot:input.overshoot},store)
           if(summary.length<20)throw new Error('summary too short')
           if(work.level===0)for(let i=work.first;i<=work.last;i++)store.exact(session,i)
-          store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`},{leaseOwner:'host',validate:()=>claim.revision===summarySettingsRevision(store,session)})
+          store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`},{leaseOwner:'host',validate:current})
+          store.completeSummaryBatch(session,work.batch_id,claim.revision)
           store.setStatus(session,'ok')
           reply={saved:true,more:Boolean(summaryWork(store,session))}
-        } finally { store.release(session,'host') }
+        } finally { if(hostClaimMatches(claim,input,summarySettingsRevision(store,session)))store.releaseHostClaim(session,claim.claim_id) }
       }
     }
   } catch(error) { reply=error.none?{none:error.message}:{error:error.message} }

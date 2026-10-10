@@ -20,8 +20,8 @@ export const maxRecord = 32 * 1024 * 1024 // Codex compacted records can contain
 export const home = () => resolve(process.env.SUPERLCM_HOME || process.env.SUPERLCM_CLAUDE_HOME || join(homedir(), '.superlcm-claude'))
 function ensurePrivate(path) { mkdirSync(path, { recursive: true, mode: 0o700 }) }
 function inside(parent, child) { const rel = relative(parent, child); return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) }
-export function claudeTranscript(path) {
-  const root = realpathSync(resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'))
+export function claudeTranscript(path, env = process.env) {
+  const root = realpathSync(resolve(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'))
   const file = realpathSync(path)
   if (!inside(root, file) || !file.endsWith('.jsonl')) throw new Error('transcript_path must be a JSONL file inside the Claude projects directory')
   return file
@@ -97,6 +97,8 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS takeover_runs(session TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, before INTEGER NOT NULL, after INTEGER NOT NULL);
     `)
     initializeEventCounts(this.db)
+    const hostColumns=new Set(this.db.prepare('PRAGMA table_info(host_summary_claims)').all().map(c=>c.name))
+    for(const [column,type] of [['claim_id',"TEXT NOT NULL DEFAULT ''"],['leaf_only','INTEGER NOT NULL DEFAULT 0'],['deadline_ms','INTEGER NOT NULL DEFAULT 0']])if(!hostColumns.has(column))this.db.exec(`ALTER TABLE host_summary_claims ADD COLUMN ${column} ${type}`)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!new Set(this.db.prepare('PRAGMA table_info(leases)').all().map(c=>c.name)).has('owner'))this.db.exec("ALTER TABLE leases ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
     if(!new Set(this.db.prepare('PRAGMA table_info(takeover_settings)').all().map(c=>c.name)).has('keep_tokens'))this.db.exec('ALTER TABLE takeover_settings ADD COLUMN keep_tokens INTEGER NOT NULL DEFAULT 40000')
@@ -213,13 +215,30 @@ export class ClaudeStore {
   }
   // The newest packet SuperLcm handed Claude Code for a conversation, so the SessionStart hook after the
   // compaction can tell the user it was ours and how much it freed. Taken (read and cleared) once.
-  noteCompaction(session,{status,code,reason,through=-1,records=0,before=0,trigger='unknown'}) {
+  noteCompaction(session,{status,code,reason,through=-1,records=0,before=0,trigger='unknown',stage='first',pendingSegments=null,pending=pendingSegments,after=null,catchupMs=null,catchup_ms=catchupMs,coverage_lag=null}) {
     this.db.exec('CREATE TABLE IF NOT EXISTS compaction_diagnostics(session TEXT PRIMARY KEY,status TEXT NOT NULL,code TEXT NOT NULL,reason TEXT NOT NULL,at_ms INTEGER NOT NULL,through_record INTEGER NOT NULL,records INTEGER NOT NULL,before_tokens INTEGER NOT NULL,trigger TEXT NOT NULL)')
-    this.db.prepare('INSERT INTO compaction_diagnostics VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET status=excluded.status,code=excluded.code,reason=excluded.reason,at_ms=excluded.at_ms,through_record=excluded.through_record,records=excluded.records,before_tokens=excluded.before_tokens,trigger=excluded.trigger').run(session,status,code,reason,Date.now(),through,records,Math.round(before)||0,['auto','manual','precompute'].includes(trigger)?trigger:'unknown')
+    this.db.exec('CREATE TABLE IF NOT EXISTS compaction_history(session TEXT NOT NULL,at_ms INTEGER NOT NULL,status TEXT NOT NULL,code TEXT NOT NULL,reason TEXT NOT NULL,stage TEXT NOT NULL,through_record INTEGER NOT NULL,records INTEGER NOT NULL,coverage_lag INTEGER NOT NULL,pending_segments INTEGER,before_tokens INTEGER NOT NULL,after_tokens INTEGER,catchup_ms INTEGER,trigger TEXT NOT NULL); CREATE INDEX IF NOT EXISTS compaction_history_session_at ON compaction_history(session,at_ms)')
+    const at=Date.now(),safeTrigger=['auto','manual','precompute'].includes(trigger)?trigger:'unknown'
+    const number=n=>Number.isFinite(n)&&n>=0?Math.round(n):null
+    this.db.exec('SAVEPOINT compaction_note')
+    try {
+      this.db.prepare('INSERT INTO compaction_diagnostics VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET status=excluded.status,code=excluded.code,reason=excluded.reason,at_ms=excluded.at_ms,through_record=excluded.through_record,records=excluded.records,before_tokens=excluded.before_tokens,trigger=excluded.trigger').run(session,status,code,reason,at,through,records,number(before)||0,safeTrigger)
+      this.db.prepare('INSERT INTO compaction_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(session,at,status,code,reason,['first','inline','catchup'].includes(stage)?stage:'first',through,records,number(coverage_lag)??Math.max(0,records-1-through),number(pending),number(before)||0,number(after),number(catchup_ms),safeTrigger)
+      this.db.prepare('DELETE FROM compaction_history WHERE session=? AND rowid NOT IN (SELECT rowid FROM compaction_history WHERE session=? ORDER BY at_ms DESC,rowid DESC LIMIT 50)').run(session,session)
+      this.db.exec('RELEASE compaction_note')
+    } catch(error){this.db.exec('ROLLBACK TO compaction_note');this.db.exec('RELEASE compaction_note');throw error}
   }
   lastCompactionDiagnostic(session) {
     if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='compaction_diagnostics'").get())return null
     return this.db.prepare('SELECT status,code,reason,at_ms,through_record,records,before_tokens,trigger FROM compaction_diagnostics WHERE session=?').get(session)||null
+  }
+  compactionHistory(session,limit=50) {
+    if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='compaction_history'").get())return []
+    return this.db.prepare('SELECT at_ms,status,code,reason,stage,through_record,records,coverage_lag,coverage_lag AS lag_records,pending_segments,pending_segments AS pending,before_tokens,before_tokens AS before,after_tokens,after_tokens AS after,catchup_ms,trigger FROM compaction_history WHERE session=? ORDER BY at_ms DESC,rowid DESC LIMIT ?').all(session,bounded(limit,50,50))
+  }
+  compactionStats(session) {
+    const recent=this.compactionHistory(session),total=recent.length,takeover=recent.filter(r=>r.status==='takeover').length,native=recent.filter(r=>r.status==='native').length
+    return {total,takeover,native,rate:total?takeover/total:null,recent}
   }
   reducedSummaryCount(session) { return this.db.prepare("SELECT count(*) AS n FROM nodes WHERE session=? AND instr(summary,'[SuperLcm reduced navigation]')>0").get(session).n }
   noteTakeover(session,before,after) { this.db.prepare('INSERT INTO takeover_runs(session,at_ms,before,after) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET at_ms=excluded.at_ms,before=excluded.before,after=excluded.after').run(session,Date.now(),Math.round(before)||0,Math.round(after)||0) }
@@ -711,6 +730,7 @@ export class ClaudeStore {
     return this.db.prepare('UPDATE leases SET until_ms=? WHERE session=? AND owner=? AND until_ms>=?').run(now+duration, session, owner, now).changes === 1
   }
   release(session, owner = `worker:${process.pid}`) { this.db.prepare('UPDATE leases SET until_ms=0 WHERE session=? AND owner=?').run(session, owner) }
+  releaseHostClaim(session,claimId) { this.db.prepare("UPDATE leases SET until_ms=0 WHERE session=? AND owner='host' AND EXISTS (SELECT 1 FROM host_summary_claims c WHERE c.session=leases.session AND c.claim_id=?)").run(session,claimId) }
   search(session, query, limit = 10) {
     if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new Error('Provide a query of 1–200 characters')
     const tokens = query.normalize('NFKC').match(/[\p{L}\p{N}_]+/gu)?.slice(0, 8) || []

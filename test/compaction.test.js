@@ -55,12 +55,12 @@ test('after an earlier SuperLcm compaction the old packet is replaced, not kept'
 })
 
 test('compaction goes back to Claude Code when summaries are missing or lag behind', () => {
-  const events = [ev(0, 'user: a'), ev(1, 'assistant: b'), ev(2, 'user: c'), ev(3, 'assistant: d')]
-  const messages = events.map(e => msg(e.preview.split(': ')[0], e.preview.split(': ')[1], { size: 1000 }))
+  const events = Array.from({length:16},(_,i)=>ev(i, (i%2?'assistant: ':'user: ')+('record '+i+' detail ').repeat(400)))
+  const messages = events.map(e => msg(e.preview.split(': ')[0], e.preview.slice(e.preview.indexOf(': ')+2), { size: 1000 }))
   assert.deepEqual(planCompaction({ meta, events, nodes: [], messages, tokens: 250000 }), { use: false, reason: 'no summaries written yet' })
   const lag = planCompaction({ meta, events, nodes: [node('a', 0, 0, 0)], messages, tokens: 250000, window: 300000 })
   assert.equal(lag.use, false)
-  assert.match(lag.reason, /lag/)
+  assert.match(lag.reason, /too large/)
   const lost = planCompaction({ meta, events, nodes: [node('a', 0, 0, 1)], messages: [msg('user', 'something else entirely')], tokens: 1000 })
   assert.equal(lost.use, false)
 })
@@ -229,12 +229,12 @@ test('Claude Code writes its own summaries through summary-claim / summary-save,
   assert.match(claim.work.prompt, /semantic depth=0/)
   assert.match(claim.work.prompt, /<conversation_excerpt>\n\[event 0\] user:\none please/)
   assert.deepEqual(run('summary-claim'), { none: 'busy' }) // one writer at a time
-  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: 'nope', summary: 'x'.repeat(30) })), { error: 'stale summary batch' })
+  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: 'nope', claim_id:claim.work.claim_id, summary: 'x'.repeat(30) })), { error: 'stale summary batch' })
   const again = run('summary-claim') // the failed save released the piece
-  assert.match(run('summary-save', JSON.stringify({batch_id:again.work.batch_id,summary:'A plausible partial summary.',isAnswered:true,finishReason:'max_tokens'})).error,/incomplete/)
+  assert.match(run('summary-save', JSON.stringify({batch_id:again.work.batch_id,claim_id:again.work.claim_id,summary:'A plausible partial summary.',isAnswered:true,finishReason:'max_tokens'})).error,/incomplete/)
   {const check=new ClaudeStore(home);assert.equal(check.nodeRows('s3',0).length,0);check.close()}
   const retry=run('summary-claim')
-  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: retry.work.batch_id, summary: '# The user asked for one; it was done.', model: 'haiku' })), { saved: true, more: true })
+  assert.deepEqual(run('summary-save', JSON.stringify({ batch_id: retry.work.batch_id, claim_id:retry.work.claim_id, summary: '# The user asked for one; it was done.', model: 'haiku' })), { saved: true, more: true })
   const s = new ClaudeStore(home)
   assert.equal(s.hostWriter('s3'), true)
   assert.deepEqual(s.nodeRows('s3', 0).map(n => [n.first, n.last, n.model]), [[0, 1, 'claude-code-host:haiku']])

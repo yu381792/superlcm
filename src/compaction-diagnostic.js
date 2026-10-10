@@ -9,6 +9,8 @@ export function compactionDiagnostic(plan, { nodes = [], records = 0, before = 0
     [/takeover is off/, 'disabled', '接管未启用，使用 Claude Code 原生压缩。'],
     [/not recorded/, 'unrecorded', '会话尚未归档，使用 Claude Code 原生压缩。'],
     [/no summaries written yet/, 'no_summaries', '还没有已完成的后台摘要。'],
+    [/compacted context is too large/, 'context_too_large', '替换后上下文仍过大，保留原生压缩。'],
+    [/complete request and packet exceed/, 'request_too_large', '完整请求超出安全大小，保留原生压缩。'],
     [/summaries lag behind/, 'coverage_lag', '后台摘要覆盖不足，替换后上下文仍过大。'],
     [/more than one place/, 'ambiguous_boundary', '摘要边界有多个可能位置，无法安全替换。'],
     [/oldest messages.*not summarized/, 'uncovered_oldest', '上下文开头的消息尚未被摘要覆盖。'],

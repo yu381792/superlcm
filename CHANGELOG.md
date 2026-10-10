@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.26
+
+- Fix long autonomous Claude turns: observe model steps, prioritize raw coverage and bound missing-leaf catch-up. Preserve the complete original human request when retaining a recent suffix within a long turn; verify native continuation and tool boundaries. Reject oversized replacements.
+- Retain 50 sanitized compaction diagnostics per conversation. Guard catch-up deadlines, writer ownership, settings revisions and late model returns.
+- Stabilize summary policy/source prefixes and retry layout; add explicit Anthropic cache breakpoints. Share the prompt correction with DSH standalone 0.5.29.
+- Credit muxammadreza for issues #7–#9 and the accompanying design proposals. See [verification and limits](docs/LONG-TURN-RELIABILITY-0.5.26.md).
+
 ## 0.5.25
 
 - Proactive audit: require an actual successful terminal event for DSH summary streams; reject missing/unknown/truncated/aborted/duplicate endings, tool output and output after completion before any checkpoint commit. Invalidate uncommitted drafts from the prior policy.

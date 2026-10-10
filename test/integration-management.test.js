@@ -103,10 +103,10 @@ test('Claude cached host module cannot submit after cancellation or a settings c
   const run=(cmd,input='')=>{const r=spawnSync(process.execPath,['src/cli.js',cmd,'s'],{env,input,encoding:'utf8'});return JSON.parse(r.stdout)}
   const claim=run('summary-claim');assert.ok(claim.work)
   store.setIntegrationEnabled('claude-code',false)
-  assert.equal(run('summary-save',JSON.stringify({batch_id:claim.work.batch_id,summary:'Late valid response that must not be written.'})).none,'Integration is disconnected')
+  assert.equal(run('summary-save',JSON.stringify({batch_id:claim.work.batch_id,claim_id:claim.work.claim_id,summary:'Late valid response that must not be written.'})).none,'Integration is disconnected')
   assert.equal(run('summary-claim').none,'Integration is disconnected');assert.equal(store.hostWriter('s'),false);assert.equal(store.nodeRows('s',0).length,0)
   store.setIntegrationEnabled('claude-code',true);const retry=run('summary-claim');assert.ok(retry.work);store.setHarnessSetting('claude-code','cli','different')
-  assert.match(run('summary-save',JSON.stringify({batch_id:retry.work.batch_id,summary:'Response from the old settings should not be saved.'})).error,/setting changed/)
+  assert.match(run('summary-save',JSON.stringify({batch_id:retry.work.batch_id,claim_id:retry.work.claim_id,summary:'Response from the old settings should not be saved.'})).error,/setting changed/)
   assert.equal(store.nodeRows('s',0).length,0)
 })
 
