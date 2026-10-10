@@ -41,7 +41,8 @@ async function withHost(config, response, run) {
       calls.push({ provider: options.provider, model: options.model, signal: options.signal, sessionId: options.sessionId,
         inputTokens:Math.ceil(JSON.stringify(options.messages).length/4) })
       const text = await response(options)
-      yield { type: 'text-delta', index: 0, text:'# '+text }
+      if (Array.isArray(text)) { for (const chunk of text) yield chunk }
+      else { yield { type: 'text-delta', index: 0, text:'# '+text }; yield { type:'finish', reason:{kind:'stop'} } }
     }
     ctx.reflect.provide('llm', {
       stream:options=>ctx.waterfall('llm/stream',options,()=>localStream(options)),
@@ -375,7 +376,7 @@ test('console document hot-applies model, switch and retention and cancels old p
       assert.equal(engine.rollingConfig.minRetainTokens,100)
       assert.equal(compressionSnapshot(dashboard).runtimes[0].settings_revision,'initial')
       let finish;const pending=new Promise(resolve=>{finish=resolve})
-      engine.summaryContext.llm.stream=async function*(){await pending;yield{type:'text-delta',index:0,text:'迟到的旧摘要'}}
+      engine.summaryContext.llm.stream=async function*(){await pending;yield{type:'text-delta',index:0,text:'迟到的旧摘要'};yield{type:'finish',reason:{kind:'stop'}}}
       const event=append(session,source),before=[...session.surface.nodes]
       assert.equal(engine.startBackgroundFold(agent,{start:event.seq,end:event.seq,reason:'pressure'}),true)
       await tick();publish('disabled',{...config,auto:false});await engine.reloadControls()
@@ -387,7 +388,7 @@ test('console document hot-applies model, switch and retention and cancels old p
       await engine.reloadControls()
       assert.equal(engine.config.auto,true);assert.equal(engine.config.summarizationProvider,'second-provider');assert.equal(engine.rollingConfig.minRetainTokens,200);assert.equal(engine.rollingConfig.softActiveTokens,5000)
       assert.equal(compressionSnapshot(dashboard).runtimes[0].settings_revision,'new-model')
-      const selected=[];engine.summaryContext.llm.stream=async function*(o){selected.push(o.provider);yield{type:'text-delta',index:0,text:'# Current state: the new summary retains original source references.'}}
+      const selected=[];engine.summaryContext.llm.stream=async function*(o){selected.push(o.provider);yield{type:'text-delta',index:0,text:'# Current state: the new summary retains original source references.'};yield{type:'finish',reason:{kind:'stop'}}}
       const prepared=prepareAsyncRegion(engine,agent,{start:event.seq,end:event.seq});const summary=await summarizeAsyncRegion(engine,agent,prepared,new AbortController().signal)
       assert.deepEqual(selected,['second-provider']);assert.equal(calls.length,0);assert.ok(commitAsyncRegion(engine,agent,summary))
       publish('bad',{...config,hardActiveTokens:2000});await engine.reloadControls()
@@ -421,7 +422,7 @@ test('global compaction uses the selected native model scope without changing th
   await withHost({summaryAdapter:spec,summarizationProvider:'selected-provider',summarizationModel:'cheap-model'},async()=>{throw Error('Main conversation model must not summarize')},async({engine,ctx,session,agent,calls})=>{
     await engine.summaryModelReady
     const selected=[]
-    engine.summaryContext.llm.stream=async function*(options){selected.push([options.provider,options.model]);yield{type:'text-delta',index:0,text:'# Current state: original engineering facts are summarized with exact source references.'}}
+    engine.summaryContext.llm.stream=async function*(options){selected.push([options.provider,options.model]);yield{type:'text-delta',index:0,text:'# Current state: original engineering facts are summarized with exact source references.'};yield{type:'finish',reason:{kind:'stop'}}}
     const event=append(session,source)
     const prepared=prepareAsyncRegion(engine,agent,{start:event.seq,end:event.seq})
     const summary=await summarizeAsyncRegion(engine,agent,prepared,new AbortController().signal)
@@ -913,3 +914,26 @@ test('custom replacement percentage keeps ready drafts private until its own thr
     assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/start').length,1)
   })
 })
+
+// Full host path, not just a stream-validator unit test: no malformed model
+// response may create a checkpoint or change the surface, nor incur a retry.
+for (const kind of ['missing', 'unknown', 'max-tokens', 'tool-calls', 'error', 'aborted', 'duplicate', 'after-finish', 'tool-start', 'tool-output']) {
+  test(`incomplete ${kind} summary stream never replaces source context`, async () => {
+    const body={type:'text-delta',index:0,text:'# Current state\nThe original files are preserved. Deployment has not been authorized.'}
+    const stop={type:'finish',reason:{kind:'stop'}}
+    const chunks=kind==='missing'?[body]:kind==='duplicate'?[body,stop,stop]:kind==='after-finish'?[body,stop,body]:kind==='tool-start'?[body,{type:'block-start',index:1,blockType:'tool-call'},stop]:kind==='tool-output'?[body,{type:'block-end',index:1,block:{type:'tool-call',id:'fake',name:'execute',arguments:'{}'}},stop]:[body,{type:'finish',reason:{kind}}]
+    await withHost({},async()=>chunks,async({engine,session,agent,calls})=>{
+      const raw=append(session,'Please preserve all original files. Do not deploy yet. '.repeat(100))
+      const before=session.snapshotEvents(),surface=[...session.surface.nodes]
+      const prepared=prepareAsyncRegion(engine,agent,{start:raw.seq,end:raw.seq})
+      await assert.rejects(async()=>{
+        const result=await summarizeAsyncRegion(engine,agent,prepared,new AbortController().signal)
+        commitAsyncRegion(engine,agent,result)
+      },/incomplete/)
+      assert.equal(calls.length,1,'wire failures are not paid quality retries')
+      assert.deepEqual(session.surface.nodes,surface)
+      assert.deepEqual(session.snapshotEvents(),before)
+      assert.equal(engine.superLcmStore.listNodes(session.id,{status:'ready'}).length,0)
+    })
+  })
+}

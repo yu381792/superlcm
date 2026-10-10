@@ -1,3 +1,4 @@
+import { cliDeadline } from './cli-deadline.js'
 import { validModel, MAX_SUMMARY_INPUT, workerEnv } from './runtime.js'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -15,13 +16,13 @@ export function summarizeWithCodexCli(text,{model=process.env.SUPERLCM_CODEX_CLI
   const prompt=SUMMARY_SYSTEM+'\n\n'+buildSummaryPrompt(text,summaryTask)
   return new Promise((resolve,reject)=>{
     let child,settled=false,timedOut=false,out='',overflow=false
-    const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);if(error)reject(error);else resolve(value)}
+    const finish=(error,value)=>{if(settled)return;settled=true;deadline.clear();if(error)reject(error);else resolve(value)}
     try {child=spawnProcess(bin,args,{cwd,env:workerEnv(env),stdio:['pipe','pipe','pipe'],windowsHide:true})}
     catch(error){return reject(new Error(`Codex CLI could not start: ${error.message}`))}
-    const timer=setTimeout(()=>{timedOut=true;child.kill('SIGTERM')},timeoutMs)
+    const deadline=cliDeadline(child,timeoutMs,error=>finish(error),'Codex CLI')
     child.on('error',error=>finish(new Error(`Codex CLI could not start: ${error.message}`)))
     child.stdout.setEncoding('utf8')
-    child.stdout.on('data',chunk=>{if(overflow)return;out+=chunk;if(Buffer.byteLength(out)>1024*1024){overflow=true;child.kill('SIGTERM')}})
+    child.stdout.on('data',chunk=>{if(overflow)return;out+=chunk;if(Buffer.byteLength(out)>1024*1024){overflow=true;deadline.stop('Codex CLI output exceeded 1 MiB')}})
     child.stderr.resume()
     child.on('close',code=>{
       if(timedOut)return finish(new Error('Codex CLI summarization timed out'))

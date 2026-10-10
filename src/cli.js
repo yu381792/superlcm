@@ -165,15 +165,15 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         const revision = summarySettingsRevision(store, rest[0])
         const shouldContinue = () => summarySettingsRevision(store, rest[0]) === revision
         result=mode==='api'
-          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL,effort:effort||api_effort||null,shouldContinue})
+          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL,effort:effort||api_effort||null,shouldContinue,retryFailed:!!backend||process.env.SUPERLCM_HOOK_WORKER!=='1'})
           : await (async()=>{
             // 本工具后台写: this conversation's own tool (or, for an imported one, any installed tool), as configured.
             const tool=writerTool(store.metadata(rest[0]).harness)
             if (!tool) throw new Error('No installed tool can write summaries')
             const chosen=model||(tool==='claude-code'?process.env.SUPERLCM_CLAUDE_CLI_MODEL:tool==='codex'?process.env.SUPERLCM_CODEX_CLI_MODEL:'')||''
-            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:(text,options)=>summarizeWith(tool,text,{model:chosen,summaryTask:options.summaryTask}),shouldContinue})
+            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:(text,options)=>summarizeWith(tool,text,{model:chosen,summaryTask:options.summaryTask}),shouldContinue,retryFailed:!!backend||process.env.SUPERLCM_HOOK_WORKER!=='1'})
           })()
-        if (!result.busy) store.setStatus(rest[0],'ok')
+        if (!result.busy && !result.stopped) store.setStatus(rest[0],'ok')
       }
       catch(error) {store.recordSummaryError(rest[0],error);store.setStatus(rest[0],'summary_error');throw error}
     } else if (command==='import') {

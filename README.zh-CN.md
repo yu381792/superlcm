@@ -128,3 +128,5 @@ Claude、Claude Code、Codex、Hermes、Pi 的名称和标志归各自所有者�
 摘要语言和指令隔离修复见 [新版说明](docs/SUMMARY-QUALITY-0.5.24.md)。
 
 完整版与 DSH 独立版的关系、修复同步及验证范围见 [修复同步说明](docs/REPAIR-SYNC-0.5.23.md)。
+
+主动审查与发布前故障验证见 [发布验证说明](docs/RELEASE-VERIFICATION.md)。发布者运行 `npm run verify:release`，包含实际安装包、运行时和失败场景；两版共用修复在发布前核对一致。

@@ -96,12 +96,16 @@ const budgetFor=(saved,options={})=>{
 // target unless one message alone is longer (that message then forms its own segment).
 function segmentEnd(events, from, budget, batchSize) {
   let size = 0, count = 0
+  const pending=new Set()
   for (let i = from; i < events.length; i++) {
     if (!visibleEvent(events[i])) continue
     const len = budget.tokens?estimateSummaryTokens(eventPrefix(events[i])+events[i].summaryText+'\n'):textLength(events[i])
-    if (count && size + len > budget.target) return i - 1
+    if (count && !pending.size && size + len > budget.target) return i - 1
     size += len; count++
-    if (size >= budget.target || count >= batchSize) return i
+    const pairing=events[i].toolPairing||{opened:[],closed:[]}
+    for(const id of pairing.opened)pending.add(id)
+    for(const id of pairing.closed)pending.delete(id)
+    if (!pending.size && (size >= budget.target || count >= batchSize)) return i
   }
   return -1
 }
@@ -149,7 +153,7 @@ export function summaryWork(store, session, options = {}) {
   const end = segmentEnd(events, 0, budget, batchSize)
   if (end < 0) return null // wait for a complete batch; the unsummarized tail stays readable as raw events
   const batch = events.slice(0, end + 1)
-  const language=detectSummaryLanguage(batch.map(e=>userTextFromRecord(store.exact(session,e.ordinal))),fallback)
+  const language=detectSummaryLanguage(store.source(session).kind==='text'?excerptUserTexts(batch.map(e=>store.exact(session,e.ordinal)).join('')):batch.map(e=>userTextFromRecord(store.exact(session,e.ordinal))),fallback)
   const digest = hash(JSON.stringify([SUMMARY_POLICY_VERSION,language.code,...batch.map(e => e.digest)]))
   const base = { session, batch_id: nodeId(session, 0, batch[0].ordinal, batch.at(-1).ordinal, digest), level: 0, first: batch[0].ordinal, last: batch.at(-1).ordinal, children: [], digest,
     ...(store.metadata(session).harness==='dsh'?{source_records:batch.filter(visibleEvent).map(e=>e.ordinal)}:{}) }
@@ -190,7 +194,7 @@ export function summarySettingsRevision(store, session, env = process.env) {
   const setting = store.effectiveSetting(session, env)
   return hash(JSON.stringify([setting,store.tuning(),store.integrationRevision(setting.harness), setting.mode === 'api' ? store.apiCredential(session, env) : null]))
 }
-export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, fetchImpl, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000 } = {}) {
+export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, fetchImpl, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000, retryFailed = false } = {}) {
   if (!model || (apiKey == null && summarize === summarizeWithModel)) throw new Error('Explicit summarizer model and API key required')
   if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 10000) throw new Error('batchSize must be 2–10000')
   if (!Number.isSafeInteger(fanout) || fanout < 2 || fanout > 8) throw new Error('fanout must be 2–8')
@@ -200,7 +204,7 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
   const mayContinue = shouldContinue || (() => summarySettingsRevision(store, session) === revision)
   if (!store.lease(session, leaseDurationMs, owner)) return { session, busy:true }
   let created = 0
-  let lostLease = false
+  let lostLease = false, activeWork = null
   const checkLease = () => { if (lostLease || !store.ownsLease(session, owner)) throw new Error('Summary writer lost its lease; result not saved') }
   const timer = setInterval(() => {
     try { if (!store.renewLease(session, leaseDurationMs, owner)) lostLease = true }
@@ -211,6 +215,9 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
     for (let work; (work = summaryWork(store, session, { batchSize, targetChars,targetTokens, fanout })); ) {
       if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
       checkLease()
+      const retry=store.summaryRetry(session,work.batch_id,revision)
+      if(retry&&!retryFailed)return {session,created,stopped:retry.attempts>=3?'failed-batch-paused':'retry-backoff',retryAt:retry.until_ms,failedAttempts:retry.attempts}
+      activeWork=work
       // Fail closed if the on-disk original changed after indexing or during model execution.
       const verify = () => { if (work.level === 0) for (let i = work.first; i <= work.last; i++) store.exact(session, i) }
       verify()
@@ -229,8 +236,13 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
       verify()
       store.addNode({ session, id: work.batch_id, level: work.level, first: work.first, last: work.last, children: work.children, summary, digest: work.digest, model,sourceRecords:work.source_records }, { leaseOwner: owner,validate:mayContinue })
       if (!store.renewLease(session, leaseDurationMs, owner)) throw new Error('Summary writer lost its lease')
+      store.completeSummaryBatch(session,work.batch_id,revision)
+      activeWork=null
       created++
     }
     return { session, created, overview: store.overview(session) }
+  } catch(error) {
+    if(activeWork&&!lostLease&&store.ownsLease(session,owner)&&mayContinue())store.failSummaryBatch(session,activeWork.batch_id,revision)
+    throw error
   } finally { clearInterval(timer); store.release(session, owner) }
 }

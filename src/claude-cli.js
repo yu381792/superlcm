@@ -1,3 +1,4 @@
+import { cliDeadline } from './cli-deadline.js'
 import { validModel, MAX_SUMMARY_INPUT, workerEnv } from './runtime.js'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -23,17 +24,17 @@ export function summarizeWithClaudeCli(text, { model = '', bin = process.env.SUP
     const finish = (error, value) => {
       if (settled) return
       settled = true
-      clearTimeout(timer)
+      deadline.clear()
       if (error) reject(error)
       else resolve(value)
     }
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, timeoutMs)
+    const deadline=cliDeadline(child,timeoutMs,error=>finish(error),'Claude CLI')
     child.on('error', error => finish(new Error(`Claude CLI could not start: ${error.message}`)))
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', chunk => {
       if (overflow) return
       out += chunk
-      if (Buffer.byteLength(out) > MAX_OUTPUT_BYTES) { overflow = true; child.kill('SIGTERM') }
+      if (Buffer.byteLength(out) > MAX_OUTPUT_BYTES) { overflow = true; deadline.stop('Claude CLI summary output exceeded 1 MiB') }
     })
     child.stderr.resume() // drain without retaining sensitive transcript fragments
     child.on('close', code => {

@@ -76,6 +76,7 @@ export class ClaudeStore {
       CREATE INDEX IF NOT EXISTS nodes_coverage ON nodes(session,last);
       CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(session UNINDEXED, id UNINDEXED, summary);
       CREATE TABLE IF NOT EXISTS leases(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS summary_retries(session TEXT PRIMARY KEY,batch_id TEXT NOT NULL,revision TEXT NOT NULL,attempts INTEGER NOT NULL,until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS summary_policies(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('off','cli','api')));
       CREATE TABLE IF NOT EXISTS session_origins(session TEXT PRIMARY KEY REFERENCES sources(session), harness TEXT NOT NULL, external_id TEXT, display_name TEXT, name_source TEXT);
       CREATE TABLE IF NOT EXISTS summary_preferences(session TEXT PRIMARY KEY REFERENCES sources(session), mode TEXT NOT NULL CHECK(mode IN ('auto','off','cli','codex-cli','api','agent')), model TEXT);
@@ -150,6 +151,18 @@ export class ClaudeStore {
   summaryError(session) {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_errors'").get()) return null
     return this.db.prepare('SELECT detail FROM summary_errors WHERE session=?').get(session)?.detail || null
+  }
+  summaryRetry(session,batchId,revision) {
+    const row=this.db.prepare('SELECT * FROM summary_retries WHERE session=? AND batch_id=? AND revision=?').get(session,batchId,revision)
+    return row && (row.attempts>=3 || row.until_ms>Date.now()) ? row : null
+  }
+  failSummaryBatch(session,batchId,revision) {
+    const row=this.db.prepare('SELECT attempts FROM summary_retries WHERE session=? AND batch_id=? AND revision=?').get(session,batchId,revision)
+    const attempts=(row?.attempts||0)+1,until=Date.now()+Math.min(3600000,300000*2**Math.min(attempts-1,4))
+    this.db.prepare('INSERT INTO summary_retries VALUES(?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision,attempts=excluded.attempts,until_ms=excluded.until_ms').run(session,batchId,revision,attempts,until)
+  }
+  completeSummaryBatch(session,batchId,revision) {
+    this.db.prepare('DELETE FROM summary_retries WHERE session=? AND batch_id=? AND revision=?').run(session,batchId,revision)
   }
   setStatus(session,status) {
     this.db.prepare('UPDATE sources SET status=? WHERE session=?').run(status,session)
@@ -539,7 +552,7 @@ export class ClaudeStore {
     try {
       const deliveries = this.db.prepare('SELECT id FROM deliveries WHERE source_session=? OR target_session=?').all(session, session).map(x => x.id)
       for (const id of deliveries) { this.db.prepare('DELETE FROM delivery_packets WHERE id=?').run(id); this.db.prepare('DELETE FROM deliveries WHERE id=?').run(id) }
-      for (const table of ['event_fts', 'events', 'session_event_counts', 'node_fts', 'nodes', 'leases', 'compactions', 'takeover_copies', 'host_writers', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+      for (const table of ['event_fts', 'events', 'session_event_counts', 'node_fts', 'nodes', 'leases', 'summary_retries', 'compactions', 'takeover_copies', 'host_writers', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
       this.db.prepare('INSERT INTO deleted_sessions(session,deleted_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET deleted_ms=excluded.deleted_ms').run(session, Date.now())
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }

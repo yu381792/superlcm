@@ -1,3 +1,4 @@
+import { cliDeadline } from './cli-deadline.js'
 // 本工具后台写: a conversation's summaries are written by a separate, short background run of the tool it
 // came from, with the account and model the user already configured there. The live conversation is not
 // involved. Each run is marked (workerEnv) and kept out of the tool's own history where the tool allows it.
@@ -29,13 +30,13 @@ function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess, summar
   mkdirSync(cwd, { recursive: true, mode: 0o700 })
   return new Promise((resolve, reject) => {
     let child, out = '', settled = false, timedOut = false, overflow = false
-    const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value) }
+    const finish = (error, value) => { if (settled) return; settled = true; deadline.clear(); error ? reject(error) : resolve(value) }
     try { child = spawnProcess(bin, args, { cwd, env: workerEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }) }
     catch (error) { return reject(new Error(`${name} could not start: ${error.message}`)) }
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, timeoutMs)
+    const deadline = cliDeadline(child,timeoutMs,error=>finish(error),name)
     child.on('error', error => finish(new Error(`${name} could not start: ${error.message}`)))
     child.stdout.setEncoding('utf8')
-    child.stdout.on('data', chunk => { if (overflow) return; out += chunk; if (Buffer.byteLength(out) > 1024 * 1024) { overflow = true; child.kill('SIGTERM') } })
+    child.stdout.on('data', chunk => { if (overflow) return; out += chunk; if (Buffer.byteLength(out) > 1024 * 1024) { overflow = true; deadline.stop(`${name} output exceeded 1 MiB`) } })
     child.stderr.resume()
     child.on('close', code => {
       if (timedOut) return finish(new Error(`${name} summarization timed out`))

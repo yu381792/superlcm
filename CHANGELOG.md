@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.25
+
+- Proactive audit: require an actual successful terminal event for DSH summary streams; reject missing/unknown/truncated/aborted/duplicate endings, tool output and output after completion before any checkpoint commit. Invalidate uncommitted drafts from the prior policy.
+- Keep tool requests and all matched results, including failed/parallel results, in the same background summary segment. Honor labeled user language in plain-text imports.
+- Persist failed-batch cooldown across workers; progressively back off and pause after three failed automatic runs. Configuration changes or explicit generation permit retry; indexing alone does not clear an unresolved error.
+- Bound Claude/Codex/Hermes/Pi CLI writers even when subprocesses ignore SIGTERM; fail immediately and escalate termination after a short grace period.
+- Add a single release verification command covering regressions, real DSH runtime, unpacked npm CLI/MCP, package import closure and paired core checks. Use synthetic data/local model fixtures; no paid calls or production configuration changes.
+
+
 ## 0.5.24
 
 - 修复摘要语言跟随真实用户消息，避免工具、注入和旧摘要改变语言。

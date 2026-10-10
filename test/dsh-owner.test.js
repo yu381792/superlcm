@@ -28,6 +28,7 @@ async function fixture(run, response = async () => 'Current task and exact facts
     ctx.reflect.provide('llm', {async *stream(options) {
       calls.push(options); const text = await response(options)
       yield {type:'text-delta',index:0,text:'# '+text}
+      yield {type:'finish',reason:{kind:'stop'}}
     }, resolveModelInfo:async()=>({context:{contextWindow:262144},defaultMaxTokens:65536}), imageRequestPricing() {}, fileRequestText() {}})
     new TokenMeter(ctx)
     const owner = await mountCompactionOwner(ctx,{controlFile:file,archiveHome:dir,...ownerConfig})
@@ -114,7 +115,7 @@ test('off/on/off switches real owners and managed summaries keep their fourth-ar
     publish('takeover',{auto:true,summaryAdapter:adapter})
     await owner.reload();assert.equal(owner.mode,'superlcm');assert.ok(ctx.compaction instanceof Engine)
     const engine=ctx.compaction, directives=[]
-    engine.summaryContext.llm.stream=async function*(options){directives.push(options.messages.at(-1).content[0].text);yield{type:'text-delta',index:0,text:'# Historical facts and exact decision.'}}
+    engine.summaryContext.llm.stream=async function*(options){directives.push(options.messages.at(-1).content[0].text);yield{type:'text-delta',index:0,text:'# Historical facts and exact decision.'};yield{type:'finish',reason:{kind:'stop'}}}
     const raw=append('earlier facts '.repeat(20000))
     const prepared=prepareAsyncRegion(engine,agent,{start:raw.seq,end:raw.seq})
     prepared.trustedChildNodeIds=['known-child']
@@ -151,7 +152,7 @@ test('disabling takeover drains a cancelled pending draft without waiting for a 
     const engine=ctx.compaction
     let entered,release
     const started=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve})
-    engine.summaryContext.llm.stream=async function*(){entered();await gate;yield{type:'text-delta',index:0,text:'Late old facts'}}
+    engine.summaryContext.llm.stream=async function*(){entered();await gate;yield{type:'text-delta',index:0,text:'Late old facts'};yield{type:'finish',reason:{kind:'stop'}}}
     const raw=append('old exact facts '.repeat(20000)),before=[...session.surface.nodes]
     engine.startBackgroundFold(agent,{start:raw.seq,end:raw.seq,activeTokens:200000,eligibleEnd:raw.seq})
     await started
@@ -195,7 +196,7 @@ test('DSH takeover retries wrong language once without editing the summarized in
  await fixture(async({ctx,owner,session,agent,signal,append,publish})=>{
   publish('takeover',{auto:true,summaryAdapter:adapter});await owner.reload()
   const engine=ctx.compaction,seen=[]
-  engine.summaryContext.llm.stream=async function*(options){seen.push(options);yield {type:'text-delta',index:0,text:seen.length===1?'# 状态\n当前项目还没有部署，原始文件保持不变。'.repeat(5):'# Current state\nThe original project remains unchanged. Deployment remains unauthorized and verification is pending.'}}
+  engine.summaryContext.llm.stream=async function*(options){seen.push(options);yield {type:'text-delta',index:0,text:seen.length===1?'# 状态\n当前项目还没有部署，原始文件保持不变。'.repeat(5):'# Current state\nThe original project remains unchanged. Deployment remains unauthorized and verification is pending.'};yield{type:'finish',reason:{kind:'stop'}}}
   const raw=append('Please check the files and preserve the project. We should not deploy the changes yet. '.repeat(300))
   const prepared=prepareAsyncRegion(engine,agent,{start:raw.seq,end:raw.seq}),before=structuredClone(prepared.input),surface=[...session.surface.nodes]
   const result=await summarizeAsyncRegion(engine,agent,prepared,signal)

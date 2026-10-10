@@ -1,4 +1,4 @@
-import {userTextFromRecord} from './summary-language.js'
+import {userTextFromRecord,excerptUserTexts} from './summary-language.js'
 import { dshRecordCategory } from './dsh-summaries.js'
 // Summarization reads verified originals, never the UI/search preview. Keep
 // message roles, timestamps, tool outcomes and literal whitespace intact.
@@ -62,18 +62,54 @@ export function summarySource(raw, kind = 'jsonl') {
   const time=record.timestamp ?? item.timestamp ?? record.time ?? record.created_at
   return `${role}${time === undefined ? '' : ` [source time: ${textOf(time)}]`}:\n${content}`
 }
+// Read pairing identifiers from verified structured originals, never rendered
+// model text. A failed tool result still closes the requested call.
+export function summaryToolPairing(raw, kind='jsonl') {
+  const opened=[],closed=[]
+  if(kind==='text')return {opened,closed}
+  let record;try{record=JSON.parse(raw)}catch{return {opened,closed}}
+  if(!record||typeof record!=='object')return {opened,closed}
+  const add=(list,id)=>{if(typeof id==='string'&&id)list.push(id)}
+  const content=blocks=>{
+    if(typeof blocks==='string'&&blocks.startsWith('\0json:')){try{blocks=JSON.parse(blocks.slice(6))}catch{return}}
+    if(blocks&&typeof blocks==='object'&&!Array.isArray(blocks)&&blocks.type)blocks=[blocks]
+    if(!Array.isArray(blocks))return;for(const b of blocks){
+    if(['tool_use','toolCall','tool-call','function_call','custom_tool_call'].includes(b?.type))add(opened,b.id||b.call_id)
+    if(b?.type==='tool_result')add(closed,b.tool_use_id||b.toolCallId||b.call_id)
+  }}
+  if(record.dsh_session&&record.event){
+    const e=record.event,d=e.data||{},m=d.message||d
+    if(e.type==='assistant/message'){content(m.content);for(const call of d.toolCalls||[])add(opened,call.id)}
+    if(e.type==='tool/call')add(opened,d.callId||d.id)
+    if(e.type==='tool/result')add(closed,m.toolCallId||m.callId||d.toolCallId||d.callId||d.id)
+  }else if(record.type==='response_item'){
+    const p=record.payload||{}
+    if(['function_call','custom_tool_call'].includes(p.type))add(opened,p.call_id)
+    if(['function_call_output','custom_tool_call_output'].includes(p.type))add(closed,p.call_id)
+    if(p.type==='message')content(p.content)
+  }else{
+    const m=record.message&&typeof record.message==='object'?record.message:record,role=m.role||record.type
+    content(m.content)
+    if(['tool','toolResult'].includes(role))add(closed,m.toolCallId||m.tool_call_id||m.callId)
+    let calls=m.tool_calls;try{if(typeof calls==='string')calls=JSON.parse(calls)}catch{calls=[]}
+    if(role==='assistant'&&Array.isArray(calls))for(const call of calls)add(opened,call.id)
+  }
+  return {opened,closed}
+}
+
 export function summaryEvents(store, session, start) {
   const kind=store.source(session).kind
   const dsh=store.metadata(session).harness==='dsh'
   const indexed=store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='dsh_node_sources'").get()
   const covered=dsh&&indexed?new Set(store.db.prepare("SELECT DISTINCT s.seq FROM dsh_node_sources s JOIN nodes n ON n.session=s.session AND n.id=s.id WHERE s.session=? AND s.id LIKE 'dsh-native-%' AND NOT EXISTS (SELECT 1 FROM dsh_shared_nodes v WHERE v.session=s.session AND v.id=s.id AND v.visible=0)").all(session).map(r=>r.seq)):new Set()
   return store.eventRowsFrom(session,start).map(event=>{
-    let projected
-    return { ...event, get summaryText() { return covered.has(event.ordinal)?'':projected ??= summarySource(store.exact(session,event.ordinal),kind) } }
+    let projected,pairing
+    return { ...event, get toolPairing(){return pairing??=summaryToolPairing(store.exact(session,event.ordinal),kind)}, get summaryText() { return covered.has(event.ordinal)?'':projected ??= summarySource(store.exact(session,event.ordinal),kind) } }
   })
 }
 
 export function recentUserTexts(store,session) {
+  if(store.source(session).kind==='text'){const rows=store.db.prepare('SELECT ordinal FROM events WHERE session=? ORDER BY ordinal DESC LIMIT 512').all(session).reverse();return excerptUserTexts(rows.map(e=>store.exact(session,e.ordinal)).join(''))}
   const texts=[];let before=Number.MAX_SAFE_INTEGER
   const query=store.db.prepare("SELECT ordinal FROM events WHERE session=? AND ordinal<? AND preview LIKE 'user:%' ORDER BY ordinal DESC LIMIT 128")
   for(;;){

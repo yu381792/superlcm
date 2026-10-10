@@ -130,7 +130,7 @@ async function host(response, run) {
   process.env.DSH_SUPERLCM_DB = join(dir, 'archive', 'lcm.sqlite')
   try {
     new SessionStore(ctx); new SessionProjections(ctx)
-    ctx.reflect.provide('llm', { async *stream(options) { yield { type: 'text-delta', index: 0, text: '# '+await response(options) } }, imageRequestPricing() {}, fileRequestText() {} })
+    ctx.reflect.provide('llm', { async *stream(options) { yield { type: 'text-delta', index: 0, text: '# '+await response(options) };yield{type:'finish',reason:{kind:'stop'}} }, imageRequestPricing() {}, fileRequestText() {} })
     new TokenMeter(ctx)
     new Engine(ctx, { auto: false, summarizationProvider: 'local', summarizationModel: 'old', ...config })
     const session = ctx.sessions.create('native-reliability', { meta: { cwd: '/synthetic' } }), agent = { session, options: { provider: 'local', model: 'old' } }
