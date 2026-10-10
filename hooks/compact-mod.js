@@ -29,7 +29,7 @@ async function writeSummaries($, id) {
         if(!checked.valid)throw Error('Summary settings changed or claim expired')
         const r = await $.model.complete({ model: use, system, prompt, maxTokens, timeoutMs: 180000 })
         if (!r.isAnswered) throw Error('Summary generation was incomplete')
-        return checkedSummary(r.text,{finishReason:r.stopReason ?? r.stop_reason ?? r.finishReason ?? r.finish_reason,maxChars:null})
+        return checkedSummary(r.text,{...task,finishReason:r.stopReason ?? r.stop_reason ?? r.finishReason ?? r.finish_reason,maxChars:null})
       }
       const summary=await fitSummary(await generate(prompt),draft=>generate(repairSummaryPrompt(draft,task)),{task,onOvershoot:ratio=>{overshoot=ratio}})
       const saved = await cli($, 'summary-save', id, JSON.stringify({ batch_id, summary, overshoot, model: use, isAnswered: true }))

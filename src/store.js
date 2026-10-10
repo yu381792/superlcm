@@ -474,6 +474,17 @@ export class ClaudeStore {
     return file
   }
   ingest(session, path, kind = 'jsonl') {
+    // Serialize the cursor snapshot, archive copy and indexing across processes.
+    // Commit completed records even if a later malformed/oversized row fails,
+    // preserving the established incremental recovery and status behavior.
+    this.db.exec('BEGIN IMMEDIATE')
+    try { return this.#ingestLocked(session,path,kind) }
+    finally {
+      try { this.db.exec('COMMIT') }
+      catch(error){try{this.db.exec('ROLLBACK')}catch{};throw error}
+    }
+  }
+  #ingestLocked(session, path, kind) {
     if (!['jsonl','text'].includes(kind)) throw new Error('Unsupported source type')
     this.db.prepare('DELETE FROM deleted_sessions WHERE session=?').run(session) // an explicit (re)index revives a deleted conversation
     const file = this.#verifySource(session, path, kind)
@@ -595,7 +606,7 @@ export class ClaudeStore {
   }
   #addEvent(session, ordinal, start, end, raw, kind) {
     let preview = extract(raw, kind)
-    this.db.exec('BEGIN IMMEDIATE')
+    this.db.exec('SAVEPOINT archive_event')
     try {
       // A SuperLcm compaction packet, and the kept messages Claude Code writes again right after it, are
       // already recorded: their bytes stay in the archive, but they are not indexed or summarized twice.
@@ -619,8 +630,8 @@ export class ClaudeStore {
       this.db.prepare('INSERT INTO events VALUES(?,?,?,?,?,?)').run(session, ordinal, start, end, hash(raw), preview)
       this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
       this.db.prepare("UPDATE sources SET offset=?,status=CASE WHEN status='summary_error' THEN status ELSE 'ok' END,updated_ms=? WHERE session=?").run(end, Date.now(), session)
-      this.db.exec('COMMIT')
-    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+      this.db.exec('RELEASE archive_event')
+    } catch (e) { this.db.exec('ROLLBACK TO archive_event'); this.db.exec('RELEASE archive_event'); throw e }
   }
   #readRange(fd, start, end, size) {
     if (end > size || end < start) return null

@@ -55,7 +55,7 @@ test('oversized Unicode records retain both ends and an exact-source reference w
 test('changing token size rejects a pending model result and keeps original data',async t=>{
   const f=fixture(t),file=ingest(f,'pending',['a'.repeat(40000),'b'.repeat(40000),'later'])
   const before=readFileSync(file)
-  const result=await buildHierarchy(f.store,'pending',{...options,model:'fixture',summarize:async()=>{f.store.setTuning({target_tokens:10000});return 'A late summary that must not be committed.'}})
+  const result=await buildHierarchy(f.store,'pending',{...options,model:'fixture',summarize:async()=>{f.store.setTuning({target_tokens:10000});return '# A late summary that must not be committed.'}})
   assert.equal(result.stopped,'settings-changed');assert.equal(f.store.nodeRows('pending',0).length,0);assert.deepEqual(readFileSync(file),before)
 })
 

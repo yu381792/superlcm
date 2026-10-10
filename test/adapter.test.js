@@ -42,7 +42,7 @@ test('incremental ingest, layered nodes, exact pagination and idempotence',fixtu
   writeFileSync(source,Array.from({length:16},(_,i)=>line(i)).join('')+'{"type":"assistant"')
   assert.equal(store.ingest('session1',source).added,16)
   assert.equal(store.ingest('session1',source).added,0)
-  const summarize=async t=>`Summary: ${t.slice(0,40)}`
+  const summarize=async t=>`# Summary: ${t.slice(0,40)}`
   const first=await buildHierarchy(store,'session1',{model:'test-only',summarize,batchSize:4,fanout:2})
   assert.equal(first.created,7)
   assert.equal((await buildHierarchy(store,'session1',{model:'test-only',summarize,batchSize:4,fanout:2})).created,0)
@@ -154,14 +154,14 @@ test('any MCP client reads a chosen Claude conversation without merging other su
   const claude=join(dir,'claude.jsonl');writeFileSync(claude,Array.from({length:32},(_,i)=>line(i)).join(''))
   store.ingest('claude-conversation',claude);store.setOrigin('claude-conversation','claude-code')
   assert.equal(summaryEstimate(store,'claude-conversation').calls,5,'the confirmation dialog predicts the real number of model calls')
-  assert.equal((await buildHierarchy(store,'claude-conversation',{model:'fake',summarize:async text=>'Claude decision: '+text.slice(0,50)})).created,5)
+  assert.equal((await buildHierarchy(store,'claude-conversation',{model:'fake',summarize:async text=>'# Claude decision: '+text.slice(0,50)})).created,5)
   assert.equal(summaryEstimate(store,'claude-conversation').calls,0)
   const codex=join(dir,'codex.jsonl')
   const codexLines=Array.from({length:8},(_,i)=>JSON.stringify(i%2?{type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'Codex response '+i}]}}:{type:'event_msg',payload:{type:'user_message',message:'Codex user '+i}})+'\n').join('')
   writeFileSync(codex,codexLines)
   assert.equal(importFile(store,codex,'codex-conversation','codex').added,8)
   assert.ok(store.search('codex-conversation','Codex').events.length)
-  assert.equal((await buildHierarchy(store,'codex-conversation',{model:'fake',summarize:async()=> 'Codex-only findings'})).created,1)
+  assert.equal((await buildHierarchy(store,'codex-conversation',{model:'fake',summarize:async()=> '# Codex-only findings'})).created,1)
   const client=new ClaudeStore(store.dir)
   try {
     const claudeOnly=await call(client,'lcm_find',{harness:'claude-code'})
@@ -239,7 +239,7 @@ test('Codex Stop schedules an isolated fake CLI summary worker', {skip:process.p
   writeFileSync(file,Array.from({length:8},(_,i)=>JSON.stringify({role:i%2?'assistant':'user',content:'isolated detail '+i})+'\n').join(''))
   const fake=join(dir,'fake-summary-cli')
   // 本工具后台写: a Codex conversation is summarized by (a fake) Codex.
-  writeFileSync(fake,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Isolated Codex summary from background worker.'}})+'\\n'+JSON.stringify({type:'turn.completed'})+'\\n'));\n`)
+  writeFileSync(fake,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'# Isolated Codex summary from background worker.'}})+'\\n'+JSON.stringify({type:'turn.completed'})+'\\n'));\n`)
   chmodSync(fake,0o700)
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
   const env={...process.env,CODEX_HOME:codexHome,SUPERLCM_HOME:store.dir,SUPERLCM_SUMMARY_MODE:'cli',SUPERLCM_CODEX_CLI_BIN:fake}
@@ -265,13 +265,13 @@ test('duplicate names remain ambiguous; source identity is returned with summary
   for(const session of ['one','two']) {
     const path=join(dir,session+'.txt');writeFileSync(path,Array.from({length:8},(_,i)=>'decision '+session+' '+i+'\n').join(''))
     importFile(store,path,session,'other','Shared title')
-    await buildHierarchy(store,session,{model:'test',summarize:async()=> 'A deliberately separate summary'})
+    await buildHierarchy(store,session,{model:'test',summarize:async()=> '# A deliberately separate summary'})
   }
   assert.equal((await call(store,'lcm_find',{query:'Shared title'})).conversations.length,2)
   await assert.rejects(call(store,'lcm_outline',{conversation:'Shared title'}),/matches 2 conversations/)
   const page=await call(store,'lcm_outline',{conversation:'one'})
   assert.equal(page.source.name,'Shared title');assert.equal(page.source.harness,'other');assert.equal(page.nodes.length,1)
-  assert.equal(page.nodes[0].summary,'A deliberately separate summary')
+  assert.equal(page.nodes[0].summary,'# A deliberately separate summary')
   assert.equal((await call(store,'lcm_outline',{conversation:'#'+store.metadata('two').code})).source.conversation_id,'two')
 }))
 test('global defaults and per-harness overrides persist without a conversation selector',fixture(async ({dir,store})=>{
@@ -325,26 +325,26 @@ test('custom API settings require scoped endpoint, model and private write-only 
   saveApiKey(store.dir,'harness:codex','codex-secret-7890');assert.equal(store.apiCredential('api-session',{}),'codex-secret-7890')
 }))
 test('Anthropic and OpenAI custom API requests use configured URL/model/key only',async()=>{
-  const sent=[];const fetchImpl=async(url,init)=>{sent.push({url,init});return {ok:true,json:async()=>sent.length===1?{stop_reason:'end_turn',content:[{type:'text',text:'Anthropic summary'}]}:{choices:[{finish_reason:'stop',message:{content:'OpenAI summary'}}]}}}
-  assert.equal(await summarizeWithModel('source',{model:'claude-test',apiKey:'key-a',apiProvider:'anthropic',apiURL:'https://api.example.test',fetchImpl}),'Anthropic summary')
-  assert.equal(await summarizeWithModel('source',{model:'gpt-test',apiKey:'key-b',apiProvider:'openai',apiURL:'https://api.example.test/v1/chat/completions',fetchImpl}),'OpenAI summary')
+  const sent=[];const fetchImpl=async(url,init)=>{sent.push({url,init});return {ok:true,json:async()=>sent.length===1?{stop_reason:'end_turn',content:[{type:'text',text:'# Anthropic summary'}]}:{choices:[{finish_reason:'stop',message:{content:'# OpenAI summary'}}]}}}
+  assert.equal(await summarizeWithModel('source',{model:'claude-test',apiKey:'key-a',apiProvider:'anthropic',apiURL:'https://api.example.test',fetchImpl}),'# Anthropic summary')
+  assert.equal(await summarizeWithModel('source',{model:'gpt-test',apiKey:'key-b',apiProvider:'openai',apiURL:'https://api.example.test/v1/chat/completions',fetchImpl}),'# OpenAI summary')
   assert.equal(sent[0].url,'https://api.example.test/v1/messages');assert.equal(sent[1].url,'https://api.example.test/v1/chat/completions')
   assert.equal(sent[0].init.headers['x-api-key'],'key-a');assert.equal(sent[1].init.headers.authorization,'Bearer key-b')
   assert.equal(JSON.parse(sent[1].init.body).model,'gpt-test')
   // 思考程度 and base URLs: OpenAI reasoning_effort, Anthropic thinking budget, SDK-style path completion.
-  const bodies=[];const ok=async(url,init)=>{bodies.push({url,body:JSON.parse(init.body)});return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'x'}}],stop_reason:'end_turn',content:[{type:'thinking',thinking:'t'},{type:'text',text:'y'}]})}}
+  const bodies=[];const ok=async(url,init)=>{bodies.push({url,body:JSON.parse(init.body)});return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'# x'}}],stop_reason:'end_turn',content:[{type:'thinking',thinking:'t'},{type:'text',text:'# y'}]})}}
   await summarizeWithModel('s',{model:'g',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://gen.example.test/v1beta/openai',effort:'high',fetchImpl:ok})
   assert.equal(bodies[0].url,'https://gen.example.test/v1beta/openai/chat/completions');assert.equal(bodies[0].body.reasoning_effort,'high');assert.ok(bodies[0].body.max_tokens>750)
-  assert.equal(await summarizeWithModel('s',{model:'c',apiKey:'k-123456789',apiProvider:'anthropic',apiURL:'https://mm.example.test/anthropic',effort:'low',fetchImpl:ok}),'y')
+  assert.equal(await summarizeWithModel('s',{model:'c',apiKey:'k-123456789',apiProvider:'anthropic',apiURL:'https://mm.example.test/anthropic',effort:'low',fetchImpl:ok}),'# y')
   assert.equal(bodies[1].url,'https://mm.example.test/anthropic/v1/messages');assert.deepEqual(bodies[1].body.thinking,{type:'enabled',budget_tokens:2048});assert.ok(bodies[1].body.max_tokens>2048)
   await summarizeWithModel('s',{model:'g',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:ok});assert.equal(bodies[2].body.reasoning_effort,undefined,'unset sends nothing')
   // A reasoning model that refuses max_tokens is retried once with max_completion_tokens.
-  const tries=[];const picky=async(url,init)=>{const b=JSON.parse(init.body);tries.push(b);return b.max_tokens?{ok:false,status:400,text:async()=>'Unsupported parameter: max_tokens; use max_completion_tokens'}:{ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'z'}}]})}}
-  assert.equal(await summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:picky}),'z');assert.equal(tries.length,2);assert.equal(tries[1].max_completion_tokens,2048)
+  const tries=[];const picky=async(url,init)=>{const b=JSON.parse(init.body);tries.push(b);return b.max_tokens?{ok:false,status:400,text:async()=>'Unsupported parameter: max_tokens; use max_completion_tokens'}:{ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'# z'}}]})}}
+  assert.equal(await summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:picky}),'# z');assert.equal(tries.length,2);assert.equal(tries[1].max_completion_tokens,2048)
   await assert.rejects(summarizeWithModel('s',{model:'o',apiKey:'k-123456789',apiProvider:'openai',apiURL:'https://api.example.test/v1',fetchImpl:async()=>({ok:false,status:401,text:async()=>'{"error":"invalid key"}'})}),/HTTP 401: .*check endpoint/)
 })
 test('background worker actually uses saved API settings against a local fake endpoint',fixture(async ({dir,store})=>{
-  const received=[];const server=createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{received.push({url:req.url,auth:req.headers.authorization,body:JSON.parse(body)});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:'The decisions were preserved in a local fake response.'}}]}))})})
+  const received=[];const server=createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{received.push({url:req.url,auth:req.headers.authorization,body:JSON.parse(body)});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:'# The decisions were preserved in a local fake response.'}}]}))})})
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
   try {
     const file=join(dir,'api-worker.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'record '+i+'\n').join(''));importFile(store,file,'api-worker','codex')
@@ -353,7 +353,7 @@ test('background worker actually uses saved API settings against a local fake en
     let stdout='',stderr='';child.stdout.on('data',x=>stdout+=x);child.stderr.on('data',x=>stderr+=x)
     const code=await new Promise(resolve=>child.on('close',resolve))
     assert.equal(code,0,stderr);assert.equal(received.length,1);assert.equal(received[0].auth,'Bearer local-key-123456');assert.equal(received[0].url,'/v1/chat/completions');assert.equal(received[0].body.model,'gpt-local')
-    assert.equal(store.summaries('api-worker').nodes[0].summary,'The decisions were preserved in a local fake response.')
+    assert.equal(store.summaries('api-worker').nodes[0].summary,'# The decisions were preserved in a local fake response.')
     assert.doesNotMatch(stdout,/local-key-123456/)
   }finally{await new Promise(resolve=>server.close(resolve))}
 }))
@@ -369,7 +369,7 @@ test('metadata-only Codex batches never invoke a summary model',fixture(async ({
 test('lcm_continue hands off outline, recent originals and how to verify, with or without summaries',fixture(async ({dir,store})=>{
   const file=join(dir,'source.txt');writeFileSync(file,Array.from({length:37},(_,i)=>'source decision '+i+'\n').join(''))
   importFile(store,file,'source-A','claude-code','Architecture A')
-  await buildHierarchy(store,'source-A',{model:'mock',summarize:async()=> 'We decided to preserve original evidence across harnesses.'})
+  await buildHierarchy(store,'source-A',{model:'mock',summarize:async()=> '# We decided to preserve original evidence across harnesses.'})
   const code=store.metadata('source-A').code
   const packet=await call(store,'lcm_continue',{conversation:'Architecture A'})
   assert.equal(packet.records,37);assert.equal(packet.summarized_to,32)
@@ -391,9 +391,9 @@ test('main-agent summary mode requires explicit opt-in and exact unchanged sourc
   assert.equal(store.effectiveSetting('agent-A').mode,'agent')
   const work=(await call(store,'lcm_summary_task',{conversation:'agent-A'})).work
   assert.ok(work.batch_id);assert.equal(work.level,0)
-  const saved=await call(store,'lcm_summary_submit',{conversation:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'})
+  const saved=await call(store,'lcm_summary_submit',{conversation:'agent-A',batch_id:work.batch_id,summary:'# The user chose a source-preserving cross-harness design.'})
   assert.equal(saved.saved,true);assert.equal(store.summaries('agent-A').nodes[0].model,'mcp-agent')
-  await assert.rejects(call(store,'lcm_summary_submit',{conversation:'agent-A',batch_id:work.batch_id,summary:'The user chose a source-preserving cross-harness design.'}),/Stale/)
+  await assert.rejects(call(store,'lcm_summary_submit',{conversation:'agent-A',batch_id:work.batch_id,summary:'# The user chose a source-preserving cross-harness design.'}),/Stale/)
   const another=join(dir,'tamper.txt');writeFileSync(another,Array.from({length:8},(_,i)=>'before '+i+'\n').join(''));importFile(store,another,'tamper-A','codex')
   const pending=(await call(store,'lcm_summary_task',{conversation:'tamper-A'})).work
   for(const bound of [store.source('tamper-A').path,store.archivePath('tamper-A')]){const bytes=readFileSync(bound);bytes[3]=bytes[3]===65?66:65;writeFileSync(bound,bytes)}
@@ -408,7 +408,7 @@ test('Codex CLI backend follows the user config and captures final JSONL item',f
 test('session Codex CLI choice dispatches through an isolated fake executable',fixture(async ({dir,store})=>{
   const file=join(dir,'codex-backend.txt');writeFileSync(file,Array.from({length:8},(_,i)=>'decision '+i+'\n').join(''))
   importFile(store,file,'chosen-backend','codex');store.setGlobalSetting('off');store.setHarnessSetting('codex','cli','gpt-test')
-  const bin=join(dir,'fake-codex');writeFileSync(bin,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\'item.completed\',item:{type:\'agent_message\',text:\'Independent Codex worker summary recorded decisions.\'}})+\'\\n\'+JSON.stringify({type:\'turn.completed\'})+\'\\n\')\n',{mode:0o700})
+  const bin=join(dir,'fake-codex');writeFileSync(bin,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\'item.completed\',item:{type:\'agent_message\',text:\'# Independent Codex worker summary recorded decisions.\'}})+\'\\n\'+JSON.stringify({type:\'turn.completed\'})+\'\\n\')\n',{mode:0o700})
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url)),r=spawnSync(process.execPath,[cli,'summarize','chosen-backend'],{encoding:'utf8',env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_CODEX_CLI_BIN:bin,SUPERLCM_SUMMARY_MODE:'off'},timeout:15000})
   assert.equal(r.status,0,r.stderr);assert.match(store.summaries('chosen-backend').nodes[0].model,/codex-cli:gpt-test/)
   // Hermes and Pi write through their own one-shot modes, marked so SuperLcm's hooks skip the run.
@@ -431,7 +431,7 @@ test('Codex pre-turn hook indexes and current agent saves without MCP import per
   const session='codex-thr_pre_turn';assert.equal(store.listSessions(5,0,'codex').total,1)
   assert.equal(store.eventRows(session).length,8)
   const {work}=await call(store,'lcm_summary_task',{conversation:session});assert.ok(work?.batch_id)
-  const result=await call(store,'lcm_summary_submit',{conversation:session,batch_id:work.batch_id,summary:'The active session discussed eight events and retained their exact source references.'});assert.equal(result.saved,true)
+  const result=await call(store,'lcm_summary_submit',{conversation:session,batch_id:work.batch_id,summary:'# The active session discussed eight events and retained their exact source references.'});assert.equal(result.saved,true)
   assert.equal(store.summaries(session).total,1)
   await assert.rejects(call(store,'lcm_import',{path:file}),/Unknown tool/,'file import is CLI-only')
 }))
@@ -535,7 +535,7 @@ test('subscription adapter isolates credentials, tools and model choice',fixture
 test('CLI model callback builds hierarchical summaries without an API key',fixture(async ({dir,store})=>{
   const src=join(dir,'cli.jsonl');writeFileSync(src,Array.from({length:32},(_,i)=>line(i)).join(''))
   store.ingest('cli-session',src)
-  const summarize=async text=>'Summary: '+text.slice(0,45)
+  const summarize=async text=>'# Summary: '+text.slice(0,45)
   assert.equal((await buildHierarchy(store,'cli-session',{model:'claude-cli:sonnet',summarize})).created,5)
   assert.equal(store.overview('cli-session').nodes[0].level,1)
   assert.equal(store.doctor('cli-session').issues.length,0)
@@ -546,7 +546,7 @@ test('CLI command persists summary from a fake subscription executable', {skip:p
   mkdirSync(projects,{recursive:true});writeFileSync(src,Array.from({length:8},(_,i)=>line(i)).join(''))
   const fake=join(dir,'fake-claude'),receipt=join(dir,'receipt.json')
   writeFileSync(fake,`#!/usr/bin/env node
-const fs=require('node:fs');let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{fs.writeFileSync(process.env.SUPERLCM_TEST_RECEIPT,JSON.stringify({args:process.argv.slice(2),inputChars:input.length,apiKeyPresent:Boolean(process.env.ANTHROPIC_API_KEY)}));process.stdout.write(JSON.stringify({type:'result',is_error:false,result:'Decisions concern alpha project.'}));});
+const fs=require('node:fs');let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{fs.writeFileSync(process.env.SUPERLCM_TEST_RECEIPT,JSON.stringify({args:process.argv.slice(2),inputChars:input.length,apiKeyPresent:Boolean(process.env.ANTHROPIC_API_KEY)}));process.stdout.write(JSON.stringify({type:'result',is_error:false,result:'# Decisions concern alpha project.'}));});
 `)
   chmodSync(fake,0o700)
   const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url))
@@ -613,7 +613,7 @@ test('merge work is planned as soon as four summaries exist, before the next raw
   const src=join(dir,'long.jsonl');writeFileSync(src,Array.from({length:48},(_,i)=>line(i)).join(''))
   store.ingest('long',src);store.setGlobalSetting('agent')
   const levels=[]
-  for(let i=0;i<7;i++){const {work}=await call(store,'lcm_summary_task',{conversation:'long'});if(!work)break;levels.push(work.level);await call(store,'lcm_summary_submit',{conversation:'long',batch_id:work.batch_id,summary:'Summary of level '+work.level+' covering '+work.first+'-'+work.last})}
+  for(let i=0;i<7;i++){const {work}=await call(store,'lcm_summary_task',{conversation:'long'});if(!work)break;levels.push(work.level);await call(store,'lcm_summary_submit',{conversation:'long',batch_id:work.batch_id,summary:'# Summary of level '+work.level+' covering '+work.first+'-'+work.last})}
   assert.deepEqual(levels,[0,0,0,0,1,0,0],'fifth task merges before summarizing records 32-47')
   const outline=store.outline('long');assert.deepEqual(outline.nodes.map(n=>n.level),[1,0,0]);assert.equal(outline.unsummarized,null)
   assert.throws(()=>store.setTuning({target_chars:100,batch_size:8,fanout:4}),/Unsupported/)
@@ -675,7 +675,7 @@ test('opening Codex for its own hook review launches only the fixed CLI in a ter
 test('deleting a conversation removes SuperLcm data only, stays deleted for hooks, and re-import revives it',fixture(async ({dir,store})=>{
   const src=join(dir,'talk.jsonl');writeFileSync(src,Array.from({length:10},(_,i)=>line(i)).join(''))
   store.ingest('talk',src);store.setOrigin('talk','claude-code')
-  await buildHierarchy(store,'talk',{model:'fake',summarize:async()=> 'summary'})
+  await buildHierarchy(store,'talk',{model:'fake',summarize:async()=> '# summary'})
   const archive=store.archivePath('talk');assert.ok(statSync(archive).size>0)
   const before=readFileSync(src)
   assert.deepEqual(store.deleteSession('talk'),{session:'talk',deleted:true,records:10})
@@ -729,8 +729,8 @@ test('a card warns when the tool wrote a conversation after the last SuperLcm ho
 })
 
 test('a local gateway on this computer needs no API key',fixture(async ({dir,store})=>{
-  let seen;const fetchImpl=async(url,init)=>{seen={url,headers:init.headers};return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'Local gateway summary'}}]})}}
-  assert.equal(await summarizeWithModel('decision',{model:'gpt-6-luna',apiProvider:'openai',apiURL:'http://127.0.0.1:10100/v1',fetchImpl}),'Local gateway summary')
+  let seen;const fetchImpl=async(url,init)=>{seen={url,headers:init.headers};return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'# Local gateway summary'}}]})}}
+  assert.equal(await summarizeWithModel('decision',{model:'gpt-6-luna',apiProvider:'openai',apiURL:'http://127.0.0.1:10100/v1',fetchImpl}),'# Local gateway summary')
   assert.equal(seen.url,'http://127.0.0.1:10100/v1/chat/completions');assert.equal(seen.headers.authorization,undefined)
   await assert.rejects(summarizeWithModel('decision',{model:'m',apiProvider:'openai',apiURL:'https://api.example.com/v1',fetchImpl}),/credential/)
   const file=join(dir,'gw.txt');writeFileSync(file,'A user decision\n');importFile(store,file,'gw','claude-code')

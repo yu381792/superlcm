@@ -41,7 +41,7 @@ async function withHost(config, response, run) {
       calls.push({ provider: options.provider, model: options.model, signal: options.signal, sessionId: options.sessionId,
         inputTokens:Math.ceil(JSON.stringify(options.messages).length/4) })
       const text = await response(options)
-      yield { type: 'text-delta', index: 0, text }
+      yield { type: 'text-delta', index: 0, text:'# '+text }
     }
     ctx.reflect.provide('llm', {
       stream:options=>ctx.waterfall('llm/stream',options,()=>localStream(options)),
@@ -387,7 +387,7 @@ test('console document hot-applies model, switch and retention and cancels old p
       await engine.reloadControls()
       assert.equal(engine.config.auto,true);assert.equal(engine.config.summarizationProvider,'second-provider');assert.equal(engine.rollingConfig.minRetainTokens,200);assert.equal(engine.rollingConfig.softActiveTokens,5000)
       assert.equal(compressionSnapshot(dashboard).runtimes[0].settings_revision,'new-model')
-      const selected=[];engine.summaryContext.llm.stream=async function*(o){selected.push(o.provider);yield{type:'text-delta',index:0,text:'新的压缩摘要保留原文指针'}}
+      const selected=[];engine.summaryContext.llm.stream=async function*(o){selected.push(o.provider);yield{type:'text-delta',index:0,text:'# Current state: the new summary retains original source references.'}}
       const prepared=prepareAsyncRegion(engine,agent,{start:event.seq,end:event.seq});const summary=await summarizeAsyncRegion(engine,agent,prepared,new AbortController().signal)
       assert.deepEqual(selected,['second-provider']);assert.equal(calls.length,0);assert.ok(commitAsyncRegion(engine,agent,summary))
       publish('bad',{...config,hardActiveTokens:2000});await engine.reloadControls()
@@ -421,7 +421,7 @@ test('global compaction uses the selected native model scope without changing th
   await withHost({summaryAdapter:spec,summarizationProvider:'selected-provider',summarizationModel:'cheap-model'},async()=>{throw Error('Main conversation model must not summarize')},async({engine,ctx,session,agent,calls})=>{
     await engine.summaryModelReady
     const selected=[]
-    engine.summaryContext.llm.stream=async function*(options){selected.push([options.provider,options.model]);yield{type:'text-delta',index:0,text:'原始工程事实已压缩，主对话模型未参与。'}}
+    engine.summaryContext.llm.stream=async function*(options){selected.push([options.provider,options.model]);yield{type:'text-delta',index:0,text:'# Current state: original engineering facts are summarized with exact source references.'}}
     const event=append(session,source)
     const prepared=prepareAsyncRegion(engine,agent,{start:event.seq,end:event.seq})
     const summary=await summarizeAsyncRegion(engine,agent,prepared,new AbortController().signal)

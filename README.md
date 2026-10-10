@@ -150,4 +150,6 @@ Every tool is marked with MCP annotations: the four lookups are read-only, the t
 
 Claude, Claude Code, Codex, Hermes and Pi names and logos belong to their respective owners and are used only to identify compatible tools. SuperLcm is an independent project and is not affiliated with or endorsed by them.
 
+摘要语言和指令隔离修复见 [新版说明](docs/SUMMARY-QUALITY-0.5.24.md)。
+
 完整版与 DSH 独立版的关系、修复同步及验证范围见 [修复同步说明](docs/REPAIR-SYNC-0.5.23.md)。

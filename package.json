@@ -1,6 +1,6 @@
 {
   "name": "superlcm-mcp",
-  "version": "0.5.23",
+  "version": "0.5.24",
   "description": "Shared local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness: background layered summaries, exact-source recall and native context compaction by default.",
   "type": "module",
   "publishConfig": {
@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "check": "node scripts/check.mjs",
-    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js test/dsh-policy.test.js test/dsh-console.test.js test/event-counts.test.js test/reliability.test.js test/summary-policy.test.js test/integration-management.test.js test/summary-tokens.test.js test/compression-page.test.js test/conversation-names.test.js test/dsh-ratio-ui.test.js test/dsh-ratio-policy.test.js test/issue-1.test.js test/issues-2-4.test.js",
+    "test": "node --test test/adapter.test.js test/dashboard.test.js test/import-connection.test.js test/package.test.js test/compaction.test.js test/dsh-archive.test.js test/dsh-policy.test.js test/dsh-console.test.js test/event-counts.test.js test/reliability.test.js test/summary-policy.test.js test/integration-management.test.js test/summary-tokens.test.js test/compression-page.test.js test/conversation-names.test.js test/dsh-ratio-ui.test.js test/dsh-ratio-policy.test.js test/issue-1.test.js test/issues-2-4.test.js test/issues-5-6.test.js",
     "test:dsh-runtime": "node --experimental-loader ./scripts/dsh-runtime-loader.mjs --test test/dsh-runtime.test.js test/dsh-history.test.js test/dsh-reliability.test.js test/dsh-owner.test.js test/dsh-legacy-recovery.test.js",
     "validate": "npm run check && npm test"
   },

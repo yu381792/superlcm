@@ -254,7 +254,7 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         else {
           store.db.prepare('INSERT INTO host_summary_claims VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision').run(session,work.batch_id,summarySettingsRevision(store,session))
           const task=adaptiveSummaryTask(work,readSummaryProfile(profileKey('claude-host',model||'configured',null),store))
-          reply={work:{task:{level:work.level,first:work.first,last:work.last,maxChars:task.maxChars},maxTokens:visibleOutputRoom(work.content),batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,task),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
+          reply={work:{task:{level:work.level,first:work.first,last:work.last,maxChars:task.maxChars,language:task.language,requireHeading:true},maxTokens:visibleOutputRoom(work.content),batch_id:work.batch_id,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,task),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
         }
       } else {
         const input=await readHook()
@@ -266,7 +266,8 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           if(!work||work.batch_id!==input.batch_id)throw new Error('stale summary batch')
           const claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
           if(!claim||claim.batch_id!==input.batch_id||claim.revision!==summarySettingsRevision(store,session))throw Error('Summary setting changed; result not saved')
-          if(work.reducedSources&&!isReducedSummary(summary))summary=checkedSummary(reducedNotice(work)+'\n'+summary.slice(0,5600))
+          summary=checkedSummary(summary,work)
+          if(work.reducedSources&&!isReducedSummary(summary))summary=checkedSummary(summary.slice(0,5500)+'\n\n'+reducedNotice(work))
           if(Number.isFinite(input.overshoot))updateSummaryProfile(profileKey('claude-host',model||'configured',null),{overshoot:input.overshoot},store)
           if(summary.length<20)throw new Error('summary too short')
           if(work.level===0)for(let i=work.first;i<=work.last;i++)store.exact(session,i)

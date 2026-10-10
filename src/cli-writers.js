@@ -41,9 +41,9 @@ function run(name, bin, args, input, { env, timeoutMs, cwd, spawnProcess, summar
       if (timedOut) return finish(new Error(`${name} summarization timed out`))
       if (overflow) return finish(new Error(`${name} output exceeded 1 MiB`))
       if (code !== 0) return finish(new Error(`${name} summarization failed (exit ${code}); check its login and model`))
-      let text; try { text = parse(out) } catch { text = null }
+      let text; try { text = parse(out) } catch (error) { return finish(error) }
       if (!text?.trim()) return finish(new Error(`${name} returned no summary`))
-      try { finish(null, checkedSummary(text,{maxChars:summaryTask?.allowOversize?null:6000})) } catch(error) { finish(error) }
+      try { finish(null, checkedSummary(text,{...summaryTask,maxChars:summaryTask?.allowOversize?null:6000})) } catch(error) { finish(error) }
     })
     child.stdin.on('error', () => {})
     child.stdin.end(input)
@@ -57,7 +57,7 @@ export function summarizeWithHermes(text, { model = '', bin = findCli('hermes') 
   return run('Hermes', bin, args, SUMMARY_SYSTEM + '\n\n' + buildSummaryPrompt(text,summaryTask), { env, timeoutMs, cwd, spawnProcess, summaryTask }, out => {
     const result = out.trim().split('\n').map(line => { try { return JSON.parse(line) } catch { return null } }).findLast(e => e?.type === 'result')
     if(result?.exit_code || !result) return null
-    return checkedSummary(result.text,{finishReason:result.finish_reason ?? result.stop_reason,maxChars:summaryTask?.allowOversize?null:6000})
+    return checkedSummary(result.text,{...summaryTask,finishReason:result.finish_reason ?? result.stop_reason,maxChars:summaryTask?.allowOversize?null:6000})
   })
 }
 // Pi: print mode, no saved session, and no tools, extensions (so not SuperLcm's own), skills or context files.

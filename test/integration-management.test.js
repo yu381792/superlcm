@@ -46,7 +46,7 @@ test('DSH archive hierarchy covers gaps without treating old native envelopes as
   assert.deepEqual(work.source_records,[1,2])
   assert.doesNotMatch(work.content,/source 0|source 7/)
   const before=readFileSync(store.source(session).path)
-  const made=await buildHierarchy(store,session,{model:'fixture',batchSize:2,summarize:async text=>{assert.match(text,/source|facts/);return 'A faithful archive summary with exact source references.'}})
+  const made=await buildHierarchy(store,session,{model:'fixture',batchSize:2,summarize:async text=>{assert.match(text,/source|facts/);return '# A faithful archive summary with exact source references.'}})
   assert.ok(made.created>0)
   assert.equal(store.stats(session).summarized_records,8)
   assert.equal(store.stats(session).unsummarized_records,1)
@@ -58,10 +58,10 @@ test('cancel or tuning change fences a pending background result',async t=>{
   const {store,dir}=fixture(t),file=join(dir,'s.jsonl');writeFileSync(file,Array.from({length:4},(_,i)=>JSON.stringify({role:'user',content:'decision '+i})).join('\n')+'\n')
   store.ingest('s',file);store.setMetadata('s',{harness:'codex',externalId:'s'});store.setHarnessSetting('codex','api','fixture','openai','http://127.0.0.1:9/v1')
   let calls=0
-  const result=await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=>{calls++;store.setIntegrationEnabled('codex',false);return 'Late result that must not be saved.'}})
+  const result=await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=>{calls++;store.setIntegrationEnabled('codex',false);return '# Late result that must not be saved.'}})
   assert.equal(result.stopped,'settings-changed');assert.equal(calls,1);assert.equal(store.nodeRows('s',0).length,0)
   store.setIntegrationEnabled('codex',true)
-  const changed=await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=>{store.setTuning({...store.tuning(),target_tokens:null,target_chars:24000});return 'Old granularity must not continue its backlog.'}})
+  const changed=await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=>{store.setTuning({...store.tuning(),target_tokens:null,target_chars:24000});return '# Old granularity must not continue its backlog.'}})
   assert.equal(changed.stopped,'settings-changed');assert.equal(store.nodeRows('s',0).length,0)
 })
 
@@ -131,7 +131,7 @@ test('a one-off API catch-up also stops after disconnect instead of finishing th
   const {store,dir}=fixture(t),file=join(dir,'one-off.jsonl');writeFileSync(file,Array.from({length:8},(_,i)=>JSON.stringify({role:'user',content:'decision '+i})).join('\n')+'\n')
   store.ingest('one-off',file);store.setMetadata('one-off',{harness:'codex',externalId:'one-off'})
   let calls=0
-  const server=createServer(async(req,res)=>{for await(const _ of req){};calls++;store.setIntegrationEnabled('codex',false);res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:'A valid late summary that should be discarded.'},finish_reason:'stop'}]}))})
+  const server=createServer(async(req,res)=>{for await(const _ of req){};calls++;store.setIntegrationEnabled('codex',false);res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:'# A valid late summary that should be discarded.'},finish_reason:'stop'}]}))})
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)))
   store.setHarnessSetting('codex','api','fixture','openai','http://127.0.0.1:'+server.address().port+'/v1')
   const result=await new Promise((resolve,reject)=>{const child=spawn(process.execPath,['src/cli.js','summarize','one-off','--backend','api'],{env:{...process.env,SUPERLCM_HOME:store.dir,SUPERLCM_SEGMENT_MESSAGES:'2'},stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',x=>out+=x);child.stderr.on('data',x=>err+=x);child.on('error',reject);child.on('exit',code=>resolve({code,out,err}))})
@@ -143,6 +143,6 @@ test('cancellation during final original verification is fenced inside the node 
   store.ingest('race',file);store.setMetadata('race',{harness:'codex',externalId:'race'})
   let returned=false,changed=false;const exact=store.exact.bind(store)
   store.exact=(...args)=>{const value=exact(...args);if(returned&&!changed){changed=true;store.setIntegrationEnabled('codex',false)}return value}
-  await assert.rejects(buildHierarchy(store,'race',{model:'fixture',batchSize:2,summarize:async()=>{returned=true;return 'The result must not commit after the setting changes.'}}),/setting changed/)
+  await assert.rejects(buildHierarchy(store,'race',{model:'fixture',batchSize:2,summarize:async()=>{returned=true;return '# The result must not commit after the setting changes.'}}),/setting changed/)
   assert.equal(changed,true);assert.equal(store.nodeRows('race',0).length,0)
 })

@@ -74,7 +74,7 @@ test('a pending summary renews its lease and does not allow a second billed call
   const other = new ClaudeStore(store.dir); t.after(() => other.close())
   let release, calls = 0; const gate = new Promise(r => { release = r })
   const first = buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2, leaseDurationMs: 1500, leaseHeartbeatMs: 100,
-    summarize: async () => { calls++; await gate; return 'Synthetic factual summary' } })
+    summarize: async () => { calls++; await gate; return '# Synthetic factual summary' } })
   await new Promise(r => setTimeout(r, 1800))
   const second = await buildHierarchy(other, 'fixture', { model: 'synthetic', batchSize: 2, summarize: async () => { calls++; return 'duplicate' } })
   assert.equal(second.busy, true)
@@ -84,7 +84,7 @@ test('a pending summary renews its lease and does not allow a second billed call
 test('a writer whose lease was replaced cannot save or release the new owner', async t => {
   const { store } = fixture(t, 2)
   let release; const gate = new Promise(r => { release = r })
-  const pending = buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2, summarize: async () => { await gate; return 'stale summary' } })
+  const pending = buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2, summarize: async () => { await gate; return '# stale summary' } })
   const rejection = assert.rejects(pending, /lost its lease/)
   await tick()
   store.db.prepare('UPDATE leases SET owner=?,until_ms=? WHERE session=?').run('new-owner', Date.now() + 330000, 'fixture')
@@ -97,7 +97,7 @@ test('changing automatic summary settings stops a pending pass before further ca
   const { store } = fixture(t)
   store.setGlobalSetting('cli')
   let calls = 0
-  const result = await buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2, summarize: async () => { calls++; store.setGlobalSetting('off'); return 'Synthetic summary' } })
+  const result = await buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2, summarize: async () => { calls++; store.setGlobalSetting('off'); return '# Synthetic summary' } })
   assert.equal(calls, 1)
   assert.equal(result.stopped, 'settings-changed')
   assert.equal(result.created, 0)
@@ -117,7 +117,7 @@ test('lease replacement during final original verification is fenced inside the 
     return value
   }
   await assert.rejects(buildHierarchy(store, 'fixture', { model: 'synthetic', batchSize: 2,
-    summarize: async () => { summaryReturned = true; return 'Synthetic navigation summary' } }), /lost its lease/)
+    summarize: async () => { summaryReturned = true; return '# Synthetic navigation summary' } }), /lost its lease/)
   assert.equal(switched, true)
   assert.equal(store.nodeRows('fixture', 0).length, 0)
   assert.equal(other.ownsLease('fixture', 'replacement-writer'), true)

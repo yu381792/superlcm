@@ -1,3 +1,4 @@
+import {SUMMARY_POLICY_VERSION} from '../src/summary-policy.js'
 import { randomUUID } from 'node:crypto'
 import { nativePreStep, registerRequestBoundary } from './request-boundary.js'
 import { currentPolicy, latestUserIndex, pressureStep, resolvePolicy } from './ratio-runtime.js'
@@ -193,7 +194,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     return result === null ? null : { ...result, rollingPolicy: summarized }
   }
 
-  summaryRouteFingerprint() { return JSON.stringify([this.config.summarizationProvider, this.config.summarizationModel, this.fallbackSummarizationRoute]) }
+  summaryRouteFingerprint() { return JSON.stringify([SUMMARY_POLICY_VERSION,this.config.summarizationProvider, this.config.summarizationModel, this.fallbackSummarizationRoute]) }
 
   canPrepareBackground(agent) {
     if(this.controlFile&&!this.config.auto)return false

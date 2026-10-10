@@ -35,7 +35,7 @@ export function summarizeWithCodexCli(text,{model=process.env.SUPERLCM_CODEX_CLI
         if(finalTurn<=finalMessage || finalTurn<0)throw new Error('summary turn incomplete; no completed turn after the answer')
         const result=events.filter(event=>event.type==='item.completed' && event.item?.type==='agent_message' && typeof event.item.text==='string').at(-1)?.item.text
         if(!result?.trim()) throw new Error('no completed agent message')
-        finish(null,checkedSummary(result,{maxChars:summaryTask?.allowOversize?null:6000}))
+        finish(null,checkedSummary(result,{...summaryTask,maxChars:summaryTask?.allowOversize?null:6000}))
       } catch(error){finish(new Error(`Codex CLI did not produce a valid JSONL summary: ${error.message}`))}
     })
     child.stdin.on('error',()=>{})

@@ -113,15 +113,15 @@ const stream = text => new Response(text, { headers: { 'content-type': 'text/eve
 const delta = (content, extra = {}) => ({ model: 'actual-model', choices: [{ index: 0, delta: { content }, ...extra }] })
 
 test('SSE accepts deltas, CRLF, comments, multi-line data, usage and choice zero', async () => {
-  const raw = ': keepalive\r\n\r\nevent: message\r\ndata: {"choices": [\r\ndata: {"index":0,"delta":{"content":"Complete "}}]}\r\n\r\n' + sse([
+  const raw = ': keepalive\r\n\r\nevent: message\r\ndata: {"choices": [\r\ndata: {"index":0,"delta":{"content":"# Complete "}}]}\r\n\r\n' + sse([
     { choices: [{ index: 1, delta: { content: 'ignore' } }, { index: 0, delta: { content: 'grounded summary' } }] },
     delta('', { finish_reason: 'stop' }), { choices: [], usage: { total_tokens: 8 } }, '[DONE]'
   ])
-  assert.equal(await call(stream(raw)), 'Complete grounded summary')
+  assert.equal(await call(stream(raw)), '# Complete grounded summary')
 })
 
 test('SSE accepts complete message content arrays and a terminal choice without DONE', async () => {
-  assert.equal(await call(stream(sse([{ choices: [{ message: { content: [{ type: 'text', text: 'Whole summary' }] }, finish_reason: 'stop' }] }]))), 'Whole summary')
+  assert.equal(await call(stream(sse([{ choices: [{ message: { content: [{ type: 'text', text: '# Whole summary' }] }, finish_reason: 'stop' }] }]))), '# Whole summary')
 })
 
 for (const [name, raw, pattern] of [
@@ -147,9 +147,9 @@ test('empty and nonempty in_progress JSON report the configured model and reason
 })
 
 test('stream bytes can arrive across UTF-8 and event boundaries', async () => {
-  const raw = Buffer.from(sse([delta('完整摘要'), delta('', { finish_reason: 'stop' }), '[DONE]']))
+  const raw = Buffer.from(sse([delta('# 完整摘要'), delta('', { finish_reason: 'stop' }), '[DONE]']))
   const body = new ReadableStream({ start(controller) { for (let i = 0; i < raw.length; i++) controller.enqueue(raw.subarray(i, i + 1)); controller.close() } })
-  assert.equal(await call(new Response(body, { headers: { 'content-type': 'text/event-stream' } })), '完整摘要')
+  assert.equal(await call(new Response(body, { headers: { 'content-type': 'text/event-stream' } })), '# 完整摘要')
 })
 
 test('untrusted response metadata cannot enter persisted or displayed diagnostics', async () => {
@@ -187,7 +187,7 @@ test('the real background CLI persists diagnostics through new turns and clears 
   const fake = createServer((req, res) => {
     req.resume()
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    res.end(succeed ? sse([delta('Whole tested summary', { finish_reason: 'stop' }), '[DONE]']) : sse([delta('', { finish_reason: 'in_progress' }), '[DONE]']))
+    res.end(succeed ? sse([delta('# Whole tested summary', { finish_reason: 'stop' }), '[DONE]']) : sse([delta('', { finish_reason: 'in_progress' }), '[DONE]']))
   })
   await new Promise(resolve => fake.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise(resolve => fake.close(resolve)))

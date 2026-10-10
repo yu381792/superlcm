@@ -125,4 +125,6 @@ DSH 已有会话也可在后台「接入 → dsh harness → 导入历史对话�
 
 Claude、Claude Code、Codex、Hermes、Pi 的名称和标志归各自所有者，这里只用来说明兼容的工具；SuperLcm 是独立项目，与它们没有隶属或背书关系。
 
+摘要语言和指令隔离修复见 [新版说明](docs/SUMMARY-QUALITY-0.5.24.md)。
+
 完整版与 DSH 独立版的关系、修复同步及验证范围见 [修复同步说明](docs/REPAIR-SYNC-0.5.23.md)。

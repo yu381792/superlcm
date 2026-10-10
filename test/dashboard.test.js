@@ -57,7 +57,7 @@ test('local conversations page by harness and index only a selected identity',fi
  assert.throws(()=>indexLocalConversation(store,'claude-code',selected.key,{env}),/no longer available/)
  assert.throws(()=>indexLocalConversation(store,'codex','../../secrets',{env}),/Invalid/)
  assert.equal(localConversations(store,'claude-code',{env}).conversations[0].name,'Name C')
- store.setGlobalSetting('agent');const {work}=await call(store,'lcm_summary_task',{conversation:saved.session});assert.ok(work);assert.equal((await call(store,'lcm_summary_submit',{conversation:saved.session,batch_id:work.batch_id,summary:'This indexed conversation contains eight factual decision records.'})).saved,true)
+ store.setGlobalSetting('agent');const {work}=await call(store,'lcm_summary_task',{conversation:saved.session});assert.ok(work);assert.equal((await call(store,'lcm_summary_submit',{conversation:saved.session,batch_id:work.batch_id,summary:'# This indexed conversation contains eight factual decision records.'})).saved,true)
  assert.equal(store.doctor(saved.session).issues.length,0)
 }))
 test('local scanning does not follow symlink files or directories',{skip:process.platform==='win32'},fixture(({env,dir,store})=>{const root=configFiles('codex',env).transcripts;mkdirSync(root,{recursive:true});const outside=join(dir,'outside');mkdirSync(outside);writeFileSync(join(outside,'secret.jsonl'),'{}\n');symlinkSync(outside,join(root,'link'));symlinkSync(join(outside,'secret.jsonl'),join(root,'secret.jsonl'));assert.equal(localConversations(store,'codex',{env}).total,0)}))

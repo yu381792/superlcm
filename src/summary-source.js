@@ -1,3 +1,4 @@
+import {userTextFromRecord} from './summary-language.js'
 import { dshRecordCategory } from './dsh-summaries.js'
 // Summarization reads verified originals, never the UI/search preview. Keep
 // message roles, timestamps, tool outcomes and literal whitespace intact.
@@ -70,4 +71,15 @@ export function summaryEvents(store, session, start) {
     let projected
     return { ...event, get summaryText() { return covered.has(event.ordinal)?'':projected ??= summarySource(store.exact(session,event.ordinal),kind) } }
   })
+}
+
+export function recentUserTexts(store,session) {
+  const texts=[];let before=Number.MAX_SAFE_INTEGER
+  const query=store.db.prepare("SELECT ordinal FROM events WHERE session=? AND ordinal<? AND preview LIKE 'user:%' ORDER BY ordinal DESC LIMIT 128")
+  for(;;){
+    const rows=query.all(session,before);if(!rows.length)break
+    for(const e of rows){const text=userTextFromRecord(store.exact(session,e.ordinal));if(text)texts.unshift(text);if(texts.length>=24)return texts}
+    before=rows.at(-1).ordinal
+  }
+  return texts
 }

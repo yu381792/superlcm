@@ -53,7 +53,7 @@ export async function call(store,name,args = {}) {
   const work=summaryWork(store,session)
   if (!work || work.batch_id!==args.batch_id) throw new Error('Stale or mismatched summary batch; call lcm_summary_task again')
   if (work.level===0) for (let i=work.first;i<=work.last;i++) store.exact(session,i)
-  store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary:checkedSummary(args.summary),digest:work.digest,model:'mcp-agent'})
+  store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary:checkedSummary(args.summary,work),digest:work.digest,model:'mcp-agent'})
   return {saved:true,source:store.metadata(session),node_id:work.batch_id,more:Boolean(summaryWork(store,session))}
 }
 const modernVersion = '2026-07-28'

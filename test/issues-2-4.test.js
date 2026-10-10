@@ -16,7 +16,7 @@ const fixture = t => {
  store.ingest('s',file);store.setMetadata('s',{harness:'claude-code',externalId:'s'})
  t.after(()=>store.close());return {dir,store,file}
 }
-const reply=(content,finish='stop',extra={})=>new Response(JSON.stringify({choices:[{message:{content},finish_reason:finish}],...extra}))
+const reply=(content,finish='stop',extra={})=>new Response(JSON.stringify({choices:[{message:{content:finish==='stop'?(/^#/.test(content)?content:'# '+content):content},finish_reason:finish}],...extra}))
 const options=(model,fetchImpl,extra={})=>({model,apiProvider:'openai',baseURL:'http://127.0.0.1:9',fetchImpl,...extra})
 const reasoning={completion_tokens:2048,completion_tokens_details:{reasoning_tokens:2048}}
 
@@ -25,15 +25,15 @@ test('reasoning evidence adds headroom once and survives a store reopen without 
  let calls=0
  const opts=options('reasoner-persist',async(_url,request)=>{
   caps.push(JSON.parse(request.body).max_tokens);calls++
-  return calls===1?reply('','length',{usage:reasoning}):reply('A complete source-grounded summary.','stop',{usage:{completion_tokens:5000,completion_tokens_details:{reasoning_tokens:4500}}})
+  return calls===1?reply('','length',{usage:reasoning}):reply('# A complete source-grounded summary.','stop',{usage:{completion_tokens:5000,completion_tokens_details:{reasoning_tokens:4500}}})
  },{profileStore:store})
- assert.equal(await summarizeWithModel('Synthetic source',opts),'A complete source-grounded summary.')
+ assert.equal(await summarizeWithModel('Synthetic source',opts),'# A complete source-grounded summary.')
  assert.equal(calls,2);assert.ok(caps[1]>caps[0])
  const reopened=new ClaudeStore(store.dir);t.after(()=>reopened.close())
  const saved=readSummaryProfile(profileKey('http://127.0.0.1:9/v1/chat/completions','reasoner-persist',null),reopened)
  assert.ok(saved.reasoning_room>=6548)
  let nextCap
- await summarizeWithModel('Synthetic source',options('reasoner-persist',async(_url,r)=>{nextCap=JSON.parse(r.body).max_tokens;return reply('Next complete summary.')},{profileStore:reopened}))
+ await summarizeWithModel('Synthetic source',options('reasoner-persist',async(_url,r)=>{nextCap=JSON.parse(r.body).max_tokens;return reply('# Next complete summary.')},{profileStore:reopened}))
  assert.ok(nextCap>=caps[1])
  const row=store.db.prepare('SELECT * FROM summary_model_profiles').get();assert.match(row.key,/^[a-f0-9]{64}$/)
 })
@@ -48,11 +48,11 @@ test('reasoning text evidence in JSON and SSE permits exactly one bounded retry'
   let calls=0
   const fetchImpl=async()=>{
    calls++
-   if(calls>1)return reply('Complete summary.')
+   if(calls>1)return reply('# Complete summary.')
    const chunk={choices:[{index:0,delta:{reasoning_content:'private reasoning'},message:{reasoning_content:'private reasoning',content:''},finish_reason:'length'}]}
    return format==='json'?new Response(JSON.stringify(chunk)):new Response('data: '+JSON.stringify(chunk)+'\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}})
   }
-  assert.equal(await summarizeWithModel('Source',options('reason-text-'+format,fetchImpl)),'Complete summary.')
+  assert.equal(await summarizeWithModel('Source',options('reason-text-'+format,fetchImpl)),'# Complete summary.')
   assert.equal(calls,2)
  }
 })
@@ -68,7 +68,7 @@ test('no reasoning evidence means no retry; repeated evidence never triggers a t
 
 test('profiles are scoped by endpoint, model and effort and never trust response model fields',async t=>{
  const {store}=fixture(t)
- await summarizeWithModel('Source',options('scope-a',async()=>reply('Complete.','stop',{model:'credential-secret',usage:reasoning}),{profileStore:store}))
+ await summarizeWithModel('Source',options('scope-a',async()=>reply('# Complete.','stop',{model:'credential-secret',usage:reasoning}),{profileStore:store}))
  assert.equal(readSummaryProfile(profileKey('http://127.0.0.1:9/v1/chat/completions','scope-b',null),store).reasoning_room,0)
  assert.equal(readSummaryProfile(profileKey('http://127.0.0.1:10/v1/chat/completions','scope-a',null),store).reasoning_room,0)
  assert.equal(readSummaryProfile(profileKey('http://127.0.0.1:9/v1/chat/completions','scope-a','high'),store).reasoning_room,0)
@@ -81,7 +81,7 @@ test('OpenAI parameter negotiation also applies to the evidence retry',async()=>
   const b=JSON.parse(r.body);requests.push(b)
   if(requests.length===1)return new Response('Use max_completion_tokens',{status:400})
   if(requests.length===2)return reply('','length',{usage:reasoning})
-  return reply('Completed.')
+  return reply('# Completed.')
  }))
  assert.equal(requests.length,3)
  assert.ok(requests[2].max_completion_tokens>requests[1].max_completion_tokens)
@@ -90,21 +90,21 @@ test('OpenAI parameter negotiation also applies to the evidence retry',async()=>
 
 test('length repair takes zero extra calls for compliant models and at most two for overshoot',async()=>{
  let calls=0
- assert.equal(await summarizeWithModel('Source',options('compliant',async()=>{calls++;return reply('Complete.')})),'Complete.')
+ assert.equal(await summarizeWithModel('Source',options('compliant',async()=>{calls++;return reply('# Complete.')})),'# Complete.')
  assert.equal(calls,1)
  calls=0
  const prompts=[]
  const result=await summarizeWithModel('Source',options('repair-twice',async(_url,r)=>{
-  prompts.push(JSON.parse(r.body).messages[0].content);calls++
-  return reply(calls===1?'A'.repeat(15000):calls===2?'B'.repeat(9000):'Repaired with critical constraints intact.')
+  prompts.push(JSON.parse(r.body).messages.at(-1).content);calls++
+  return reply(calls===1?'A'.repeat(15000):calls===2?'B'.repeat(9000):'# Repaired with critical constraints intact.')
  }))
- assert.equal(calls,3);assert.equal(result,'Repaired with critical constraints intact.')
+ assert.equal(calls,3);assert.equal(result,'# Repaired with critical constraints intact.')
  assert.match(prompts[1],/about \d+%/);assert.match(prompts[1],/untrusted historical data/)
 })
 
 test('stubborn complete models stop early and produce a marked limited navigation node',async t=>{
  const {store}=fixture(t);let calls=0
- await buildHierarchy(store,'s',{model:'stubborn-cli',batchSize:2,summarize:async()=>{calls++;return 'Detail line\n'.repeat(800)}})
+ await buildHierarchy(store,'s',{model:'stubborn-cli',batchSize:2,summarize:async()=>{calls++;return '# Details\n'+'Detail line\n'.repeat(800)}})
  assert.equal(calls,2)
  const node=store.nodeRows('s',0)[0]
  assert.ok(node.summary.length<=6000);assert.match(node.summary,/records #0–#1/)
@@ -127,8 +127,8 @@ test('overshoot profile reduces the next requested length and preserves the fina
  const {store}=fixture(t);let calls=0
  await summarizeWithModel('Source',options('verbose-profile',async()=>{calls++;return reply(calls===1?'A'.repeat(12000):'Complete repaired summary.')},{profileStore:store}))
  let prompt
- await summarizeWithModel('Source',options('verbose-profile',async(_url,r)=>{prompt=JSON.parse(r.body).messages[0].content;return reply('Complete next summary.')},{profileStore:store}))
- assert.match(prompt,/no more than 3000 characters/)
+ await summarizeWithModel('Source',options('verbose-profile',async(_url,r)=>{prompt=JSON.parse(r.body).messages.at(-1).content;return reply('Complete next summary.')},{profileStore:store}))
+ assert.match(prompt,/no more than 2999 characters/)
 })
 
 test('merged reduced summaries retain degraded status even if the model omits the marker',async t=>{
@@ -136,7 +136,7 @@ test('merged reduced summaries retain degraded status even if the model omits th
  appendFileSync(file,Array.from({length:6},(_,i)=>JSON.stringify({role:'user',content:'Long source '+i})).join('\n')+'\n');store.ingest('s',file)
  for(let i=0;i<4;i++)store.addNode({session:'s',id:'leaf'+i,level:0,first:i*2,last:i*2+1,children:[],summary:(i===0?CAPPED_TAG:'')+' complete source summary '.repeat(100),digest:'d'+i,model:'fixture'})
  assert.equal(summaryWork(store,'s',{fanout:4,targetTokens:20000}).reducedSources,true)
- await buildHierarchy(store,'s',{model:'merge-fixture',batchSize:2,fanout:4,targetTokens:20000,summarize:async()=> 'A complete merged summary without marker.'})
+ await buildHierarchy(store,'s',{model:'merge-fixture',batchSize:2,fanout:4,targetTokens:20000,summarize:async()=> '# A complete merged summary without marker.'})
  assert.ok(isReducedSummary(store.nodeRows('s',1)[0].summary))
 })
 
@@ -181,7 +181,7 @@ test('mechanical fallback handles Unicode boundaries and includes its warning wi
 
 test('configuration change during a CLI draft prevents any repair call and any node publication',async t=>{
  const {store}=fixture(t);let calls=0
- await assert.rejects(buildHierarchy(store,'s',{model:'cancel-cli',batchSize:2,summarize:async()=>{calls++;store.setGlobalSetting('off');return 'X'.repeat(12000)}}),/cancelled/)
+ await assert.rejects(buildHierarchy(store,'s',{model:'cancel-cli',batchSize:2,summarize:async()=>{calls++;store.setGlobalSetting('off');return '# Details\n'+'X'.repeat(12000)}}),/cancelled/)
  assert.equal(calls,1);assert.equal(store.nodeRows('s',0).length,0)
 })
 
@@ -314,9 +314,9 @@ test('the first evidence retry leaves room for the reported seven-thousand-token
  let calls=0
  const result=await summarizeWithModel('Source',options('seven-k-reasoning',async(_url,r)=>{
   calls++;const cap=JSON.parse(r.body).max_tokens
-  return cap<9000?reply('','length',{usage:{completion_tokens:cap,completion_tokens_details:{reasoning_tokens:cap}}}):reply('Complete after reasoning.','stop',{usage:{completion_tokens:8000,completion_tokens_details:{reasoning_tokens:7000}}})
+  return cap<9000?reply('','length',{usage:{completion_tokens:cap,completion_tokens_details:{reasoning_tokens:cap}}}):reply('# Complete after reasoning.','stop',{usage:{completion_tokens:8000,completion_tokens_details:{reasoning_tokens:7000}}})
  }))
- assert.equal(result,'Complete after reasoning.');assert.equal(calls,2)
+ assert.equal(result,'# Complete after reasoning.');assert.equal(calls,2)
 })
 
 test('a cancelled in-host writer does not report a failure against the new settings',t=>{

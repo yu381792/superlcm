@@ -73,7 +73,7 @@ test('previous leaf is context only; changing policy or child body invalidates p
 test('complete overlength output is marked as reduced navigation; incomplete output is still refused',fixture(async ({store,dir})=>{
   const file=join(dir,'source.jsonl'),raw=line({role:'user',content:'Original constraint'})+line({role:'assistant',content:'Pending, not done'})
   writeFileSync(file,raw);store.ingest('s',file)
-  await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=> 'a'.repeat(6001)})
+  await buildHierarchy(store,'s',{model:'fixture',batchSize:2,summarize:async()=> '# Details\n'+'a'.repeat(6001)})
   assert.equal(store.nodeRows('s',0).length,1)
   assert.match(store.nodeRows('s',0)[0].summary,/SuperLcm reduced navigation/)
   assert.equal(store.exact('s',0),raw.split('\n')[0]+'\n')
