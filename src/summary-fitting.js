@@ -22,7 +22,7 @@ export function capNavigation(draft, task) {
 export async function fitSummary(draft, repair, { task = {}, onQuality = () => {}, onOvershoot = () => {} } = {}) {
   let best = checkedSummary(draft, { ...task, maxChars: null })
   if (best.length > 64000) throw Error('Complete summary exceeds the repair input limit; original content retained')
-  onOvershoot(best.length / (task.maxChars || SUMMARY_MAX_CHARS))
+  onOvershoot(best.length / (task.requestChars || task.maxChars || SUMMARY_MAX_CHARS))
   for (let round = 0; best.length > SUMMARY_MAX_CHARS && round < 2; round++) {
     const next = checkedSummary(await repair(best, round), { ...task, maxChars: null })
     if (next.length > 64000) throw Error('Complete summary exceeds the repair input limit; original content retained')

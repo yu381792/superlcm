@@ -29,15 +29,27 @@ test('catchup stops at four leaf pieces without merging or overwriting source',a
  assert.equal(store.exact('s',0),original)
 })
 test('deadline returns promptly and ignores a noncooperating late model reply',async t=>{
- const store=fixture(t);let resolve
- const run=catchUp(store,'s',{deadlineMs:25,generate:(s,id,setting,options)=>buildHierarchy(s,id,{...options,model:'fixture',summarize:()=>new Promise(r=>{resolve=r})})})
+ const store=fixture(t);let resolve,entered,generation
+ const started=new Promise(r=>{entered=r})
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:Date.now()})
+ const run=catchUp(store,'s',{deadlineMs:25,generate:(s,id,setting,options)=>{
+  generation=buildHierarchy(s,id,{...options,model:'fixture',summarize:()=>new Promise(r=>{resolve=r;entered()})})
+  return generation
+ }})
+ await started;t.mock.timers.tick(25)
  const result=await run;assert.equal(result.expired,true);assert.equal(store.nodeRows('s',0).length,0)
- resolve(good);await new Promise(r=>setTimeout(r,15))
+ resolve(good);await assert.rejects(generation,/deadline reached/)
  assert.equal(store.nodeRows('s',0).length,0);assert.equal(store.summarizing('s'),false)
 })
 test('settings changed during catchup discard the reply and suppress additional calls',async t=>{
- const store=fixture(t);let calls=0
- const result=await catchUp(store,'s',{deadlineMs:100,generate:(s,id,setting,options)=>buildHierarchy(s,id,{...options,model:'fixture',summarize:async()=>{calls++;store.setHarnessSetting('claude-code','off');return good}})})
+ const store=fixture(t);let calls=0,entered,reply
+ // Anchor cancellation after model entry. Synchronous planning under concurrent
+ // test load must not consume this settings-change test's wall-clock budget.
+ const now=Date.now();t.mock.method(Date,'now',()=>now)
+ const started=new Promise(r=>{entered=r}),response=new Promise(r=>{reply=r})
+ const run=catchUp(store,'s',{deadlineMs:100,generate:(s,id,setting,options)=>buildHierarchy(s,id,{...options,model:'fixture',summarize:async()=>{calls++;entered();return response}})})
+ await started;store.setHarnessSetting('claude-code','off');reply(good)
+ const result=await run
  assert.equal(result.created,0);assert.equal(calls,1);assert.equal(store.nodeRows('s',0).length,0)
 })
 test('an active failure cooldown blocks catchup without another model call',async t=>{

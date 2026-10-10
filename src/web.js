@@ -1,7 +1,8 @@
 import { applyTakeover, claudeCompactWindow } from './takeover.js'
 import { claudePluginEnabled } from './runtime.js'
 import { createServer } from 'node:http'
-import { randomBytes } from 'node:crypto'
+import { randomBytes,createHash } from 'node:crypto'
+import {statSync} from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connectionEvidence } from './connections.js'
@@ -21,6 +22,8 @@ import { saveApiKey, readApiKey, removeApiKey, apiKeyEndpoint } from './api-cred
 import { loopbackEndpoint } from './api-endpoint.js'
 import { findCli } from './runtime.js'
 import { summaryEstimate, summarizeWithModel } from './summarize.js'
+import { summaryHealth } from './summary-health.js'
+import { enqueueSummary, drainSummaryQueue, summaryQueueRevision } from './summary-scheduler.js'
 import { writerTool } from './cli-writers.js'
 import { openInTerminal } from './open-terminal.js'
 import { compressionSnapshot, compressionCapabilities, runtimeVersion } from './compression-status.js'
@@ -52,9 +55,26 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
   const session = url => { const id = url.searchParams.get('session'); if (!id || !store.source(id)) throw new Error('Unknown conversation'); return id }
   // One-off catch-up methods this computer can actually run for a conversation.
   const backends = id => [...(writerTool(store.metadata(id).harness, env) ? ['cli'] : []), ...(store.apiConfig(id, env) ? ['api'] : [])]
+  const previews=new Map()
+  const bulkSourceRevision=id=>{
+    const source=store.source(id),stats=store.stats(id),estimate=summaryEstimate(store,id)
+    const files=[source.path,store.archivePath(id)].map(path=>{try{const s=statSync(path);return [path,s.size,s.mtimeMs]}catch{return [path,null]}})
+    return createHash('sha256').update(JSON.stringify([source,stats,estimate,files])).digest('hex')
+  }
+  const drain=()=>drainSummaryQueue(store,{env,spawnProcess:spawnWorker})
+  const queueTimer=setInterval(()=>{try{drain()}catch{}},3000);queueTimer.unref()
+  const listView=(view,harness)=>{
+    store.recoverSummaryRuns()
+    const listing=store.listSessions(2147483647,0,harness,view)
+    return listing.sessions.filter(row=>summaryHealth(store,row.session,{env,recover:false}).needs_attention||view==='headless')
+  }
   const routes = {
-    'GET /api/conversations': url => { refreshConversationNames(store,{env,minIntervalMs:nameRefreshMs});return { ...store.listSessions(50, int(url.searchParams.get('offset'), 0), url.searchParams.get('harness') || undefined), groups: store.harnessGroups() } },
-    'GET /api/conversation': url => { const id = session(url);refreshConversationNames(store,{env,session:id,minIntervalMs:nameRefreshMs});return { ...store.outline(id), writer_tool: writerTool(store.metadata(id).harness, env), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: store.summarizing(id), status: store.source(id).status, last_compaction: store.lastCompactionDiagnostic(id), reduced_summary_count: store.reducedSummaryCount(id), summary_error_detail: store.source(id).status === 'summary_error' ? store.summaryError(id) : null, backends: backends(id), estimate: summaryEstimate(store, id) } },
+    'GET /api/conversations': url => {
+      refreshConversationNames(store,{env,minIntervalMs:nameRefreshMs});store.recoverSummaryRuns()
+      const view=url.searchParams.get('view')||'all',listing=store.listSessions(50,int(url.searchParams.get('offset'),0),url.searchParams.get('harness')||undefined,view)
+      return {...listing,sessions:listing.sessions.map(row=>({...row,headless:Boolean(row.headless),summary_health:summaryHealth(store,row.session,{env,recover:false})})),groups:store.harnessGroups(),attention_count:listView('attention').length,headless_count:store.listSessions(1,0,undefined,'headless').total}
+    },
+    'GET /api/conversation': url => { const id = session(url);refreshConversationNames(store,{env,session:id,minIntervalMs:nameRefreshMs});const health=summaryHealth(store,id,{env});return { ...store.outline(id), writer_tool: writerTool(store.metadata(id).harness, env), bands: store.bands(id), setting: store.effectiveSetting(id, env), summarizing: health.active||store.summarizing(id),summary_health:health,summary_runs:store.summaryRunHistory(id),status: store.source(id).status, last_compaction: store.lastCompactionDiagnostic(id), reduced_summary_count: store.reducedSummaryCount(id), summary_error_detail: store.source(id).status === 'summary_error' ? store.summaryError(id) : null, backends: backends(id), estimate: health.estimate } },
     'GET /api/outline': url => store.outline(session(url), url.searchParams.get('node') || undefined),
     'GET /api/events': url => { const id = session(url); return { source: store.metadata(id), events: store.eventPreviews(id, int(url.searchParams.get('from'), 0), int(url.searchParams.get('to'), 0)) } },
     'GET /api/search': url => { refreshConversationNames(store,{env,minIntervalMs:nameRefreshMs});return store.find(url.searchParams.get('q') || '', { harness: url.searchParams.get('harness') || undefined, limit: 30 }) },
@@ -64,11 +84,32 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
       const x = await body(req)
       if (!store.source(x.session)) throw new Error('Unknown conversation')
       if (!backends(x.session).includes(x.backend)) throw new Error('This summary method is not available on this computer')
-      if (store.summarizing(x.session)) return { started: false, running: true }
-      const child = spawnWorker(process.execPath, [cliScript, 'summarize', x.session, '--backend', x.backend], { detached: true, windowsHide: true, stdio: 'ignore', env: { ...env, SUPERLCM_HOME: store.dir } })
-      child.on?.('error', () => store.setStatus(x.session, 'summary_error'))
-      child.unref?.()
-      return { started: true }
+      const queued=enqueueSummary(store,x.session,{backend:x.backend,origin:'manual',env})
+      drain()
+      const health=summaryHealth(store,x.session,{env})
+      return {started:health.state==='running',queued:queued.added,running:health.active,run_id:queued.run?.id||null,summary_health:health}
+    },
+    'POST /api/summarize-bulk-preview': async req => {
+      const x=await body(req)
+      if(!['attention','headless'].includes(x.view)||!['cli','api'].includes(x.backend))throw Error('Invalid bulk summary scope')
+      if(x.harness!==undefined&&!definitions.some(h=>h.id===x.harness))throw Error('Invalid harness filter')
+      if(x.sessions!==undefined&&(!Array.isArray(x.sessions)||x.sessions.length>100||x.sessions.some(id=>typeof id!=='string')||new Set(x.sessions).size!==x.sessions.length))throw Error('Bulk sessions must be a unique list of at most 100 IDs')
+      const candidates=listView(x.view,x.harness),allowed=new Set(candidates.map(r=>r.session))
+      const ids=x.sessions||candidates.slice(0,100).map(r=>r.session)
+      if(ids.some(id=>!allowed.has(id)))throw Error('Conversation is outside the selected bulk view')
+      const selected=ids.filter(id=>backends(id).includes(x.backend)&&summaryEstimate(store,id).calls>0)
+      const token=nonce(),snapshot=selected.map(id=>[id,summaryQueueRevision(store,id,{backend:x.backend,env}),store.latestSummaryRun(id)?.id||null,bulkSourceRevision(id)])
+      previews.set(token,{view:x.view,harness:x.harness,backend:x.backend,snapshot,expires:Date.now()+60000})
+      return {token,count:selected.length,calls:selected.reduce((n,id)=>n+summaryEstimate(store,id).calls,0),excluded:ids.length-selected.length,sample:selected.slice(0,8).map(id=>store.metadata(id))}
+    },
+    'POST /api/summarize-bulk': async req => {
+      const x=await body(req),preview=previews.get(x.token)
+      if(x.confirm!==true||!preview||preview.expires<Date.now()||x.expect_count!==preview.snapshot.length)throw Error('Preview and confirm the exact bulk count first')
+      const allowed=new Set(listView(preview.view,preview.harness).map(r=>r.session))
+      for(const [id,revision,runId,sourceRevision] of preview.snapshot)if(!allowed.has(id)||revision!==summaryQueueRevision(store,id,{backend:preview.backend,env})||(store.latestSummaryRun(id)?.id||null)!==runId||bulkSourceRevision(id)!==sourceRevision)throw Error('The matching conversations, source range or estimated work changed; preview again')
+      previews.delete(x.token)
+      let queued=0;for(const [id] of preview.snapshot)if(enqueueSummary(store,id,{backend:preview.backend,origin:'bulk',env}).added)queued++
+      drain();return {queued,count:preview.snapshot.length}
     },
     'GET /api/tuning': () => store.tuning(),
     'POST /api/tuning': async req => store.setTuning(await body(req)),
@@ -200,5 +241,5 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve) })
   try {recordConsoleLocation(store, server.address().port)}
   catch(error){await new Promise(resolve=>server.close(resolve));throw error}
-  return { server, url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise(resolve => server.close(() => { store.close(); resolve() })) }
+  return { server, url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise(resolve => {clearInterval(queueTimer);server.close(() => { store.close(); resolve() })}) }
 }

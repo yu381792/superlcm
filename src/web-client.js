@@ -6,7 +6,10 @@ const fmt = n => Number(n || 0).toLocaleString(LOCALE)
 const q = encodeURIComponent
 const NAMES = { codex: 'Codex', 'claude-code': 'Claude Code', hermes: 'Hermes', pi: 'Pi', dsh: 'dsh harness', opencode: 'OpenCode', gemini: 'Gemini CLI', import: t('导入'), legacy: t('早期记录') }
 const toolName = h => NAMES[h] || h
-const state = { view: 'conversations', harnesses: [], rows: [], total: 0, offset: 0, groups: [], h: '', sel: null, query: '', detail: null, open: new Set(), children: new Map(), target: null }
+const state = { view: 'conversations', listView:'all',harnesses: [], rows: [], total: 0, offset: 0, groups: [], h: '', sel: null, query: '', detail: null, open: new Set(), children: new Map(), target: null }
+const SUMMARY_LABELS={queued:'摘要已排队',starting:'摘要正在启动',running:'正在生成摘要',failed:'摘要失败',lost:'摘要进程已中断',behind:'有待写摘要',up_to_date:'完整片段已写完',off:'后台摘要已关闭',agent:'由对话模型生成',unconfigured:'摘要尚未配置'}
+const ERROR_LABELS={rate_limit:'请求频率受限',auth:'身份验证失败',quota:'额度不足',timeout:'请求超时',quality:'摘要格式或语言不符',spawn:'进程启动失败',worker_lost:'进程意外结束'}
+const summaryPill=h=>h?'<span class="summary-pill '+esc(h.state)+'">'+esc(t(SUMMARY_LABELS[h.state]||h.state))+'</span>':''
 
 async function api(path, body) {
   const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
@@ -81,10 +84,11 @@ async function loadConversations(reset = true) {
   if (reset) renderChips() // Highlight the clicked filter before waiting for the server.
   $('#rows').setAttribute('aria-busy', 'true')
   try {
-    const data = await api('/api/conversations?offset=' + offset + (harness ? '&harness=' + q(harness) : ''))
+    const data = await api('/api/conversations?view='+q(state.listView)+'&offset=' + offset + (harness ? '&harness=' + q(harness) : ''))
     if (seq !== state.listSeq || harness !== state.h || state.query) return
     state.rows = reset ? data.sessions : [...state.rows, ...data.sessions]
     state.total = data.total; state.groups = data.groups; state.offset = data.next_offset
+    state.attentionCount=data.attention_count;state.headlessCount=data.headless_count
     renderChips(); renderList()
     if (state.harnesses) renderTools()
     if (!state.sel && state.rows[0] && window.innerWidth > 860) select(state.rows[0].session)
@@ -95,15 +99,21 @@ function renderChips() {
   // Early records (no known tool) stay under 全部 without a filter of their own.
   const chips = [['', t('全部')]].concat(state.groups.filter(g => g.harness !== 'legacy').map(g => [g.harness, toolName(g.harness)]))
   $('#chips').innerHTML = chips.map(([h, name]) => '<button type="button" class="chip" aria-pressed="' + (state.h === h) + '" data-h="' + esc(h) + '">' + (h ? mark(h) : '') + esc(name) + '</button>').join('')
-  for (const b of $('#chips').querySelectorAll('button')) b.onclick = () => act(() => { state.h = b.dataset.h; return state.query ? runSearch() : loadConversations() }, b)
+  $('#chips').innerHTML+=[['all','全部'],['attention','需要关注'],['headless','无交互任务']].map(([view,label])=>'<button type="button" class="chip" aria-pressed="'+(state.listView===view)+'" data-list-view="'+view+'">'+t(label)+(view==='attention'?' ('+fmt(state.attentionCount)+')':view==='headless'?' ('+fmt(state.headlessCount)+')':'')+'</button>').join('')+(state.listView!=='all'?'<button type="button" class="btn small" id="bulkRetry">'+t('批量重试…')+'</button>':'')
+  for (const b of $('#chips').querySelectorAll('[data-h]')) b.onclick = () => act(() => { state.h = b.dataset.h; return state.query ? runSearch() : loadConversations() }, b)
+  for(const b of $('#chips').querySelectorAll('[data-list-view]'))b.onclick=()=>act(()=>{state.listView=b.dataset.listView;return loadConversations()},b)
+  const bulk=$('#bulkRetry');if(bulk)bulk.onclick=()=>openBulkSummary()
 }
 function renderList() {
   if (state.query) return
-  $('#rows').innerHTML = state.rows.length ? state.rows.map(c => {
+  const rows=state.listView==='attention'?[...state.rows].sort((a,b)=>(a.summary_health?.run?.error_kind||'unknown').localeCompare(b.summary_health?.run?.error_kind||'unknown')):state.rows
+  let previousCause=null
+  $('#rows').innerHTML = rows.length ? rows.map(c => {
     const count = c.raw_records ?? c.records, summarized = c.summarized_records ?? c.summarized_to
     const pct = count ? Math.round(Math.min(summarized, count) / count * 100) : 0
-    return '<div class="row-wrap"><button type="button" class="row" role="option" aria-selected="' + (c.session === state.sel) + '" data-id="' + esc(c.session) + '">' + mark(c.harness) +
-      '<span class="name">' + esc(c.name) + '</span><span class="meta"><span class="num">' + t('{n} 条', { n: fmt(c.records) }) + '</span><span>·</span><span>' + ago(c.updated_ms) + '</span>' +
+    const cause=c.summary_health?.run?.error_kind||'unknown',header=state.listView==='attention'&&cause!==previousCause?'<div class="summary-cause">'+esc(t(ERROR_LABELS[cause]||'原因未确认'))+'</div>':'';previousCause=cause
+    return header+'<div class="row-wrap"><button type="button" class="row" role="option" aria-selected="' + (c.session === state.sel) + '" data-id="' + esc(c.session) + '">' + mark(c.harness) +
+      '<span class="name">' + esc(c.name) + '</span><span class="meta">'+summaryPill(c.summary_health)+(c.headless?'<span class="tag">'+t('无交互任务')+'</span>':'')+(state.listView==='attention'&&c.summary_health?.run?.error_kind?'<span>'+esc(c.summary_health.run.error_kind)+'</span>':'')+'<span class="num">' + t('{n} 条', { n: fmt(c.records) }) + '</span><span>·</span><span>' + ago(c.updated_ms) + '</span>' +
       (c.summary_count ? '<span class="mini" title="' + t('摘要覆盖 {n}%', { n: pct }) + '"><i style="width:' + pct + '%"></i></span>' : '<span>' + t('暂无摘要') + '</span>') + '</span></button>' + delButton(c) + '</div>'
   }).join('') : '<div class="empty"><span>' + t('还没有对话记录。') + '</span><button type="button" class="btn primary" id="goConnect">' + t('接入第一个工具') + '</button></div>'
   $('#listCount').textContent = t('{n} 个对话', { n: state.total })
@@ -115,6 +125,17 @@ function renderList() {
 $('#more').onclick = () => act(() => loadConversations(false), $('#more'))
 const TRASH = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5M6.8 7v4M9.2 7v4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 function delButton(c) { return '<button type="button" class="row-del" data-del="' + esc(c.session) + '" title="' + t('删除对话') + '" aria-label="' + t('删除对话') + '">' + TRASH + '</button>' }
+function openBulkSummary() {
+  const view=state.listView,harness=state.h||undefined
+  overlay('<div class="modal"><div class="card"><div class="card-h"><h3>'+t('批量重试…')+'</h3><button class="x" data-close>×</button></div><div class="card-b"><p>'+t('先预览当前分组的会话数量和预计摘要段数，再确认调用。')+'</p><div class="actions"><button class="btn" data-bulk-backend="cli">'+t('命令行工具')+'</button><button class="btn" data-bulk-backend="api">'+t('自定义 API')+'</button></div><div id="bulkPreview"></div></div></div></div>',root=>{
+    for(const button of root.querySelectorAll('[data-bulk-backend]'))button.onclick=()=>act(async()=>{
+      const preview=await api('/api/summarize-bulk-preview',{view,harness,backend:button.dataset.bulkBackend})
+      const target=root.querySelector('#bulkPreview')
+      target.innerHTML='<p>'+t('本次排队 {n} 个会话，预计 {c} 段摘要。',{n:fmt(preview.count),c:fmt(preview.calls)})+'</p><p>'+preview.sample.map(row=>esc(row.name)).join('<br>')+'</p><p class="muted">'+t('按并发上限依次运行。失败后等待下一轮对话或手动重试，不会无限重试。')+'</p><button class="btn primary" id="bulkConfirm" '+(!preview.count?'disabled':'')+'>'+t('确认排队')+'</button>'
+      const go=target.querySelector('#bulkConfirm');go.onclick=()=>act(async()=>{await api('/api/summarize-bulk',{token:preview.token,expect_count:preview.count,confirm:true});closeOverlay();await loadConversations();if(state.sel)await loadDetail()},go)
+    },button)
+  })
+}
 // Delete one conversation from SuperLcm after an explicit confirmation. The tool's own transcript is untouched.
 function openDelete(c) {
   overlay('<div class="modal" role="dialog" aria-labelledby="dtitle"><div class="card" style="width:min(460px,100%)"><div class="card-h"><h3 id="dtitle">' + t('删除对话？') + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
@@ -177,7 +198,7 @@ async function loadDetail() {
   state.detail = detail
   renderDetail()
   clearTimeout(loadDetail.timer)
-  if (detail.summarizing) loadDetail.timer = setTimeout(() => act(loadDetail), 4000)
+  if (detail.summary_health?.active||detail.summarizing) loadDetail.timer = setTimeout(() => act(loadDetail), 3000)
 }
 const pct = (x, total) => (x / total * 100).toFixed(3) + '%'
 function stripHtml(d) {
@@ -211,19 +232,21 @@ function generateButton(label, cls = 'btn small') {
 }
 function openGenerate() {
   const d = state.detail, e = d.estimate, list = d.backends
+  const replacingHost=d.summary_health?.state==='queued'&&d.summary_health.run?.route==='host'
   let pick = list[0]
   const opts = () => list.map(b => '<button type="button" class="target" data-b="' + b + '" aria-pressed="' + (b === pick) + '"><span class="t1">' + t(BACKENDS[b][0], { tool: toolName(d.writer_tool) }) + '</span><span class="t2">' + t(BACKENDS[b][1], { tool: toolName(d.writer_tool) }) + '</span></button>').join('')
   overlay('<div class="modal" role="dialog" aria-labelledby="gtitle"><div class="card" style="width:min(520px,100%)"><div class="card-h"><h3 id="gtitle">' + t('生成摘要') + '</h3><button type="button" class="x" data-close aria-label="' + t('关闭') + '">×</button></div><div class="card-b">' +
     '<p style="margin:0">' + t('把尚未摘要的 {n} 条原文整理成分层摘要，方便浏览和接续。原文不会改动。', { n: fmt(e.records) }) + '</p>' +
+    (replacingHost?'<p style="margin:0">'+t('确认后，将由你选择的后台方式接替排队中的摘要。')+'</p>':'')+
     '<p class="muted" style="margin:0">' + t(e.calls_upper_bound?'预计调用模型最多 {c} 次，在后台运行，可以关掉此页。':'预计调用模型约 {c} 次，在后台运行，可以关掉此页。', { c: fmt(e.calls) }) + (e.tail_chars ? e.target_tokens!=null?t('最后约 {n} token 未达到一段目标，暂时只保留原文。',{n:fmt(e.tail_tokens)}):t('最后约 {n} 字还不够一段，暂时只保留原文。', { n: fmt(e.tail_chars) }) : '') + '</p>' +
     '<div class="section-h"><h2>' + t('用哪种方式生成') + '</h2></div><div class="targets" id="genOpts">' + opts() + '</div>' +
-    '<div class="actions"><button type="button" class="btn primary" id="genGo">' + t('开始生成') + '</button><button type="button" class="btn" data-close>' + t('取消') + '</button></div></div></div></div>', root => {
+    '<div class="actions"><button type="button" class="btn primary" id="genGo">' + t(replacingHost?'确认转到后台':'开始生成') + '</button><button type="button" class="btn" data-close>' + t('取消') + '</button></div></div></div></div>', root => {
     const bind = () => { for (const b of root.querySelectorAll('[data-b]')) b.onclick = () => { pick = b.dataset.b; root.querySelector('#genOpts').innerHTML = opts(); bind() } }
     bind()
     const go = root.querySelector('#genGo')
     go.onclick = () => act(async () => {
       const x = await api('/api/summarize', { session: state.sel, backend: pick })
-      closeOverlay(); toast(x.running ? t('已经在生成中') : t('已开始在后台生成摘要'))
+      closeOverlay()
       await loadDetail()
     }, go)
   })
@@ -242,7 +265,11 @@ function renderDetail() {
     html+='<div class="notice"><span><b>'+t(title)+(x.trigger==='precompute'?' '+t('（预计算）'):'')+'</b><br>'+esc(t(x.reason))+' · '+esc(ago(x.at_ms))+'<br>'+t('已覆盖 {n} / {total} 条原文',{n:esc(Math.max(0,x.through_record+1)),total:esc(x.records)})+'</span></div>'
   }
   if(d.reduced_summary_count)html+='<div class="notice bad"><span>'+t('部分摘要已机械缩短，仅供查询导航；关键约束请查回原文。')+' ('+esc(d.reduced_summary_count)+')</span></div>'
-  if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
+  if(d.summary_health){
+    const h=d.summary_health,r=h.run,replacingHost=h.state==='queued'&&r?.route==='host'
+    html+='<div class="notice summary-status '+(h.needs_attention?'bad':'calm')+'"><span>'+summaryPill(h)+(r?'<br>'+t('本次已写 {n} / {total} 段',{n:fmt(r.created_parts),total:fmt(r.planned_parts)})+(r.current_first!==null?' · #'+r.current_first+'–#'+r.current_last:'')+'<br>'+esc(r.model||'')+' · '+esc(ago(r.ended_ms||r.started_ms||r.queued_ms))+(r.stop_reason?'<br>'+esc(r.stop_reason):'')+(r.error_message?'<br>'+esc(r.error_message):''):'')+(replacingHost?'<br>'+t('摘要正在等待原会话继续。会话已结束时，可以改用后台方式生成。'):'')+(h.retry_hint?'<br>'+t(h.retry_hint==='manual'?'重试已暂停，请手动重试。':'下一轮对话会触发重试，也可以手动重试；会话已结束时请手动重试。'):'')+'</span>'+((replacingHost||!h.active&&(h.needs_attention||h.estimate?.calls>0))?'<span class="actions">'+generateButton(replacingHost?'转到后台生成…':'重新生成摘要…')+'</span>':'')+'</div>'
+  }
+  else if (d.summarizing) html += '<div class="notice calm"><span><b>' + t('正在生成摘要…') + '</b>' + t('完成的部分会陆续出现在下方。') + '</span></div>'
   else if (d.status === 'summary_error') html += '<div class="notice bad"><span><b>' + t('上次摘要生成失败。') + '</b>' + t('请确认所选方式可用（命令行工具已登录，或 API 密钥有效），然后重试。') + (d.summary_error_detail ? '<br>' + esc(d.summary_error_detail) : '') + '</span><span class="actions">' + generateButton('重新生成摘要…') + '</span></div>'
   // Count pending work, not records: most records are tool calls with no text and need no summary.
   else if (d.summary_count && d.estimate?.calls >= 2 && d.setting.mode === 'agent') html += '<div class="notice"><span><b>' + t('摘要滞后：还差约 {n} 次摘要（含向上合并）。', { n: fmt(d.estimate.calls) }) + '</b>' + t('对话模型生成每轮只处理一段，跟不上新增内容。可以在后台一次补齐。') + '</span><span class="actions">' + generateButton('补齐摘要…') + '</span></div>'
@@ -252,7 +279,7 @@ function renderDetail() {
       (selected && d.unsummarized_records > tail ? '<div class="tail-row">' + t('另有 {n} 条较早有效原文未被选入摘要，原文仍可查。', { n: fmt(d.unsummarized_records - tail) }) + '</div>' : '') + '</div></div>'
   } else {
     html += '<div class="notice calm"><span><b>' + t('此对话暂无摘要。') + '</b>' + t('{n} 条原文已完整保存，AI 可按编号读取和搜索；接续时将提供最近的原文。', { n: fmt(d.records) }) + (d.setting.mode === 'agent' ? t('对话模型生成只在该对话继续进行时才会写摘要。') : '') + '</span></div>' +
-      '<div class="actions">' + (d.summarizing ? '' : generateButton('生成摘要…', 'btn primary')) + '<button type="button" class="btn" data-raw="' + Math.max(0, d.records - 60) + '-' + Math.max(d.records - 1, 0) + '">' + t('查看最近原文') + '</button></div>'
+      '<div class="actions">' + (d.summarizing||d.summary_health?.active ? '' : generateButton('生成摘要…', 'btn primary')) + '<button type="button" class="btn" data-raw="' + Math.max(0, d.records - 60) + '-' + Math.max(d.records - 1, 0) + '">' + t('查看最近原文') + '</button></div>'
   }
   $('#detail').innerHTML = html + '</div>'
   bindDetail()

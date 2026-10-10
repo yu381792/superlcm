@@ -16,6 +16,8 @@ The top-level navigation is **对话 → 接入 → 压缩 → 设置** (Convers
 
 The list shows every stored conversation, newest activity first, with its tool logo, record count, last update and summary coverage. Filter chips are built from the tools that actually have conversations. The search box (shortcut `/`) matches conversation names, `#codes`, summaries and original text (substring match, works for Chinese).
 
+**需要关注** (Needs attention) groups failed, lost and unconfigured interactive summary jobs. **无交互任务** (Non-interactive tasks) keeps Codex executions separate from that warning count. Both groups offer bulk retry with a preview of the selected conversations and estimated work, followed by confirmation. No model call starts from merely opening the preview. Queued work respects the shared database's concurrency limit and gives interactive conversations priority.
+
 Names follow the host’s saved display title, including Claude’s separate rename files and Paseo names bound to the exact native session ID. The list, search and detail refresh names without sending a message. A name set manually in SuperLcm stays authoritative; the first user message is only a fallback when no host name is available.
 
 The detail view shows:
@@ -23,7 +25,8 @@ The detail view shows:
 - **摘要层级** — one lane per summary level plus the raw-record lane. Higher-level segments are clickable and jump to that summary. The hatched tail is records not yet summarized; their originals are still readable.
 - **摘要目录** — the top-level summaries (nodes not yet merged upward). Higher nodes expand into their children; first-level nodes open the original records.
 - **原文 drawer** — the exact records for a range, with tool calls and system records collapsed. This is the same text `lcm_read` returns.
-- **生成摘要 / 补齐摘要** — when a conversation has no summary, in-conversation summaries fall far behind, or the last pass failed, one button opens a confirmation dialog. The lag notice counts pending model calls (new segments plus merges), not records, since most records are tool calls with no text. It says how many records will be summarized and about how many model calls that takes (a dry run of the planner), and lists only the methods this computer can run, each saying whose quota or bill it uses: the conversation's own tool in the background (for example “Codex 后台写”, using the account and model configured in Codex), or the custom API saved in Settings. Nothing starts until **开始生成**, which calls `POST /api/summarize` to spawn `cli.js summarize … --backend`. With no method available the notice links to Settings; when the unsummarized part is shorter than one segment, no button is shown. The view polls while a pass holds the summary lease.
+- **生成摘要 / 补齐摘要** — when a conversation has no summary, in-conversation summaries fall far behind, or the last pass failed, one button opens a confirmation dialog. The lag notice counts pending model calls (new segments plus merges), not records, since most records are tool calls with no text. It says how many records will be summarized and about how many model calls that takes (a dry run of the planner), and lists only the methods this computer can run, each saying whose quota or bill it uses: the conversation's own tool in the background (for example “Codex 后台写”, using the account and model configured in Codex), or the custom API saved in Settings. Nothing starts until **开始生成**, which calls `POST /api/summarize` to queue the work. With no method available the notice links to Settings; when the unsummarized part is shorter than one segment, no button is shown. The view polls queued, starting and running jobs.
+- **摘要运行状态** — the active run shows its model, current source range and completed/planned segment count. Failed or unexpectedly lost jobs retain a safe reason and a retry hint. Recent run history remains available after a page reload. A newer run owns its current status, so an older worker cannot replace it with an old error.
 - **换个工具继续** — pick a target tool and copy the one-line handoff (or a terminal command). The packet preview shows exactly what `lcm_continue` returns.
 - **重命名** — a manual name that later hook updates do not overwrite.
 - **删除** — the trash button on a list row (on hover) or in the detail header asks for confirmation, then removes that conversation's records, summaries and SuperLcm's archived copy. The tool's own transcript is untouched. A deleted conversation is remembered, so hooks do not capture it again if it continues; importing it again from 接入 revives it.
@@ -54,6 +57,8 @@ A side list (a scrolling row on phones) shows one section at a time, in the orde
 - Palette (陶橙 default, 松石, 靛青, 石墨) and light/dark follow-system are stored per browser.
 
 ## How summaries grow
+
+Background generation uses a persistent queue with three simultaneous jobs per shared database by default. `SUPERLCM_SUMMARY_CONCURRENCY=1` through `16` can adjust this when applied consistently to cooperating processes. See [summary jobs, response handling and validation limits](SUMMARY-JOBS-0.5.27.md).
 
 The planner always merges before it summarizes new text: whenever a level has at least `fanout` adjacent nodes not yet owned by a parent, the next task is to merge them. Otherwise it closes the next first-level segment once the next record would push it past the saved source-token target (or a legacy character target). Each task is verified against the original byte ranges before and after the model call, so a changed source fails closed.
 

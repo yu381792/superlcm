@@ -15,7 +15,8 @@ import { existsSync, statSync, openSync, readSync, closeSync, readFileSync } fro
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { scheduleSummary } from './summary-scheduler.js'
+import { scheduleSummary, drainSummaryQueue } from './summary-scheduler.js'
+import { enqueueSummaryRun, reserveSummaryRun, bindSummaryRun, progressSummaryRun, finishSummaryRun, activeSummaryRun, summaryConcurrency } from './summary-runs.js'
 import { summaryTick, catchUp, catchupDeadlineMs, pendingLeaves } from './summary-background.js'
 import { randomUUID } from 'node:crypto'
 const [command,...rest]=process.argv.slice(2)
@@ -160,27 +161,10 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
       // --backend runs one explicit subscription pass (console "generate now"), independent of the saved mode.
       const backendFlag=rest.indexOf('--backend'),backend=backendFlag>=0?rest[backendFlag+1]:null
       if (backend!==null && !['cli','api'].includes(backend)) throw new Error('--backend must be cli or api')
-      const oneOffApi=backend==='api'?store.apiConfig(rest[0]):null
-      if (backend==='api' && !oneOffApi) throw new Error('No saved custom API; configure one in Settings first')
-      try {
-        const {mode,model,api_provider,api_url,effort,api_effort}=oneOffApi?{mode:'api',...oneOffApi}:backend?{mode:backend,model:null}:effective(store,rest[0])
-        if (!backend && process.env.SUPERLCM_HOOK_WORKER==='1' && (process.env.SUPERLCM_SUMMARY_EXPECTED_MODE!==mode || process.env.SUPERLCM_SUMMARY_EXPECTED_MODEL!==(model||''))) throw new Error('Summary setting changed before background worker started')
-        if(!backend&&!store.integrationEnabled(store.metadata(rest[0]).harness))throw Error('Integration was cancelled; automatic summaries are stopped')
-        if (mode==='off' || mode==='agent') throw new Error('Background summaries are disabled for this session')
-        const revision = summarySettingsRevision(store, rest[0])
-        const shouldContinue = () => summarySettingsRevision(store, rest[0]) === revision
-        result=mode==='api'
-          ? await buildHierarchy(store,rest[0],{model:model||process.env.SUPERLCM_CLAUDE_MODEL,apiKey:oneOffApi?oneOffApi.apiKey:store.apiCredential(rest[0]),apiProvider:api_provider||'anthropic',apiURL:api_url||process.env.SUPERLCM_CLAUDE_API_URL,effort:effort||api_effort||null,shouldContinue,retryFailed:!!backend||process.env.SUPERLCM_HOOK_WORKER!=='1'})
-          : await (async()=>{
-            // 本工具后台写: this conversation's own tool (or, for an imported one, any installed tool), as configured.
-            const tool=writerTool(store.metadata(rest[0]).harness)
-            if (!tool) throw new Error('No installed tool can write summaries')
-            const chosen=model||(tool==='claude-code'?process.env.SUPERLCM_CLAUDE_CLI_MODEL:tool==='codex'?process.env.SUPERLCM_CODEX_CLI_MODEL:'')||''
-            return buildHierarchy(store,rest[0],{model:`${WRITER_CLI[tool]}-cli:${chosen||'configured'}`,summarize:(text,options)=>summarizeWith(tool,text,{model:chosen,summaryTask:options.summaryTask}),shouldContinue,retryFailed:!!backend||process.env.SUPERLCM_HOOK_WORKER!=='1'})
-          })()
-        if (!result.busy && !result.stopped) store.setStatus(rest[0],'ok')
-      }
-      catch(error) {store.recordSummaryError(rest[0],error);store.setStatus(rest[0],'summary_error');throw error}
+      const runFlag=rest.indexOf('--run'),runId=runFlag>=0?rest[runFlag+1]:process.env.SUPERLCM_SUMMARY_RUN_ID||null
+      const {runSummaryWorker}=await import('./summary-worker.js')
+      try {result=await runSummaryWorker(store,rest[0],{runId,backend})}
+      finally {drainSummaryQueue(store)}
     } else if (command==='import') {
       const {importFile}=await import('./store.js');result=importFile(store,rest[0],rest[1],rest[2] || 'import',rest[3])
     } else if (command==='name') result=store.nameSession(rest[0],rest.slice(1).join(' '))
@@ -199,7 +183,8 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         // the current settings. Do not overwrite that writer's healthy status.
         const revision=summarySettingsRevision(store,session)
         if(store.ownsLease(session,'host')&&claim?.revision===revision&&hostClaimMatches(claim,input,revision)&&(!claim.deadline_ms||Date.now()<claim.deadline_ms)){
-          store.recordSummaryError(session,Error('Host summary failed'));store.setStatus(session,'summary_error')
+          if(claim.run_id)finishSummaryRun(store,claim.run_id,{owner:'host:'+claim.claim_id,state:'failed',error:Object.assign(Error('Host summary failed'),{summaryKind:'host'})})
+          else {store.recordSummaryError(session,Error('Host summary failed'));store.setStatus(session,'summary_error')}
           store.failSummaryBatch(session,claim.batch_id,claim.revision)
         }
       }
@@ -272,12 +257,14 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
     if(command==='summary-host')store.setHostWriter(session,true)
     else if(command==='summary-release'){
       const input=await readHook(),claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
-      if(hostClaimMatches(claim,input,summarySettingsRevision(store,session))&&input.batch_id===claim.batch_id)store.releaseHostClaim(session,claim.claim_id)
+      if(hostClaimMatches(claim,input,summarySettingsRevision(store,session))&&input.batch_id===claim.batch_id){if(claim.run_id)finishSummaryRun(store,claim.run_id,{owner:'host:'+claim.claim_id,state:'stopped',reason:'host-released'});store.releaseHostClaim(session,claim.claim_id)}
     }
     else if(command==='summary-handoff'){
       const input=await readHook().catch(()=>({})),claim=store.db.prepare('SELECT * FROM host_summary_claims WHERE session=?').get(session)
       const active=store.ownsLease(session,'host'),revision=summarySettingsRevision(store,session)
       if(hostClaimMatches(claim,input,revision)||!input.claim_id&&!active){
+        const run=activeSummaryRun(store,session)
+        if(run?.route==='host'&&(!active||claim?.run_id===run.id))finishSummaryRun(store,run.id,{state:'stopped',reason:'host-handoff'})
         if(store.hostWriter(session)){store.setHostWriter(session,false);if(claim)store.releaseHostClaim(session,claim.claim_id);else store.release(session,'host')}
         if(store.source(session)&&!store.isDeleted(session)){const {mode,model}=effective(store,session);scheduleSummary(store,session,mode,model)}
       }
@@ -291,8 +278,10 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         const revision=summarySettingsRevision(store,session)
         const valid=!!claim&&claim.batch_id===input.batch_id&&hostClaimMatches(claim,input,revision)&&(!claim.deadline_ms||Date.now()<claim.deadline_ms)&&claim.revision===revision&&store.db.prepare('SELECT owner FROM leases WHERE session=?').get(session)?.owner==='host'&&store.summarizing(session)
         if(valid)store.renewLease(session,300000,'host')
+        if(valid&&claim.run_id)progressSummaryRun(store,claim.run_id,'host:'+claim.claim_id)
         reply={valid,...(claim?.claim_id&&!input.claim_id?{reason:'Summary claim ID required; reload the SuperLcm plugin in this session'}:{})}
       }else if(command==='summary-claim'){
+        store.recoverSummaryRuns()
         store.setHostWriter(session,true)
         if(existsSync(src.path))store.ingest(session,src.path)
         const leafOnly=rest.includes('--leaf'),deadlineAt=rest.indexOf('--deadline'),deadline=deadlineAt<0?0:Number(rest[deadlineAt+1])
@@ -300,12 +289,19 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
         const work=summaryWork(store,session,{leafOnly}),revision=summarySettingsRevision(store,session)
         if(!work)reply={none:'nothing to summarize yet'}
         else if(store.summaryRetry(session,work.batch_id,revision))reply={none:'summary retry cooldown'}
-        else if(!store.lease(session,300000,'host'))reply={none:'busy'}
         else {
+          let currentRun=activeSummaryRun(store,session)
+          if(currentRun?.route==='host'&&currentRun.state==='queued'&&currentRun.revision!==revision){finishSummaryRun(store,currentRun.id,{state:'stopped',reason:'settings-changed'});currentRun=null}
+          const queued=currentRun?{run:currentRun,added:false}:enqueueSummaryRun(store,session,{route:'host',origin:leafOnly?'catchup':'host',model,revision,planned:1})
+          if(queued.run.route!=='host'||queued.run.state!=='queued')throw Object.assign(Error('busy'),{none:true})
+          if(!reserveSummaryRun(store,{id:queued.run.id,limit:summaryConcurrency()}))throw Object.assign(Error('Summary queue is busy'),{none:true})
+          if(!store.lease(session,300000,'host')){finishSummaryRun(store,queued.run.id,{state:'stopped',reason:'busy'});throw Object.assign(Error('busy'),{none:true})}
           const claimId=randomUUID()
-          store.db.prepare('INSERT INTO host_summary_claims(session,batch_id,revision,claim_id,leaf_only,deadline_ms) VALUES(?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision,claim_id=excluded.claim_id,leaf_only=excluded.leaf_only,deadline_ms=excluded.deadline_ms').run(session,work.batch_id,revision,claimId,leafOnly?1:0,deadline)
+          store.db.prepare('INSERT INTO host_summary_claims(session,batch_id,revision,claim_id,leaf_only,deadline_ms,run_id) VALUES(?,?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision,claim_id=excluded.claim_id,leaf_only=excluded.leaf_only,deadline_ms=excluded.deadline_ms,run_id=excluded.run_id').run(session,work.batch_id,revision,claimId,leafOnly?1:0,deadline,queued.run.id)
+          bindSummaryRun(store,queued.run.id,{owner:'host:'+claimId})
+          progressSummaryRun(store,queued.run.id,'host:'+claimId,{first:work.first,last:work.last})
           const task=adaptiveSummaryTask(work,readSummaryProfile(profileKey('claude-host',model||'configured',null),store))
-          reply={work:{task:{level:work.level,first:work.first,last:work.last,maxChars:task.maxChars,language:task.language,requireHeading:true},maxTokens:visibleOutputRoom(work.content),batch_id:work.batch_id,claim_id:claimId,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,task),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
+          reply={work:{task:{level:work.level,first:work.first,last:work.last,maxChars:task.maxChars,requestChars:task.requestChars,language:task.language,requireHeading:true},maxTokens:visibleOutputRoom(work.content),batch_id:work.batch_id,claim_id:claimId,system:SUMMARY_SYSTEM,prompt:buildSummaryPrompt(work.content,task),model:model||process.env.SUPERLCM_CLAUDE_CLI_MODEL||''}}
         }
       } else {
         const input=await readHook()
@@ -330,9 +326,10 @@ else if (command==='hook' || command==='codex-hook' || command==='index' || comm
           if(work.level===0)for(let i=work.first;i<=work.last;i++)store.exact(session,i)
           store.addNode({session,id:work.batch_id,level:work.level,first:work.first,last:work.last,children:work.children,summary,digest:work.digest,model:`claude-code-host:${String(input.model||'configured').slice(0,80)}`},{leaseOwner:'host',validate:current})
           store.completeSummaryBatch(session,work.batch_id,claim.revision)
-          store.setStatus(session,'ok')
+          if(claim.run_id){progressSummaryRun(store,claim.run_id,'host:'+claim.claim_id,{created:1});finishSummaryRun(store,claim.run_id,{owner:'host:'+claim.claim_id,state:'done'})}else store.setStatus(session,'ok')
           reply={saved:true,more:Boolean(summaryWork(store,session))}
-        } finally { if(hostClaimMatches(claim,input,summarySettingsRevision(store,session)))store.releaseHostClaim(session,claim.claim_id) }
+        } catch(error){if(claim?.run_id&&hostClaimMatches(claim,input,summarySettingsRevision(store,session)))finishSummaryRun(store,claim.run_id,{owner:'host:'+claim.claim_id,state:'failed',error});throw error}
+        finally { if(hostClaimMatches(claim,input,summarySettingsRevision(store,session)))store.releaseHostClaim(session,claim.claim_id) }
       }
     }
   } catch(error) { reply=error.none?{none:error.message}:{error:error.message} }

@@ -4,6 +4,18 @@ const LANGS = {
   // Keys that need context to disambiguate; Chinese shows the short form.
   zh: { '关闭（摘要方式）': '关闭' },
   en: {
+    '摘要已排队':'Summary queued','摘要正在启动':'Summary starting','正在生成摘要':'Writing summaries','摘要失败':'Summary failed','摘要进程已中断':'Summary worker lost','有待写摘要':'Summaries pending','完整片段已写完':'Complete segments summarized','后台摘要已关闭':'Background summaries off','由对话模型生成':'Written by the chat model','摘要尚未配置':'Summary setup needed',
+    '需要关注':'Needs attention','无交互任务':'Headless runs','批量重试…':'Bulk retry…','命令行工具':'CLI','确认排队':'Confirm queue',
+    '先预览当前分组的会话数量和预计摘要段数，再确认调用。':'Preview the number of conversations and estimated summary pieces in this group before confirming calls.',
+    '本次排队 {n} 个会话，预计 {c} 段摘要。':'Queue {n} conversations, about {c} summary pieces.',
+    '按并发上限依次运行。失败后等待下一轮对话或手动重试，不会无限重试。':'Runs obey the concurrency limit. Failures wait for the next conversation turn or a manual retry.',
+    '本次已写 {n} / {total} 段':'This run wrote {n} / {total} pieces',
+    '重试已暂停，请手动重试。':'Retries are paused; retry manually.',
+    '下一轮对话会触发重试，也可以手动重试；会话已结束时请手动重试。':'Retry is triggered by the next conversation turn, or manually. For a finished conversation, retry manually.',
+    '转到后台生成…':'Generate in the background…','确认转到后台':'Confirm background generation',
+    '摘要正在等待原会话继续。会话已结束时，可以改用后台方式生成。':'This summary is waiting for the original conversation to continue. If the conversation has ended, choose a background method to generate it.',
+    '确认后，将由你选择的后台方式接替排队中的摘要。':'After confirmation, your chosen background method will take over the queued summary.',
+    '请求频率受限':'Rate limited','身份验证失败':'Authentication failed','额度不足':'Quota exhausted','请求超时':'Request timed out','摘要格式或语言不符':'Summary format or language failed','进程启动失败':'Worker could not start','进程意外结束':'Worker ended unexpectedly','原因未确认':'Unclassified cause',
     "已覆盖 {n} / {total} 条原文": "Covered {n} / {total} original records",
     "接管计算发生错误；保留原文并交给 Claude Code 原生压缩。": "Takeover planning failed; originals retained and Claude Code native compaction used.",
     "SuperLcm 已提供后台摘要供本次压缩使用。": "SuperLcm supplied prepared summaries for this compaction.",

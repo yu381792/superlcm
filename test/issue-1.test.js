@@ -130,11 +130,11 @@ for (const [name, raw, pattern] of [
   ['named error event', sse([delta('partial', { finish_reason: 'stop' })]) + 'event: error\ndata: {"message":"SECRET SOURCE"}\n\n', /upstream error/],
   ['unknown event body', sse([delta('partial'), { message: 'SECRET SOURCE' }, '[DONE]']), /no choices/],
   ['upstream error', sse([delta('partial'), { error: { message: 'SECRET SOURCE' } }, '[DONE]']), /upstream error/],
-  ['truncated', sse([delta('partial')]), /before completion/],
+  ['truncated', sse([delta('partial')]), /cut off before its final event/],
   ['nonterminal', sse([delta('partial', { finish_reason: 'in_progress' }), '[DONE]']), /nonterminal/],
   ['length capped', sse([delta('partial', { finish_reason: 'length' }), '[DONE]']), /incomplete/],
   ['empty success', sse([delta('', { finish_reason: 'stop' }), '[DONE]']), /no text/],
-  ['no choice', sse([{ choices: [] }, '[DONE]']), /before completion/],
+  ['no choice', sse([{ choices: [] }, '[DONE]']), /no completion data/],
   ['after DONE', sse([delta('summary'), '[DONE]', delta('extra')]), /after completion/],
   ['after final choice', sse([delta('summary', { finish_reason: 'stop' }), delta('extra'), '[DONE]']), /after its final/]
 ]) test(`SSE refuses ${name} rather than storing partial summaries`, async () => {

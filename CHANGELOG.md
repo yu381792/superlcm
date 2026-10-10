@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.27
+
+- Separate the learned soft request length from the 6,000-character summary acceptance limit; let the learned ratio relax after smaller successful drafts.
+- Persist summary jobs and queue admission across cooperating processes. Default to three concurrent jobs, prioritize interactive conversations, expose truthful progress/failure states and confirm bulk retries before queueing.
+- Classify empty streams, interrupted streams and safe upstream causes; report missing usage as unknown. Give each HTTP retry a fresh deadline and bound/cancel HTTP 400 compatibility response reads.
+- Share summary policy and completion diagnostics with DSH standalone 0.5.30, including independent quality-retry deadlines. Credit muxammadreza for issues #10–#13. See [behavior and validation limits](docs/SUMMARY-JOBS-0.5.27.md).
+
 ## 0.5.26
 
 - Fix long autonomous Claude turns: observe model steps, prioritize raw coverage and bound missing-leaf catch-up. Preserve the complete original human request when retaining a recent suffix within a long turn; verify native continuation and tool boundaries. Reject oversized replacements.

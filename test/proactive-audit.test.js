@@ -56,7 +56,8 @@ test('failed batches persist cooldown across process restarts and pause after th
  try{
   for(let attempt=0;attempt<3;attempt++){
    assert.equal(scheduleSummary(store,'s','api','fixture',{spawnProcess}),true)
-   await assert.rejects(buildHierarchy(store,'s',options),/section heading/);child.emit('exit',1)
+   const reserved=store.latestSummaryRun('s');assert.equal(reserved.state,'starting')
+   await assert.rejects(buildHierarchy(store,'s',{...options,runId:reserved.id}),/section heading/);child.emit('exit',1)
    store.close();store=new ClaudeStore(join(dir,'store'))
    for(let i=0;i<4;i++)assert.equal(scheduleSummary(store,'s','api','fixture',{spawnProcess}),false)
    const paused=await buildHierarchy(store,'s',options);assert.ok(['retry-backoff','failed-batch-paused'].includes(paused.stopped))

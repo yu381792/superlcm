@@ -1,7 +1,7 @@
 {
   "name": "superlcm",
   "displayName": "SuperLcm",
-  "version": "0.5.26",
+  "version": "0.5.27",
   "description": "One local conversation archive for Claude Code, Codex, Hermes, Pi and dsh harness. Keep full originals, write background layered summaries, recall exact sources and continue tasks across tools. Connections default to native host compaction. Claude Code takeover is an explicit optional setting. Open /superlcm:console to manage connections and summary models.",
   "author": {
     "name": "ygc381792"

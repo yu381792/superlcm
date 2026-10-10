@@ -1,4 +1,6 @@
 import { initializeEventCounts } from './event-counts.js'
+import { codexHeadlessRecord, codexHeadlessStatus } from './codex.js'
+import { initializeSummaryRuns, latestSummaryRun, summaryRunHistory, recoverSummaryRuns } from './summary-runs.js'
 import { claudeSidecarTitle } from './conversation-names.js'
 import { validModel } from './runtime.js'
 import { summaryMode } from './mode.js'
@@ -97,8 +99,9 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS takeover_runs(session TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, before INTEGER NOT NULL, after INTEGER NOT NULL);
     `)
     initializeEventCounts(this.db)
+    initializeSummaryRuns(this.db)
     const hostColumns=new Set(this.db.prepare('PRAGMA table_info(host_summary_claims)').all().map(c=>c.name))
-    for(const [column,type] of [['claim_id',"TEXT NOT NULL DEFAULT ''"],['leaf_only','INTEGER NOT NULL DEFAULT 0'],['deadline_ms','INTEGER NOT NULL DEFAULT 0']])if(!hostColumns.has(column))this.db.exec(`ALTER TABLE host_summary_claims ADD COLUMN ${column} ${type}`)
+    for(const [column,type] of [['claim_id',"TEXT NOT NULL DEFAULT ''"],['leaf_only','INTEGER NOT NULL DEFAULT 0'],['deadline_ms','INTEGER NOT NULL DEFAULT 0'],['run_id','TEXT']])if(!hostColumns.has(column))this.db.exec(`ALTER TABLE host_summary_claims ADD COLUMN ${column} ${type}`)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
     if(!new Set(this.db.prepare('PRAGMA table_info(leases)').all().map(c=>c.name)).has('owner'))this.db.exec("ALTER TABLE leases ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
     if(!new Set(this.db.prepare('PRAGMA table_info(takeover_settings)').all().map(c=>c.name)).has('keep_tokens'))this.db.exec('ALTER TABLE takeover_settings ADD COLUMN keep_tokens INTEGER NOT NULL DEFAULT 40000')
@@ -106,7 +109,7 @@ export class ClaudeStore {
     if(!deliveryColumns.has('delivery_route'))this.db.exec("ALTER TABLE deliveries ADD COLUMN delivery_route TEXT NOT NULL DEFAULT 'hook'")
     // Existing alpha.5 indexes have only (session,harness); preserve every row.
     const columns=new Set(this.db.prepare('PRAGMA table_info(session_origins)').all().map(c=>c.name))
-    for (const [column,type] of [['external_id','TEXT'],['display_name','TEXT'],['name_source','TEXT']]) if (!columns.has(column)) this.db.exec(`ALTER TABLE session_origins ADD COLUMN ${column} ${type}`)
+    for (const [column,type] of [['external_id','TEXT'],['display_name','TEXT'],['name_source','TEXT'],['headless','INTEGER NOT NULL DEFAULT 0'],['headless_scanned','INTEGER NOT NULL DEFAULT 0'],['headless_scan_ms','INTEGER NOT NULL DEFAULT 0'],['headless_scan_version','INTEGER NOT NULL DEFAULT 0']]) if (!columns.has(column)) this.db.exec(`ALTER TABLE session_origins ADD COLUMN ${column} ${type}`)
     const sourceColumns=new Set(this.db.prepare('PRAGMA table_info(sources)').all().map(c=>c.name))
     if(!sourceColumns.has('updated_ms')){
       this.db.exec('ALTER TABLE sources ADD COLUMN updated_ms INTEGER')
@@ -141,8 +144,28 @@ export class ClaudeStore {
       for(const x of this.harnessSettings())if(owner[x.mode])this.db.prepare("UPDATE harness_summary_settings SET mode='cli',model=? WHERE harness=?").run(owner[x.mode]===x.harness?x.model:null,x.harness)
       this.db.exec('PRAGMA user_version=1');this.db.exec('COMMIT')
     }
+    this.backfillHeadless()
   }
   close() { this.db.close() }
+  classifyHeadless(session) {
+    const first=this.db.prepare('SELECT start,end FROM events WHERE session=? AND ordinal=0').get(session)
+    if(!first)return codexHeadlessStatus(this.source(session)?.path)
+    if(first.end-first.start>4*1024*1024)return null
+    try{return codexHeadlessRecord(this.exact(session,0))}catch{return null}
+  }
+  backfillHeadless(limit=64) {
+    const rows=this.db.prepare("SELECT o.session FROM session_origins o JOIN sources s ON s.session=o.session WHERE o.harness='codex' AND (o.headless_scanned=0 OR o.headless_scan_version<2) ORDER BY o.headless_scan_ms,o.session LIMIT ?").all(limit)
+    const update=this.db.prepare('UPDATE session_origins SET headless=?,headless_scanned=1,headless_scan_version=2 WHERE session=? AND (headless_scanned=0 OR headless_scan_version<2)')
+    for(const row of rows){
+      const classification=this.classifyHeadless(row.session)
+      if(classification!==null)update.run(classification?1:0,row.session)
+      else this.db.prepare('UPDATE session_origins SET headless_scanned=0,headless_scan_ms=? WHERE session=? AND (headless_scanned=0 OR headless_scan_version<2)').run(Date.now(),row.session)
+    }
+    return rows.length
+  }
+  latestSummaryRun(session) { return latestSummaryRun(this,session) }
+  summaryRunHistory(session) { return summaryRunHistory(this,session) }
+  recoverSummaryRuns(options) { return recoverSummaryRuns(this,options) }
   recordSummaryError(session, error) {
     // Only locally constructed protocol diagnostics are safe to persist. Other
     // exceptions can contain upstream bodies, source text or credentials.
@@ -151,6 +174,8 @@ export class ClaudeStore {
     this.db.prepare('INSERT INTO summary_errors(session,detail) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET detail=excluded.detail').run(session, detail)
   }
   summaryError(session) {
+    const run=latestSummaryRun(this,session)
+    if(run&&['queued','starting','running','done'].includes(run.state))return null
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_errors'").get()) return null
     return this.db.prepare('SELECT detail FROM summary_errors WHERE session=?').get(session)?.detail || null
   }
@@ -345,7 +370,8 @@ export class ClaudeStore {
     if (prior && prior!==harness) throw new Error('Session already belongs to a different harness; choose a new session ID')
     this.db.prepare('INSERT OR IGNORE INTO session_origins(session,harness) VALUES(?,?)').run(session,harness)
   }
-  setMetadata(session,{harness,externalId,name,nameSource='derived'}) {
+  setMetadata(session,{harness,externalId,name,nameSource='derived',headless}) {
+    if(headless===undefined&&harness==='codex'){const classification=this.classifyHeadless(session);if(classification!==null)headless=classification}
     if (typeof externalId!=='string' || !externalId || externalId.length>200) throw new Error('Invalid source conversation ID')
     this.setOrigin(session,harness)
     const old=this.db.prepare('SELECT external_id,display_name,name_source FROM session_origins WHERE session=?').get(session)
@@ -356,6 +382,7 @@ export class ClaudeStore {
     const priority={derived:1,native:2,manual:3}
     const replace=title && (!old.display_name || priority[nameSource]>=priority[old.name_source||'derived'])
     this.db.prepare('UPDATE session_origins SET external_id=COALESCE(external_id,?),display_name=?,name_source=? WHERE session=?').run(externalId,replace ? title : old.display_name,replace ? nameSource : old.name_source,session)
+    if(headless!==undefined){if(typeof headless!=='boolean')throw Error('Invalid headless classification');this.db.prepare('UPDATE session_origins SET headless=?,headless_scanned=1,headless_scan_version=2 WHERE session=?').run(headless?1:0,session)}
   }
   nativeClaudeTitle(session) {
     const sidecar=claudeSidecarTitle(session,this.source(session)?.path)
@@ -372,17 +399,21 @@ export class ClaudeStore {
   }
   metadata(session) {
     if (!this.source(session)) throw new Error('Unknown session')
-    const row=this.db.prepare('SELECT harness,external_id,display_name,name_source FROM session_origins WHERE session=?').get(session)
+    const row=this.db.prepare('SELECT harness,external_id,display_name,name_source,headless FROM session_origins WHERE session=?').get(session)
     const first=row?.display_name&&row.name_source?null:this.db.prepare("SELECT preview FROM events WHERE session=? AND preview<>'' ORDER BY ordinal LIMIT 1").get(session)?.preview
-    return {session,...(legacyDshSource(this.db,session)?{historical_archive:legacyDshSource(this.db,session)}:{}),code:shortCode(session),harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
+    return {session,headless:Boolean(row?.headless),...(legacyDshSource(this.db,session)?{historical_archive:legacyDshSource(this.db,session)}:{}),code:shortCode(session),harness:row?.harness||'legacy',conversation_id:row?.external_id||session,name:row?.display_name||derivedName(first)||session,name_source:row?.name_source||(first?'derived':'id')}
   }
   sources() { return this.listSessions(2147483647,0).sessions }
-  listSessions(limit=20,offset=0,harness) {
-    const where=harness ? " WHERE COALESCE(o.harness,'legacy')=?" : ''
+  listSessions(limit=20,offset=0,harness,view='all') {
+    this.backfillHeadless()
+    if(!['all','attention','headless'].includes(view))throw Error('Invalid conversation view')
+    const scope=view==='headless'?"COALESCE(o.headless,0)=1":view==='attention'?"COALESCE(o.headless,0)=0 AND s.status IN ('summary_error','summary_unconfigured') AND NOT EXISTS(SELECT 1 FROM summary_runs r WHERE r.session=s.session AND r.state IN ('queued','starting','running'))":null
+    const clauses=[...(harness?["COALESCE(o.harness,'legacy')=?"]:[]),...(scope?[scope]:[])]
+    const where=clauses.length?' WHERE '+clauses.join(' AND '):''
     const params=harness ? [harness] : []
     const total=this.db.prepare('SELECT COUNT(*) AS n FROM sources s LEFT JOIN session_origins o ON s.session=o.session'+where).get(...params).n
     const visible = dshVisibleNodes(this.db)
-    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session AND "+visible+") AS summary_count,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session AND "+visible+") AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session AND "+visible+") AS levels,CASE WHEN COALESCE(o.display_name,'')<>'' AND COALESCE(o.name_source,'')<>'' THEN NULL ELSE (SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) END AS first_message FROM page p JOIN sources s ON p.session=s.session LEFT JOIN session_origins o ON s.session=o.session"
+    const select="SELECT s.session,s.kind,s.offset,s.status,s.updated_ms,COALESCE(o.harness,'legacy') AS harness,COALESCE(o.headless,0) AS headless,o.external_id AS conversation_id,o.display_name AS name,o.name_source,(SELECT COUNT(*) FROM nodes n WHERE n.session=s.session AND "+visible+") AS summary_count,COALESCE((SELECT records FROM session_event_counts e WHERE e.session=s.session),0) AS records,(SELECT COALESCE(MAX(n.last)+1,0) FROM nodes n WHERE n.session=s.session AND "+visible+") AS summarized_to,(SELECT COALESCE(MAX(n.level)+1,0) FROM nodes n WHERE n.session=s.session AND "+visible+") AS levels,CASE WHEN COALESCE(o.display_name,'')<>'' AND COALESCE(o.name_source,'')<>'' THEN NULL ELSE (SELECT substr(e.preview,1,160) FROM events e WHERE e.session=s.session AND e.preview<>'' ORDER BY e.ordinal LIMIT 1) END AS first_message FROM page p JOIN sources s ON p.session=s.session LEFT JOIN session_origins o ON s.session=o.session"
     const page="WITH page AS MATERIALIZED (SELECT s.session FROM sources s LEFT JOIN session_origins o ON s.session=o.session"+where+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session LIMIT ? OFFSET ?) '
     const sessions=this.db.prepare(page+select+' ORDER BY s.updated_ms IS NULL,s.updated_ms DESC,s.session').all(...params,limit,offset).map(row=>{const setting=this.effectiveSetting(row.session);return {...row,...(row.harness==='dsh'?dshCoverage(this,row.session,row.records):{}),code:shortCode(row.session),summary_mode:setting.scope==='compaction-plugin'?'compaction-plugin':setting.mode,summary_model:setting.model,conversation_id:row.conversation_id||row.session,name:row.name||derivedName(row.first_message)||row.session,name_source:row.name_source||(row.first_message?'derived':'id')}})
     return {sessions,total,next_offset:offset+sessions.length<total ? offset+sessions.length : null}

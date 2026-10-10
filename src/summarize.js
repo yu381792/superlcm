@@ -1,6 +1,6 @@
 import {legacyDshSource} from './dsh-evidence.js'
 import { profileKey, readSummaryProfile, updateSummaryProfile, visibleOutputRoom, adaptiveSummaryTask, fitSummary, isReducedSummary, reducedNotice } from './summary-generation.js'
-import { readOpenAICompletion, summaryFailure, STREAM_COMPLETE } from './summary-response.js'
+import { readOpenAICompletion, readSummaryJson, readSummaryText, summaryFailure, STREAM_COMPLETE } from './summary-response.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { detectSummaryLanguage, userTextFromRecord, excerptUserTexts } from './summary-language.js'
 import { summaryEvents, recentUserTexts } from './summary-source.js'
@@ -10,6 +10,7 @@ import { normalizeApiEndpoint, loopbackEndpoint, EFFORTS } from './api-endpoint.
 import { MAX_SUMMARY_INPUT } from './runtime.js'
 import { SUMMARY_POLICY_VERSION, SUMMARY_SYSTEM, summaryInstructions, checkedSummary, summaryPromptParts, joinSummaryPrompt, withSummaryRetry } from './summary-policy.js'
 import { repairSummaryPromptParts } from './summary-fitting.js'
+import {upstreamSummaryCause,classifySummaryError} from './summary-errors.js'
 import { estimateSummaryTokens,takeTokenPrefix,takeTokenSuffix } from './summary-tokens.js'
 const hash = value => createHash('sha256').update(value).digest('hex')
 const head = (text, chars) => String(text || '').replace(/\s+/g,' ').slice(0,chars)
@@ -20,15 +21,15 @@ export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL,
   if (effort!==null && !EFFORTS.includes(effort)) throw new Error('Unknown reasoning effort')
   const openai=apiProvider==='openai', key=profileKey(endpoint,model,effort), profile=readSummaryProfile(key,profileStore)
   const task=adaptiveSummaryTask({requireHeading:true,language:detectSummaryLanguage(excerptUserTexts(text)),...summaryTask},profile), visible=visibleOutputRoom(text)
-  const signal=outerSignal?AbortSignal.any([AbortSignal.timeout(timeoutMs),outerSignal]):AbortSignal.timeout(timeoutMs)
+  const requestSignal=()=>outerSignal?AbortSignal.any([AbortSignal.timeout(timeoutMs),outerSignal]):AbortSignal.timeout(timeoutMs)
   let qualityRetried=false
   let reasoningRoom=Math.max(THINKING[effort]||0,profile.reasoning_room), retried=false, completionParam='max_tokens'
   const headers=openai?{'content-type':'application/json',...(apiKey?{authorization:`Bearer ${apiKey}`}:{})}:{'content-type':'application/json',...(apiKey?{'x-api-key':apiKey}:{}),'anthropic-version':'2023-06-01'}
-  const detail=async r=>{try{return (await r.text()).replace(/\s+/g,' ').slice(0,300)}catch{return ''}}
+  const detail=async(r,signal)=>{try{return (await readSummaryText(r,signal)).replace(/\s+/g,' ').slice(0,300)}catch{throw summaryFailure(outerSignal?.aborted?'Summary request cancelled':signal.aborted?'Summary request timed out':'Summary error response could not be read within the size limit',model,null,{},outerSignal?.aborted?'cancelled':signal.aborted?'timeout':'response_invalid')}}
   const generate=async initialParts=>{
     let parts=initialParts
     for (;;) {
-      signal.throwIfAborted()
+      outerSignal?.throwIfAborted()
       if(shouldContinue&&!shouldContinue())throw Error('Summary setting changed; additional generation cancelled')
       const cap=Math.min(49152,visible+reasoningRoom)
       const content=openai?joinSummaryPrompt(parts):[
@@ -39,33 +40,35 @@ export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL,
       if(openai&&effort)body.reasoning_effort=effort
       if(!openai&&THINKING[effort])body.thinking={type:'enabled',budget_tokens:THINKING[effort]}
       const post=async()=>{
+        const signal=requestSignal()
         signal.throwIfAborted()
         if(shouldContinue&&!shouldContinue())throw Error('Summary setting changed; additional generation cancelled')
-        try{return await fetchImpl(endpoint,{method:'POST',headers,body:JSON.stringify(body),signal})}
-        catch{throw summaryFailure(signal.aborted?'Summary request timed out':'Summary request transport failed',model,null)}
+        try{return {response:await fetchImpl(endpoint,{method:'POST',headers,body:JSON.stringify(body),signal}),signal}}
+        catch{throw summaryFailure(outerSignal?.aborted?'Summary request cancelled':signal.aborted?'Summary request timed out':'Summary request transport failed',model,null,{},outerSignal?.aborted?'cancelled':signal.aborted?'timeout':'transport')}
       }
-      let response=await post()
+      let {response,signal}=await post()
       if(!response.ok&&openai&&response.status===400){
-        const why=await detail(response)
-        if(completionParam!=='max_tokens'||!/max_completion_tokens|max_tokens/.test(why))throw summaryFailure('Summarization HTTP 400: request rejected; check model and endpoint configuration',model,null)
-        completionParam='max_completion_tokens';body.max_completion_tokens=body.max_tokens;delete body.max_tokens;response=await post()
+        const why=await detail(response,signal)
+        if(completionParam!=='max_tokens'||!/max_completion_tokens|max_tokens/.test(why))throw summaryFailure('Summarization HTTP 400: request rejected; check model and endpoint configuration',model,null,{},'response_invalid')
+        completionParam='max_completion_tokens';body.max_completion_tokens=body.max_tokens;delete body.max_tokens;({response,signal}=await post())
       }
-      if(!response.ok)throw summaryFailure(`Summarization HTTP ${Number.isSafeInteger(response.status)?response.status:0}: request failed; check endpoint, credential and model configuration`,model,null)
+      if(!response.ok){void response.body?.cancel?.().catch(()=>{});throw summaryFailure(`Summarization HTTP ${Number.isSafeInteger(response.status)?response.status:0}: request failed; check endpoint, credential and model configuration`,model,null,{},[401,403].includes(response.status)?'auth':response.status===429?'rate_limit':response.status===402?'quota':'upstream')}
       let result
-      try { result=openai?await readOpenAICompletion(response,model):await response.json() }
-      catch(error){if(error.summaryDiagnostic)throw error;throw summaryFailure('Malformed summary response; original content retained',model,null)}
+      try { result=openai?await readOpenAICompletion(response,model,{signal}):await readSummaryJson(response,signal);signal.throwIfAborted() }
+      catch(error){if(signal.aborted)throw summaryFailure(outerSignal?.aborted?'Summary request cancelled':'Summary request timed out',model,null,{},outerSignal?.aborted?'cancelled':'timeout');if(error.summaryDiagnostic)throw error;throw summaryFailure('Malformed summary response; original content retained',model,null,{},'response_invalid')}
       signal.throwIfAborted()
       if(!result||typeof result!=='object')throw summaryFailure('Malformed summary response; original content retained',model,null)
+      if(result.error){const cause=upstreamSummaryCause(result);throw summaryFailure('Summary response reported an '+cause.message,model,null,{},cause.kind)}
       const choice=result.choices?.find(c=>c.index===0)??result.choices?.[0]
       const output=openai?choice?.message?.content:result.content?.filter(x=>x.type==='text').map(x=>x.text).join('\n')
       const summary=typeof output==='string'?output:Array.isArray(output)?output.filter(x=>x?.type==='text').map(x=>x.text).join('\n'):''
       const finishReason=openai?choice?.finish_reason:result.stop_reason
-      const number=n=>Number.isSafeInteger(n)&&n>=0?Math.min(10000000,n):0
-      const evidence={reasoning_tokens:number(result.usage?.completion_tokens_details?.reasoning_tokens),completion_tokens:number(result.usage?.completion_tokens)}
+      const number=n=>Number.isSafeInteger(n)&&n>=0?Math.min(10000000,n):undefined
+      const evidence={reasoning_tokens:number(result.usage?.completion_tokens_details?.reasoning_tokens),completion_tokens:number(result.usage?.completion_tokens??result.usage?.output_tokens)}
       const reasoningSeen=openai&&(evidence.reasoning_tokens>0||result.reasoningSeen||choice?.message?.reasoning_content||choice?.message?.reasoning)
       const incomplete=['length','max_tokens','max_output_tokens'].includes(finishReason)
       if(reasoningSeen) {
-        const room=Math.min(32768,Math.max(reasoningRoom,evidence.reasoning_tokens+2048,incomplete?Math.max(8192,cap*2):2048))
+        const room=Math.min(32768,Math.max(reasoningRoom,(evidence.reasoning_tokens||0)+2048,incomplete?Math.max(8192,cap*2):2048))
         updateSummaryProfile(key,{reasoning_room:room},profileStore)
         if(incomplete&&!retried&&visible+room>cap){retried=true;reasoningRoom=room;continue}
         reasoningRoom=room
@@ -76,7 +79,7 @@ export async function summarizeWithModel(text, { model, apiKey, baseURL, apiURL,
         return checkedSummary(summary,{...task,finishReason,maxChars:null})
       }catch(error){
         if(error.summaryQuality&&!qualityRetried){qualityRetried=true;parts=withSummaryRetry(initialParts,'The previous response failed the summary language or heading check. Follow the summary job above; produce a factual summary with the required language and first heading.');continue}
-        throw summaryFailure(error.message,model,finishReason,evidence)
+        throw summaryFailure(error.message,model,finishReason,evidence,classifySummaryError(error))
       }
     }
   }
@@ -204,31 +207,43 @@ export function summarySettingsRevision(store, session, env = process.env) {
   const setting = store.effectiveSetting(session, env)
   return hash(JSON.stringify([setting,store.tuning(),store.integrationRevision(setting.harness), setting.mode === 'api' ? store.apiCredential(session, env) : null]))
 }
-export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, fetchImpl, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000, retryFailed = false, leafOnly = false, maxPieces = Infinity, signal } = {}) {
+export async function buildHierarchy(store, session, { model, apiKey, baseURL, apiURL, apiProvider, effort = null, batchSize = segmentMessages(), targetChars, targetTokens, fanout = store.tuning().fanout, summarize = summarizeWithModel, fetchImpl, shouldContinue = null, leaseDurationMs = 330000, leaseHeartbeatMs = 30000, retryFailed = false, leafOnly = false, maxPieces = Infinity, signal, runId = null } = {}) {
   if (!model || (apiKey == null && summarize === summarizeWithModel)) throw new Error('Explicit summarizer model and API key required')
   if (!Number.isSafeInteger(batchSize) || batchSize < 2 || batchSize > 10000) throw new Error('batchSize must be 2–10000')
   if (!Number.isSafeInteger(fanout) || fanout < 2 || fanout > 8) throw new Error('fanout must be 2–8')
   if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 20 || !Number.isSafeInteger(leaseHeartbeatMs) || leaseHeartbeatMs < 1 || leaseHeartbeatMs >= leaseDurationMs) throw new Error('Invalid summary lease timing')
   const owner = `worker:${process.pid}:${randomUUID()}`
+  const leaseCancellation=new AbortController()
+  signal=signal?AbortSignal.any([signal,leaseCancellation.signal]):leaseCancellation.signal
   const revision = summarySettingsRevision(store, session)
-  const mayContinue = shouldContinue || (() => summarySettingsRevision(store, session) === revision)
-  if (!store.lease(session, leaseDurationMs, owner)) return { session, busy:true }
+  const runs=await import('./summary-runs.js')
+  if(!runId){
+    const queued=runs.enqueueSummaryRun(store,session,{origin:leafOnly?'catchup':'manual',route:'inline',model,revision,planned:summaryEstimate(store,session,{batchSize,targetChars,targetTokens,fanout}).calls})
+    if(!queued.added)return {session,busy:true}
+    runId=queued.run.id
+    if(!runs.reserveSummaryRun(store,{id:runId,limit:runs.summaryConcurrency()})){runs.finishSummaryRun(store,runId,{state:'stopped',reason:'capacity'});return {session,busy:true,stopped:'capacity'}}
+  }
+  if(!runs.bindSummaryRun(store,runId,{owner,pid:process.pid}))return {session,busy:true,stopped:'run-replaced'}
+  const mayContinue=()=>runs.summaryRunOwns(store,runId,owner)&&(shouldContinue?shouldContinue():summarySettingsRevision(store,session)===revision)
+  if (!store.lease(session, leaseDurationMs, owner)){runs.finishSummaryRun(store,runId,{owner,state:'stopped',reason:'busy'});return { session, busy:true }}
   let created = 0
-  let lostLease = false, activeWork = null
+  let lostLease = false, activeWork = null, outcome='done',stopReason=null,failure=null
   const checkLease = () => { signal?.throwIfAborted(); if (lostLease || !store.ownsLease(session, owner)) throw new Error('Summary writer lost its lease; result not saved') }
   const timer = setInterval(() => {
-    try { if (!store.renewLease(session, leaseDurationMs, owner)) lostLease = true }
+    try { if (!store.renewLease(session, leaseDurationMs, owner)||!mayContinue()) lostLease = true;else runs.progressSummaryRun(store,runId,owner,{created}) }
     catch { lostLease = true }
+    if(lostLease)leaseCancellation.abort(Object.assign(Error('Summary writer lost its lease or run ownership'),{summaryKind:'cancelled'}))
   }, leaseHeartbeatMs)
   timer.unref()
   try {
     for (let work; (work = summaryWork(store, session, { batchSize, targetChars,targetTokens, fanout,leafOnly })); ) {
-      if (created>=maxPieces) return {session,created,stopped:'piece-limit'}
-      if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
+      if (created>=maxPieces){stopReason='piece-limit';return {session,created,stopped:stopReason}}
+      if (!mayContinue()){outcome='stopped';stopReason='settings-changed';return { session, created, stopped:stopReason }}
       checkLease()
       const retry=store.summaryRetry(session,work.batch_id,revision)
-      if(retry&&!retryFailed)return {session,created,stopped:retry.attempts>=3?'failed-batch-paused':'retry-backoff',retryAt:retry.until_ms,failedAttempts:retry.attempts}
+      if(retry&&!retryFailed){outcome='stopped';stopReason=retry.attempts>=3?'failed-batch-paused':'retry-backoff';return {session,created,stopped:stopReason,retryAt:retry.until_ms,failedAttempts:retry.attempts}}
       activeWork=work
+      runs.progressSummaryRun(store,runId,owner,{first:work.first,last:work.last,created})
       // Fail closed if the on-disk original changed after indexing or during model execution.
       const verify = () => { if (work.level === 0) for (let i = work.first; i <= work.last; i++) store.exact(session, i) }
       verify()
@@ -243,17 +258,19 @@ export async function buildHierarchy(store, session, { model, apiKey, baseURL, a
       summary=checkedSummary(summary,{...work,maxChars:6000})
       if(work.reducedSources&&!isReducedSummary(summary))summary=checkedSummary(summary.slice(0,5500)+'\n\n'+reducedNotice(work))
       checkLease()
-      if (!mayContinue()) return { session, created, stopped: 'settings-changed' }
+      if (!mayContinue()){outcome='stopped';stopReason='settings-changed';return { session, created, stopped:stopReason }}
       verify()
       store.addNode({ session, id: work.batch_id, level: work.level, first: work.first, last: work.last, children: work.children, summary, digest: work.digest, model,sourceRecords:work.source_records }, { leaseOwner: owner,validate:mayContinue })
       if (!store.renewLease(session, leaseDurationMs, owner)) throw new Error('Summary writer lost its lease')
       store.completeSummaryBatch(session,work.batch_id,revision)
       activeWork=null
       created++
+      runs.progressSummaryRun(store,runId,owner,{created})
     }
     return { session, created, overview: store.overview(session) }
   } catch(error) {
+    failure=error;outcome=signal?.aborted||!mayContinue()?'stopped':'failed';stopReason=signal?.aborted?'cancelled':lostLease?'lease-lost':null
     if(activeWork&&!signal?.aborted&&!lostLease&&store.ownsLease(session,owner)&&mayContinue())store.failSummaryBatch(session,activeWork.batch_id,revision)
     throw error
-  } finally { clearInterval(timer); store.release(session, owner) }
+  } finally { clearInterval(timer);runs.finishSummaryRun(store,runId,{owner,state:outcome,reason:stopReason,error:failure});store.release(session, owner) }
 }

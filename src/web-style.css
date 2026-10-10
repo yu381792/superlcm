@@ -369,3 +369,8 @@ th { font-weight: 500; color: var(--ink3); font-size: 12px }
 .tk-where { display: inline-flex; gap: 8px; font-size: 12px }
 .tk-where .ok { color: var(--good) }
 .tk-where .no { color: var(--warn) }
+.summary-pill { display:inline-block; border-radius:10px; padding:2px 7px; font-size:11px; background:var(--bg2); color:var(--ink2) }
+.summary-pill.running,.summary-pill.starting,.summary-pill.queued { color:var(--ink); font-weight:600 }
+.summary-pill.failed,.summary-pill.lost,.summary-pill.unconfigured { color:var(--red,#b54747) }
+.summary-status { line-height:1.7 }
+.summary-cause { padding:10px 12px 4px; color:var(--ink2); font-size:12px; font-weight:600 }

@@ -28,7 +28,7 @@ test('DSH selected coverage UI uses effective counts, exact bands and plugin own
  const d={coverage:'selected-records',records:11,raw_records:5,summarized_records:3,unsummarized_records:2,summarized_to:8,summary_count:2,bands:[node,leaf],covered_ranges:node.source_ranges,unsummarized_ranges:[{from:8,to:8},{from:10,to:10}],latest_tail:{from:8,to:10,records:2},persistent_records:2,checkpoint_records:1,non_message_records:3,setting:{mode:'off',scope:'compaction-plugin'},backends:[]}
  const elements=new Map(['#rows','#listCount','#more'].map(key=>[key,{querySelectorAll:()=>[]}]))
  const context={state:{detail:d,open:new Set(),children:new Map(),rows:[{...d,session:'dsh-fixture',harness:'dsh',name:'DSH task'}],query:'',total:1,offset:null},t:(key,p={})=>key.replace(/\{([^}]+)\}/g,(_,k)=>p[k]),fmt:String,esc:String,writerLabel:()=> '关闭',mark:()=>'',ago:()=>'',delButton:()=>'',select:()=>{},$:key=>elements.get(key)}
- const sections=[code.slice(code.indexOf('const pct = (x, total)'),code.indexOf('// One clear action')),code.slice(code.indexOf('function generateButton('),code.indexOf('function openGenerate(')),code.slice(code.indexOf('function nodeHtml('),code.indexOf('async function ensureChildren(')),code.slice(code.indexOf('function renderList('),code.indexOf("$('#more').onclick"))]
+ const sections=[code.slice(code.indexOf('const SUMMARY_LABELS='),code.indexOf('\nasync function api(')),code.slice(code.indexOf('const pct = (x, total)'),code.indexOf('// One clear action')),code.slice(code.indexOf('function generateButton('),code.indexOf('function openGenerate(')),code.slice(code.indexOf('function nodeHtml('),code.indexOf('async function ensureChildren(')),code.slice(code.indexOf('function renderList('),code.indexOf("$('#more').onclick"))]
  runInNewContext(sections.join('\n')+'\nthis.stripHtml=stripHtml;this.nodeHtml=nodeHtml;this.generateButton=generateButton;this.renderList=renderList',context)
  const strip=context.stripHtml(d)
  assert.match(strip,/SuperLcm 插件生成/);assert.doesNotMatch(strip,/摘要生成：关闭/)
@@ -95,7 +95,9 @@ test('authenticated Web workflow detects, indexes, pages nodes and gates setup',
   assert.equal((await post('/api/tuning',{target_chars:24000,batch_size:64,fanout:6})).status,200);assert.equal(store.tuning().fanout,6)
   assert.equal((await post('/api/tuning',{target_chars:7,batch_size:64,fanout:6})).status,400)
   assert.equal((await post('/api/summarize',{session:result.session,backend:'api'})).status,400)
-  assert.equal((await post('/api/summarize',{session:result.session,backend:'cli'}).then(r=>r.json())).started,true);assert.deepEqual(spawned[0][1].slice(1),['summarize',result.session,'--backend','cli'])
+  const scheduled=await post('/api/summarize',{session:result.session,backend:'cli'}).then(r=>r.json())
+  assert.equal(scheduled.started,false);assert.equal(scheduled.queued,true);assert.equal(scheduled.summary_health.state,'starting');assert.equal(scheduled.summary_health.active,true)
+  assert.equal(spawned.length,1);assert.deepEqual(spawned[0][1].slice(1),['summarize',result.session,'--run',scheduled.run_id,'--backend','cli'])
   assert.equal((await fetch(base+'/api/conversation?session='+result.session,{headers}).then(r=>r.json())).backends.includes('api'),false)
   {const r=await post('/api/settings',{scope:'global',mode:'api',model:'gpt-test',api_provider:'openai',api_url:'https://api.example.test/v1/chat/completions',api_key:'k-test-12345'});assert.equal(r.status,200,await r.text())}
   assert.equal((await post('/api/settings',{scope:'global',mode:'agent'})).status,200)
@@ -106,8 +108,12 @@ test('authenticated Web workflow detects, indexes, pages nodes and gates setup',
    const r=await post('/api/settings',same).then(r=>r.json());assert.equal(r.api_key_configured,true,'same endpoint reuses the default key');assert.equal(store.harnessSetting('codex').model,'gpt-tool')
    assert.equal((await post('/api/settings',{...same,api_url:'https://other.example.test/v1/chat/completions'})).status,400,'a saved tool key cannot follow a different endpoint')
    assert.equal((await post('/api/settings',{scope:'harness',harness:'codex',mode:'inherit'})).status,200)}
+  // Settle the fake CLI attempt before requesting the distinct API pass.
+  store.db.prepare("UPDATE summary_runs SET heartbeat_ms=0 WHERE id=?").run(scheduled.run_id);store.recoverSummaryRuns()
   store.release(result.session)
-  assert.equal((await post('/api/summarize',{session:result.session,backend:'api'}).then(r=>r.json())).started,true);assert.deepEqual(spawned.at(-1)[1].slice(-2),['--backend','api'])
+  const apiScheduled=await post('/api/summarize',{session:result.session,backend:'api'}).then(r=>r.json())
+  assert.equal(apiScheduled.started,false);assert.equal(apiScheduled.queued,true);assert.equal(apiScheduled.summary_health.state,'starting');assert.equal(spawned.length,2)
+  assert.deepEqual(spawned.at(-1)[1].slice(1),['summarize',result.session,'--run',apiScheduled.run_id,'--backend','api'])
   assert.equal((await post('/api/setup-apply',{harness:'codex',revision:'fake'})).status,400)
   assert.equal((await fetch(base+'/api/models?backend=cli',{headers}).then(r=>r.json())).models[0].id,'runtime-only')
   assert.equal((await post('/api/index-local',{harness:'codex',key:'not-a-local-selection'})).status,400)

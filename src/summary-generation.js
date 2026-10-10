@@ -13,8 +13,14 @@ export function readSummaryProfile(key, store) {
 }
 export function updateSummaryProfile(key, change, store) {
   const old = readSummaryProfile(key, store)
-  const next = { reasoning_room: Math.max(old.reasoning_room, bounded(change.reasoning_room, 32768)), overshoot: Math.max(old.overshoot, Math.min(8, Number(change.overshoot) || 1)) }
-  if (store) store.db.prepare('INSERT INTO summary_model_profiles VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET reasoning_room=max(reasoning_room,excluded.reasoning_room),overshoot=max(overshoot,excluded.overshoot)').run(key, next.reasoning_room, next.overshoot)
+  const sample = Number.isFinite(change.overshoot) && change.overshoot > 0 ? Math.max(1, Math.min(8, change.overshoot)) : null
+  let next = { reasoning_room: Math.max(old.reasoning_room, bounded(change.reasoning_room, 32768)), overshoot: sample === null ? old.overshoot : sample >= old.overshoot ? sample : old.overshoot * 0.85 + sample * 0.15 }
+  // Compute decay against the persisted value atomically, so concurrent models
+  // cannot overwrite another worker's newer observation with a stale read.
+  if (store) {
+    store.db.prepare('INSERT INTO summary_model_profiles VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET reasoning_room=max(reasoning_room,excluded.reasoning_room),overshoot=CASE WHEN ? IS NULL THEN overshoot WHEN ?>=overshoot THEN ? ELSE overshoot*0.85+?*0.15 END').run(key, next.reasoning_room, sample ?? old.overshoot, sample, sample, sample, sample)
+    next = readSummaryProfile(key, store)
+  }
   if (profiles.size >= 256 && !profiles.has(key)) profiles.delete(profiles.keys().next().value)
   profiles.set(key, next)
   return next
@@ -25,6 +31,6 @@ export function visibleOutputRoom(text) {
   return Math.max(SUMMARY_OUTPUT_TOKENS, Math.min(9000, Math.ceil(estimateSummaryTokens(text) / Math.max(1, text.length) * Math.min(6000, text.length))))
 }
 export function adaptiveSummaryTask(task = {}, profile = {}) {
-  const ratio = Math.max(1, profile.overshoot || 1)
-  return { ...task, maxChars: Math.max(512, Math.floor(SUMMARY_MAX_CHARS / ratio)), targetTokens: Math.max(256, Math.floor((task.targetTokens || 1200) / ratio)) }
+  const ratio = Math.max(1, Math.min(8, Number(profile.overshoot) || 1))
+  return { ...task, maxChars: SUMMARY_MAX_CHARS, requestChars: Math.max(512, Math.floor(SUMMARY_MAX_CHARS / ratio)), targetTokens: Math.max(256, Math.floor((task.targetTokens || 1200) / ratio)) }
 }

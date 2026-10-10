@@ -10,7 +10,7 @@ SuperLcm gives **Claude Code, Codex, Hermes, Pi and dsh harness** a shared conve
 
 From 0.5.11, background writers and Claude/DSH compaction share rules for chronology, decisions and rationale, authorization scope, failed tools and source recall. Existing summaries are retained, not automatically regenerated. See [summary semantics and validation limits](docs/SUMMARY-SEMANTICS-0.5.11.md).
 
-Claude Code long autonomous turns and shared prompt caching were revised in 0.5.26. See [changes and verification limits](docs/LONG-TURN-RELIABILITY-0.5.26.md).
+Summary workers, retry progress and error diagnostics were revised in 0.5.27. See [changes and verification limits](docs/SUMMARY-JOBS-0.5.27.md).
 
 ## Five harnesses, one archive
 

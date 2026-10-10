@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { existsSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
@@ -8,6 +8,34 @@ const within = (root, file) => {
   return r==='' || (r!=='..' && !r.startsWith(`..${sep}`) && !isAbsolute(r))
 }
 export const codexHome = (env=process.env) => resolve(env.CODEX_HOME || join(homedir(),'.codex'))
+export function codexHeadlessRecord(raw) {
+  try {
+    const record=JSON.parse(raw),meta=record.payload||record
+    if(record.type!=='session_meta')return null
+    const source=meta.source
+    return meta.originator==='codex_exec'||source==='exec'||source==='subagent'||source==='sub_agent'||!!(source&&typeof source==='object'&&('subagent' in source||'sub_agent' in source))
+  }catch{return null}
+}
+export const codexHeadless=file=>codexHeadlessStatus(file)===true
+export function codexHeadlessStatus(file) {
+  if(typeof file!=='string')return null
+  let fd
+  try {
+    fd=openSync(file,'r')
+    const chunks=[],bytes=Buffer.alloc(16384),limit=4*1024*1024
+    let offset=0,complete=false
+    while(offset<limit){
+      const n=readSync(fd,bytes,0,Math.min(bytes.length,limit-offset),offset)
+      if(!n){complete=true;break}
+      const end=bytes.subarray(0,n).indexOf(10)
+      chunks.push(Buffer.from(bytes.subarray(0,end<0?n:end)))
+      offset+=n
+      if(end>=0){complete=true;break}
+    }
+    if(!complete)return null
+    return codexHeadlessRecord(Buffer.concat(chunks).toString('utf8'))
+  }catch{return null}finally{if(fd!==undefined)closeSync(fd)}
+}
 
 // Codex explicitly supplies transcript_path. Never search all files or accept a
 // path outside its local session directory (or the session's trusted .codex dir).
