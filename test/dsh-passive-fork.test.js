@@ -17,6 +17,30 @@ function idleFixture(stream){
 }
 const flush=async()=>{for(let i=0;i<30;i++)await new Promise(resolve=>setImmediate(resolve))}
 
+test('passive branches merge immutable blocks from previous rounds in the same response',async()=>{
+ const events=[],messages=[],nodes=new Map();let calls=0,merged=0
+ const session={eventAt:seq=>events[seq],deriveEventMessage:event=>messages[event.seq]}
+ const db={nodes:()=>[...nodes.values()],sourceRows:()=>events.map(event=>({seq:event.seq,event:JSON.stringify(event),text:'Preserve synthetic decisions.',tokens:1000})),saveTree:(_id,tree)=>{for(const n of tree){if(nodes.has(n.id))assert.deepEqual(n.summary,nodes.get(n.id).summary);else if(n.kind==='condensed'&&n.children.some(id=>nodes.has(id)))merged++;nodes.set(n.id,n)}}}
+ const ctx={sessions:new Map([['synthetic',session]]),tokenMeter:{measure:()=>({totalTokens:75000})},llm:{resolveModelInfo:async()=>({context:{contextWindow:100000},defaultMaxTokens:4096}),stream:options=>(async function*(){
+  calls++
+  const prompt=options.messages.at(-1).content.map(b=>b.text||'').join(''),plan=JSON.parse(prompt.split('\n').find(x=>x.startsWith('[{"index":')))
+  yield {type:'text-delta',text:JSON.stringify({blocks:plan.filter(n=>n.frozenSummary===undefined).map(n=>({index:n.index,summary:'# Decisions\nPreserve synthetic decisions and original references.'}))})}
+  yield {type:'finish',reason:{kind:'stop'}}
+ })()}}
+ const service={ctx,db,file:'/synthetic',forkRequests:new Map()},doc={revision:'r',settings:{compressionRatio:.8,chunkTokens:2000,fanout:4,forkModelOverride:false}}
+ for(let round=0;round<24;round++){
+  for(let i=0;i<4;i++){const seq=events.length,content=[{type:'text',text:'Synthetic decision '+seq}];events.push({seq,type:'user/message',data:{content}});messages.push({id:'message-'+seq,role:'user',content})}
+  service.forkRequests.set('synthetic',{provider:'offline',model:'offline',messages:structuredClone(messages),maxTokens:4096})
+  assert.equal(await summarizeArchiveFork(service,'synthetic',doc,'owner',new AbortController().signal),'complete')
+ }
+ assert.equal(calls,24,'cross-round merges must not start extra model requests')
+ assert.ok(merged>0,'later responses must actually merge older blocks')
+ const stable=[...nodes.values()].filter(n=>n.kind!=='overview'),leaves=stable.filter(n=>!n.children.length),owned=new Set(stable.flatMap(n=>n.children))
+ assert.equal(leaves.length,48)
+ assert.deepEqual(stable.filter(n=>!owned.has(n.id)).flatMap(n=>n.sources).sort((a,b)=>a-b),events.map(e=>e.seq))
+ assert.ok(Math.max(...stable.map(n=>n.level))<=3)
+})
+
 test('passive DSH summary keeps running while it produces meaningful output',async t=>{
  const gates=[],f=idleFixture(options=>(async function*(){
   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join(''),plan=JSON.parse(prompt.split('\n').find(x=>x.startsWith('[{"index":')))

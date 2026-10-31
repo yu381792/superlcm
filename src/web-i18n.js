@@ -4,6 +4,10 @@ const LANGS = {
   // Keys that need context to disambiguate; Chinese shows the short form.
   zh: { '关闭（摘要方式）': '关闭' },
   en: {
+    '总览': 'Overview',
+    '旧总览': 'Past overview',
+    '旧摘要块': 'Legacy block',
+    '历史摘要': 'Past summary',
     "原文搜索尚未完成，请缩小到一个对话后继续检索。": "Original search is incomplete. Narrow it to one conversation to continue.",
     "原文搜索尚未完成，请继续加载。": "Original search is incomplete. Load more to continue.",
     "部分原文暂时无法读取。": "Some original records could not be read.",

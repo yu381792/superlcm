@@ -69,6 +69,11 @@ test('DSH selected coverage UI uses effective counts, exact bands and plugin own
  assert.match(context.generateButton('生成摘要…'),/SuperLcm 插件生成/)
  assert.doesNotMatch(context.generateButton('生成摘要…'),/配置自定义 API|没有可用/)
  context.renderList();assert.match(elements.get('#rows').innerHTML,/width:60%/)
+ const overview={...node,id:'rolling-overview',level:22,overview:true}
+ const corrected=context.stripHtml({...d,bands:[overview,node,leaf]})
+ assert.match(corrected,/总览/);assert.doesNotMatch(corrected,/第 23 层/,'rolling overview versions do not create granularity lanes')
+ assert.match(context.nodeHtml(overview),/总览/)
+ assert.match(context.nodeHtml({...overview,overview:false,historical_overview:true}),/旧总览/)
 })
 function transcript(env,h,id,name='Conversation'){const folder=configFiles(h,env).transcripts;mkdirSync(folder,{recursive:true});const path=join(folder,id+'.jsonl');const header=h==='codex'?{type:'session_meta',payload:{id}}:{sessionId:id,type:'custom-title',customTitle:name};writeFileSync(path,[header,...Array.from({length:8},(_,i)=>({role:i%2?'assistant':'user',content:name+' decision '+i,sessionId:id}))].map(x=>JSON.stringify(x)).join('\n')+'\n');return path}
 test('real CLI IDs survive policy and workers, dangerous model strings fail',fixture(({store})=>{for(const model of ['opus[1m]','claude-fable-5-1[1m]','tianyi/glm-5.3-oc','opencode-go/deepseek-v4.1-flash']){assert.equal(validModel(model),true);store.setGlobalSetting('cli',model);assert.equal(store.globalSetting().model,model)}for(const model of ['--flag','$(whoami)','a b','a;cmd','a\nfoo'])assert.equal(validModel(model),false)}))

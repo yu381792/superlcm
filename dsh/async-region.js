@@ -219,7 +219,8 @@ export function commitAsyncRegion(engine, agent, summarized) {
       model: summarized.model,
       ...(summarized.preparedBatchCount === undefined ? {} : { preparedBatchCount: summarized.preparedBatchCount }),
       ...(summarized.preparedTree === undefined ? {} : { preparedTree: summarized.preparedTree,
-        summaryTreeKind: summarized.summaryTreeKind, summaryTreeDepth: summarized.summaryTreeDepth }),
+        summaryTreeKind: summarized.summaryTreeKind, summaryTreeDepth: summarized.summaryTreeDepth,
+        ...(summarized.summaryTreeFormat?{summaryTreeFormat:summarized.summaryTreeFormat}:{}) }),
       ...(summarized.maxTokens === undefined ? {} : { maxTokens: summarized.maxTokens }),
       ...(summarized.usage === undefined ? {} : { usage: summarized.usage }),
     })

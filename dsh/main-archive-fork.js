@@ -8,7 +8,7 @@ import {dshSessionKey} from '../src/dsh.js'
 import {forkHash} from './fork-summary.js'
 import {markerFromSummary} from './marker.js'
 import {isDeepStrictEqual} from 'node:util'
-import {semanticLevel,semanticKind} from './tree-semantics.js'
+import {semanticLevel,semanticKind,originalNodeSources} from './tree-semantics.js'
 import {waitForRetry,failureKind} from './fork-retry.js'
 export class MainArchiveFork {
   constructor(ctx,native,home,warn,{report=()=>{}}={}){
@@ -35,7 +35,7 @@ export class MainArchiveFork {
             if(!key.startsWith('native:'))throw Error('DSH 摘要祖先缺失')
             const nativeId=key.slice(7),old=native.getNode(id,nativeId)
             if(!old)throw Error('DSH 摘要祖先缺失')
-            node={id:key,nativeId,kind:semanticKind(native,id,nativeId),level:semanticLevel(native,id,nativeId)-1,summary:old.summaryText,sources:old.sourceSeqs,children:old.childIds.map(child=>'native:'+child)}
+            node={id:key,nativeId,kind:semanticKind(native,id,nativeId),level:semanticLevel(native,id,nativeId)-1,summary:old.summaryText,sources:originalNodeSources(native,id,nativeId,seq=>ctx.sessions.get(id)?.eventAt(seq)),children:old.childIds.map(child=>'native:'+child)}
             all.set(key,node)
           }
           const next=new Set([...seen,key]);for(const child of node.children)include(child,next)
@@ -72,14 +72,25 @@ export class MainArchiveFork {
     const tree=nodes.map((node,index)=>{
       const sourceRecords=node.sources.map(seq=>positions.get(seq).ordinal)
       const variant=this.db.db.prepare("SELECT 1 FROM sqlite_master WHERE name='sl_summary_variants'").get()?this.db.db.prepare('SELECT summary FROM sl_summary_variants WHERE session=? AND id=?').get(id,node.id)?.summary:undefined
-      return {index,archiveId:archiveId(node),level:node.level,kind:node.kind,modelSummary:variant,firstMessage:Math.min(...sourceRecords),lastMessage:Math.max(...sourceRecords),sourceRecords,children:node.children.map(child=>{if(!ids.has(child))throw Error('DSH 分支摘要树不完整');return ids.get(child)}),summary:node.summary}
+      const native=node.nativeId&&this.native.getNode(id,node.nativeId)
+      return {index,archiveId:archiveId(node),level:native?semanticLevel(this.native,id,node.nativeId)-1:node.level,kind:native?semanticKind(this.native,id,node.nativeId):node.kind,modelSummary:variant,firstMessage:Math.min(...sourceRecords),lastMessage:Math.max(...sourceRecords),sourceRecords,children:node.children.map(child=>{if(!ids.has(child))throw Error('DSH 分支摘要树不完整');return ids.get(child)}),summary:node.summary}
     })
     const doc=readSettings(this.file)
     if(!doc.settings.summaryEnabled)return
     const receipt=this.db.db.prepare("SELECT 1 FROM sqlite_master WHERE name='sl_fork_receipts'").get()&&this.db.db.prepare('SELECT * FROM sl_fork_receipts WHERE session=?').get(id)
     saveForkTree(this.store,session,{digest:forkHash(nodes.map(n=>n.id)),originals},tree,{model:receipt?.model||'dsh:session-model',usage:receipt?JSON.parse(receipt.usage):{},validate:()=>!this.stopped&&readSettings(this.file).revision===doc.revision})
     this.store.db.exec('CREATE TABLE IF NOT EXISTS dsh_shared_nodes(session TEXT NOT NULL,id TEXT NOT NULL,visible INTEGER NOT NULL,PRIMARY KEY(session,id))')
-    for(const node of tree)if(node.kind==='assembled')this.store.db.prepare('INSERT INTO dsh_shared_nodes SELECT ?,?,0 WHERE EXISTS(SELECT 1 FROM sources WHERE session=?) AND NOT EXISTS(SELECT 1 FROM deleted_sessions WHERE session=?) ON CONFLICT(session,id) DO UPDATE SET visible=0').run(session,node.archiveId,session,session)
+    const currentOverviewIds=new Set(),coveredOverviews=[]
+    for(const node of tree.filter(n=>n.kind==='overview').sort((a,b)=>b.index-a.index)){
+      if(!coveredOverviews.some(current=>node.sourceRecords.every(seq=>current.has(seq)))){currentOverviewIds.add(node.archiveId);coveredOverviews.push(new Set(node.sourceRecords))}
+    }
+    const historical=new Set(),retire=index=>{if(historical.has(index))return;historical.add(index);for(const child of tree[index].children)retire(child)}
+    for(const node of tree)if(node.kind==='snapshot')for(const child of node.children)retire(child)
+    for(const node of tree){
+      this.store.db.prepare('UPDATE nodes SET level=? WHERE session=? AND id=?').run(node.level,session,node.archiveId)
+      const visible=node.kind==='assembled'?0:historical.has(node.index)?4:node.kind==='overview'?(currentOverviewIds.has(node.archiveId)?3:2):node.kind==='snapshot'?5:1
+      this.store.db.prepare('INSERT INTO dsh_shared_nodes SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM sources WHERE session=?) AND NOT EXISTS(SELECT 1 FROM deleted_sessions WHERE session=?) ON CONFLICT(session,id) DO UPDATE SET visible=excluded.visible').run(session,node.archiveId,visible,session,session)
+    }
     this.mirrored.set(id,stamp)
   }
   afterCapture(id,settled=false){

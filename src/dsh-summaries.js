@@ -8,8 +8,11 @@ import {forkHash} from './fork-summary.js'
 import { semanticKind, semanticFrontier, semanticLevel } from '../dsh/tree-semantics.js'
 
 const hasTable = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
-export function dshVisibleNodes(db, alias = 'n') {
-  const visible=hasTable(db,'dsh_shared_nodes')?`NOT EXISTS (SELECT 1 FROM dsh_shared_nodes v WHERE v.session=${alias}.session AND v.id=${alias}.id AND v.visible=0)`:'1'
+export function dshVisibleNodes(db, alias = 'n', {history=false}={}) {
+  // 0: transparent envelope; 1: granular block; 2: historical overview;
+  // 3: current overview; 4: retained history; 5: coarse legacy snapshot.
+  // History remains searchable without filling the chart.
+  const visible=hasTable(db,'dsh_shared_nodes')?`NOT EXISTS (SELECT 1 FROM dsh_shared_nodes v WHERE v.session=${alias}.session AND v.id=${alias}.id AND ${history?'v.visible=0':'v.visible NOT IN (1,3,5)'})`:'1'
   return hasTable(db,'dsh_legacy_sources')?`(${visible}) AND NOT EXISTS(SELECT 1 FROM dsh_legacy_sources h WHERE h.session=${alias}.session)`:visible
 }
 
@@ -155,7 +158,7 @@ export function syncDshSummaries(store, session, id) {
     const text = row.summary_text
     const clean = value => value.replace(/^DSH native summary\. Exact selected source records:[^\n]*\n/, '')
     if (existing && clean(existing.summary) !== text) throw Error('Previously archived DSH summary changed')
-    derived.push({ session, id: nodeId, level: semanticLevel(adapter, id, row.node_id) - 1, first: seqs[0], last: seqs.at(-1), children: children.map(child => 'dsh-native-' + child), summary: existing?.summary ?? text, digest: createHash('sha256').update(JSON.stringify(row)).digest('hex'), model: 'dsh-native:' + (row.model || 'configured'), seqs })
+    derived.push({ session, id: nodeId, level: semanticLevel(adapter, id, row.node_id) - 1, kind:semanticKind(adapter,id,row.node_id), summarySeq:row.summary_seq, first: seqs[0], last: seqs.at(-1), children: children.map(child => 'dsh-native-' + child), summary: existing?.summary ?? text, digest: createHash('sha256').update(JSON.stringify(row)).digest('hex'), model: 'dsh-native:' + (row.model || 'configured'), seqs })
   }
   // Retain historical derived rows and text; replace only their visible forest
   // and source envelopes. Native nodes and original events remain immutable.
@@ -167,12 +170,18 @@ export function syncDshSummaries(store, session, id) {
     // compaction commits. Only committed native rows can retire its members.
     for (const row of rows) visibility.run(session,'dsh-native-'+row.node_id,0)
     const insert = store.db.prepare('INSERT OR IGNORE INTO dsh_node_sources VALUES(?,?,?)')
+    const currentOverviewIds=new Set(),coveredOverviews=[]
+    for(const node of derived.filter(n=>n.kind==='overview').sort((a,b)=>b.summarySeq-a.summarySeq||b.seqs.length-a.seqs.length)){
+      if(!coveredOverviews.some(current=>node.seqs.every(seq=>current.has(seq)))){currentOverviewIds.add(node.id);coveredOverviews.push(new Set(node.seqs))}
+    }
+    const historical=new Set(),retire=key=>{if(historical.has(key))return;historical.add(key);for(const child of JSON.parse(nodes.get(key)?.child_ids_json||'[]'))retire(child)}
+    for(const row of rows)if(row.node_kind==='snapshot')for(const child of JSON.parse(row.child_ids_json))retire(child)
     for (const node of derived) {
       const { id: nodeId, level, first, last, children, summary, digest, model } = node
       const fresh = store.db.prepare('INSERT OR IGNORE INTO nodes VALUES(?,?,?,?,?,?,?,?,?)').run(session, nodeId, level, first, last, JSON.stringify(children), summary, digest, model)
       if (fresh.changes) store.db.prepare('INSERT INTO node_fts(session,id,summary) VALUES(?,?,?)').run(session, nodeId, summary)
       store.db.prepare('UPDATE nodes SET level=?,first=?,last=?,children=? WHERE session=? AND id=?').run(level, first, last, JSON.stringify(children), session, nodeId)
-      visibility.run(session, nodeId, 1)
+      visibility.run(session, nodeId, historical.has(nodeId.slice(11))?4:node.kind==='overview'?(currentOverviewIds.has(node.id)?3:2):node.kind==='snapshot'?5:1)
       const legacyId='dsh-fork-'+forkHash([id,'fork-'+nodeId.slice(11)]).slice(0,24),legacy=store.node(session,legacyId)
       if(legacy&&cleanLegacy(legacy.summary)===cleanLegacy(summary)){
         const old=store.db.prepare('SELECT seq FROM dsh_node_sources WHERE session=? AND id=? ORDER BY seq').all(session,legacyId).map(r=>r.seq)
@@ -211,5 +220,6 @@ export function dshCoverage(store, session, records) {
 export function dshNodeSources(db, session, node) {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='dsh_node_sources'").get()) return node
   const seqs = db.prepare(`SELECT s.seq FROM dsh_node_sources s WHERE s.session=? AND s.id=? ${hasTable(db, 'dsh_record_kinds') ? "AND NOT EXISTS (SELECT 1 FROM dsh_record_kinds k WHERE k.session=s.session AND k.seq=s.seq AND k.category='checkpoint')" : ''} ORDER BY s.seq`).all(session, node.id).map(row => row.seq)
-  return seqs.length ? { ...node, source_records: seqs, source_ranges: ranges(seqs), range_kind: 'reading-envelope' } : node
+  const visibility=hasTable(db,'dsh_shared_nodes')?db.prepare('SELECT visible FROM dsh_shared_nodes WHERE session=? AND id=?').get(session,node.id)?.visible:null
+  return {...node,...(visibility===3?{overview:true}:visibility===2?{historical_overview:true}:visibility===4?{historical:true}:visibility===5?{legacy_snapshot:true}:{}),...(seqs.length?{source_records:seqs,source_ranges:ranges(seqs),range_kind:'reading-envelope'}:{})}
 }

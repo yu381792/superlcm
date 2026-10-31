@@ -21,7 +21,7 @@ export function assembledCheckpointMessage(parts) {
 
 // Batches are drafts only. Publish one checkpoint covering their contiguous
 // original ranges, with one recall node and no dangling draft node references.
-export function assembleRegions(engine, parts) {
+export function assembleRegions(engine, parts, {checkSize=true}={}) {
   if (parts.length === 1) return parts[0]
   const first = parts[0], last = parts.at(-1)
   const { summary, checkpointMessage, compactionId } = assembledCheckpointMessage(parts)
@@ -29,7 +29,7 @@ export function assembleRegions(engine, parts) {
   // that surface node once, regardless of how many members enter the forest.
   const selectedNodes = [...new Map(parts.flatMap(part => part.selectedNodes).map(node => [node.seq, node])).values()]
   const shadowedRouteTokenCount = selectedNodes.reduce((n, node) => n + node.tokens, 0)
-  if (engine.ctx.tokenMeter.estimateMessage(checkpointMessage) >= shadowedRouteTokenCount) {
+  if (checkSize && engine.ctx.tokenMeter.estimateMessage(checkpointMessage) >= shadowedRouteTokenCount) {
     throw Error('assembled summary is not smaller than its original ranges')
   }
   const usage = {}

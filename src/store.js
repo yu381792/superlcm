@@ -572,8 +572,8 @@ export class ClaudeStore {
     const conversations=session?[]:this.resolve(query).filter(m=>(!harness||m.harness===harness)&&(!excludeRetired||m.harness!=='hermes')).slice(0,10)
     const hasVariants=!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='fork_parent_variants'").get()
     const summaries=(hasVariants
-      ? this.db.prepare(`SELECT x.session,x.id,x.level,x.first,x.last,CASE WHEN x.summary LIKE ? ESCAPE '\\' AND ${dshVisibleNodes(this.db,'x')} THEN x.summary ELSE v.summary END AS summary FROM nodes x LEFT JOIN fork_parent_variants v ON v.session=x.session AND v.id=x.id WHERE ((x.summary LIKE ? ESCAPE '\\' AND ${dshVisibleNodes(this.db,'x')}) OR v.summary LIKE ? ESCAPE '\\')${scope} ORDER BY x.level DESC,x.first DESC LIMIT ?`).all(like,like,like,...args,cap)
-      : this.db.prepare(`SELECT x.session,x.id,x.level,x.first,x.last,x.summary FROM nodes x WHERE x.summary LIKE ? ESCAPE '\\' AND ${dshVisibleNodes(this.db,'x')}${scope} ORDER BY x.level DESC,x.first DESC LIMIT ?`).all(like,...args,cap)
+      ? this.db.prepare(`SELECT x.session,x.id,x.level,x.first,x.last,CASE WHEN x.summary LIKE ? ESCAPE '\\' AND ${dshVisibleNodes(this.db,'x',{history:true})} THEN x.summary ELSE v.summary END AS summary FROM nodes x LEFT JOIN fork_parent_variants v ON v.session=x.session AND v.id=x.id WHERE ((x.summary LIKE ? ESCAPE '\\' AND ${dshVisibleNodes(this.db,'x',{history:true})}) OR v.summary LIKE ? ESCAPE '\\')${scope} ORDER BY x.level DESC,x.first DESC LIMIT ?`).all(like,like,like,...args,cap)
+      : this.db.prepare(`SELECT x.session,x.id,x.level,x.first,x.last,x.summary FROM nodes x WHERE x.summary LIKE ? ESCAPE '\\' AND ${dshVisibleNodes(this.db,'x',{history:true})}${scope} ORDER BY x.level DESC,x.first DESC LIMIT ?`).all(like,...args,cap)
     ).map(r=>({...r,conversation:this.metadata(r.session)}))
     const originals=this.searchOriginals(query,{scope,args,cap,cursor})
     return {query,conversations,summaries,...originals}
@@ -1031,7 +1031,7 @@ export class ClaudeStore {
     return {
       source:this.metadata(session),
       ...this.searchOriginals(query,{scope:' AND x.session=?',args:[session],cap}),
-      nodes: this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.summary FROM node_fts f JOIN nodes n ON n.session=f.session AND n.id=f.id WHERE node_fts MATCH ? AND f.session=? AND '+dshVisibleNodes(this.db)+' ORDER BY n.level DESC,n.first DESC LIMIT ?').all(q,session,cap)
+      nodes: this.db.prepare('SELECT n.id,n.level,n.first,n.last,n.summary FROM node_fts f JOIN nodes n ON n.session=f.session AND n.id=f.id WHERE node_fts MATCH ? AND f.session=? AND '+dshVisibleNodes(this.db,'n',{history:true})+' ORDER BY n.level DESC,n.first DESC LIMIT ?').all(q,session,cap)
     }
   }
   describe(session, id) {

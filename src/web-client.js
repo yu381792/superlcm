@@ -219,10 +219,11 @@ const pct = (x, total) => (x / total * 100).toFixed(3) + '%'
 function stripHtml(d) {
   const selected = d.coverage === 'selected-records'
   const total = Math.max(d.records, 1), tail = selected ? d.latest_tail?.records || 0 : d.records - d.summarized_to
-  const maxLevel = d.bands.reduce((m, b) => Math.max(m, b.level), 0)
-  let lanes = ''
+  const blocks=d.bands.filter(b=>!b.overview),overviews=d.bands.filter(b=>b.overview)
+  const maxLevel = blocks.reduce((m, b) => Math.max(m, b.level), 0)
+  let lanes = overviews.length?'<span class="lane-label">'+t('总览')+'</span><div class="lane">'+overviews.map(b=>'<button type="button" class="seg lx" data-node="'+esc(b.id)+'" title="'+t('总览')+'" style="background:var(--l3);left:'+pct(b.first,total)+';width:'+pct(b.last-b.first+1,total)+'"></button>').join('')+'</div>':''
   for (let level = maxLevel; level >= (selected ? 0 : 1); level--) {
-    lanes += '<span class="lane-label">' + t('第 {n} 层', { n: level + 1 }) + '</span><div class="lane">' + d.bands.filter(b => b.level === level).map(b =>
+    lanes += '<span class="lane-label">' + t('第 {n} 层', { n: level + 1 }) + '</span><div class="lane">' + blocks.filter(b => b.level === level).map(b =>
       '<button type="button" class="seg ' + (level > 3 ? 'lx' : 'l' + level) + '" data-node="' + esc(b.id) + '" title="' + t('第 {n} 层', { n: level + 1 }) + ' · ' + (selected ? t('阅读范围 #{a}–#{b}；精确选中 {n} 条记录', { a: b.first, b: b.last, n: b.source_records?.length ?? 0 }) : '#' + b.first + '–' + b.last) + '" style="' + (selected ? 'background:var(--l' + Math.min(level, 3) + ');left:' + pct(b.first, total) + ';width:' + pct(b.last - b.first + 1, total) : 'left:calc(' + pct(b.first, total) + ' + 1px);width:calc(' + pct(b.last - b.first + 1, total) + ' - 2px)') + '"></button>').join('') + '</div>'
   }
   if (d.summary_count && !selected) lanes += '<span class="lane-label">' + t('第 {n} 层', { n: 1 }) + '</span><div class="lane l0" style="--p:' + pct(d.summarized_to, total) + '"></div>'
@@ -305,7 +306,7 @@ function nodeHtml(n) {
     ? '<div class="children">' + (kids ? kids.map(nodeHtml).join('') + (n.directSources || []).map(r => '<div class="raw-link"><button type="button" class="btn small" data-raw="' + r.first + '-' + r.last + '">' + t('查看 {n} 条原文', { n: r.last - r.first + 1 }) + ' (#' + r.first + '–#' + r.last + ')</button></div>').join('') : '<div class="tail-row">' + t('读取中…') + '</div>') + '</div>'
     : '<div class="raw-link"><button type="button" class="btn small" data-raw="' + n.first + '-' + n.last + '">' + t('查看 {n} 条原文', { n: n.source_records?.length ?? n.last - n.first + 1 }) + '</button></div>'
   return '<div class="node" data-id="' + esc(n.id) + '" aria-expanded="' + open + '"><button type="button" class="node-h" data-toggle="' + esc(n.id) + '"><span class="caret"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5L7 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>' +
-    '<span class="lv l' + Math.min(n.level, 3) + '">' + t('第{n}层', { n: n.level + 1 }) + '</span><span class="node-text">' + esc(summary) + '</span><span class="range">#' + n.first + '–' + n.last + '</span></button>' + inner + '</div>'
+    '<span class="lv l' + Math.min(n.level, 3) + '">' + (n.overview?t('总览'):n.historical_overview?t('旧总览'):n.legacy_snapshot?t('旧摘要块'):n.historical?t('历史摘要'):t('第{n}层', { n: n.level + 1 })) + '</span><span class="node-text">' + esc(summary) + '</span><span class="range">#' + n.first + '–' + n.last + '</span></button>' + inner + '</div>'
 }
 async function ensureChildren(id) {
   if (state.children.has(id)) return

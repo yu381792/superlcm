@@ -349,12 +349,56 @@ test('real DSH preserves recent originals with an oversized 80K retention prefer
  }finally{await close(h)}
 })
 
-test('repeated main-model branches reuse old checkpoints and converge to one archive forest',async()=>{
+test('a coarse legacy checkpoint becomes one immutable block without losing its direct originals',async()=>{
+ const {markerFromSummary}=await import('../dsh/marker.js'),{originalNodeSources}=await import('../dsh/tree-semantics.js')
+ const {ClaudeStore}=await import('../src/store.js'),{MainArchiveFork}=await import('../dsh/main-archive-fork.js'),{captureDshPacket,projectDshEvent}=await import('../src/dsh.js')
+ const h=await lab({capacity:64000,config:{summaryMode:'main-fork'}}),abort=new AbortController().signal
+ const shared=new ClaudeStore(h.dir);shared.setIntegrationEnabled('dsh',true);shared.setHarnessSetting('dsh','main-fork')
+ const archive=new MainArchiveFork(h.ctx,h.engine.superLcmStore,h.dir,error=>h.warnings.push(error.message))
+ let cursor=0
+ const sync=()=>{archive.capture(h.agent.session.id);const events=h.agent.session.snapshotEvents();captureDshPacket(shared,{header:h.agent.session.header,records:events.slice(cursor).map(e=>projectDshEvent(h.agent.session.id,e,''))});cursor=events.length;archive.mirror(h.agent.session.id)}
+ const original=h.ctx.llm.stream.bind(h.ctx.llm)
+ h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+  const prompt=options.messages.at(-1).content.map(b=>b.text||'').join(''),plan=JSON.parse(prompt.split('\n').find(x=>x.startsWith('[{"index":')))
+  yield {type:'text-delta',text:JSON.stringify({blocks:plan.filter(n=>n.frozenSummary===undefined).map(n=>({index:n.index,summary:'# State\nPreserve all original constraints and ongoing work.'}))})};yield {type:'finish',reason:{kind:'stop'}}
+ })()
+ try{
+  const session=h.agent.session
+  session.append('turn/start',{turn:'legacy-source-fixture'})
+  history(h,.08,{pieces:1});const first=session.surface.nodes.at(-1)
+  await h.engine.compactRegion(first,first,h.agent,abort)
+  const checkpoint=session.surface.nodes.at(-1)
+  history(h,.08,{pieces:1});const direct=session.surface.nodes.at(-1)
+  const legacy=await h.engine.compactRegion(checkpoint,direct,h.agent,abort),legacyId=markerFromSummary(legacy.summary).id
+  session.append('turn/end',{turn:'legacy-source-fixture'})
+  const expected=originalNodeSources(h.engine.superLcmStore,session.id,legacyId,seq=>session.eventAt(seq))
+  assert.ok(expected.includes(direct));sync()
+  for(let round=0;round<4;round++){
+   history(h,.65,{pieces:10});assert.deepEqual(await send(h,'Preserve legacy direct originals '+round),[]);await h.engine.settleBackgroundFold(h.agent)
+   assert.deepEqual(await send(h,'Continue without rewriting old blocks '+'n'.repeat(28000)),[]);await h.engine.settleBackgroundFold(h.agent);sync()
+  }
+  const aliases=h.engine.superLcmStore.listNodes(session.id,{limit:5000}).filter(n=>n.kind==='snapshot')
+  assert.equal(aliases.length,1,'the coarse legacy snapshot must not be wrapped again on every round')
+  assert.ok(expected.every(seq=>originalNodeSources(h.engine.superLcmStore,session.id,aliases[0].nodeId,n=>session.eventAt(n)).includes(seq)))
+  assert.equal(aliases[0].summaryText,h.engine.superLcmStore.getNode(session.id,legacyId).summaryText)
+  const alias=shared.outline('dsh-'+session.id,'dsh-native-'+aliases[0].nodeId).node
+  assert.ok(alias.legacy_snapshot);assert.ok(expected.every(seq=>alias.source_records.includes(seq)))
+  assert.ok(!shared.bands('dsh-'+session.id).some(n=>n.id==='dsh-native-'+legacyId),'the old lineage remains history rather than another current layer')
+  assert.ok(shared.outline('dsh-'+session.id,'dsh-native-'+legacyId).node.historical)
+  assert.deepEqual(await send(h,'One more request before switching to archive-only mode.'),[]);sync()
+  const {readSettings}=await import('../dsh/settings.js'),{summarizeArchiveFork}=await import('../dsh/archive-fork.js'),doc=readSettings(h.dir),owner=archive.db.lease(session.id,doc.revision)
+  assert.ok(owner)
+  try{assert.equal(await summarizeArchiveFork(archive,session.id,doc,owner,abort,{force:true}),'complete')}finally{archive.db.release(session.id,owner)}
+ }finally{await archive.close();shared.close();await close(h)}
+})
+
+test('24 main-model compression rounds reuse immutable blocks and merge across rounds',async t=>{
  const {ClaudeStore}=await import('../src/store.js'),{MainArchiveFork}=await import('../dsh/main-archive-fork.js'),{captureDshPacket,projectDshEvent}=await import('../src/dsh.js'),{markerFromSummary}=await import('../dsh/marker.js'),{nodeLevel}=await import('../dsh/core.js')
  const h=await lab({capacity:64000,config:{summaryMode:'main-fork'}}),shared=new ClaudeStore(h.dir)
  shared.setIntegrationEnabled('dsh',true);shared.setHarnessSetting('dsh','main-fork')
  const archive=new MainArchiveFork(h.ctx,h.engine.superLcmStore,h.dir,error=>h.warnings.push(error.message)),frozen=[],depths=[]
- const original=h.ctx.llm.stream.bind(h.ctx.llm);let parentVersion=0
+ const original=h.ctx.llm.stream.bind(h.ctx.llm);let parentVersion=0,crossRoundMerges=0
+ const immutable=new Map()
  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
   parentVersion++
   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join(''),plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
@@ -369,7 +413,8 @@ test('repeated main-model branches reuse old checkpoints and converge to one arc
   captureDshPacket(shared,{header:h.agent.session.header,records});cursor=events.length;archive.mirror(h.agent.session.id)
  }
  try{
-  for(let round=0;round<6;round++){
+  for(let round=0;round<24;round++){
+   const oldIds=new Set(h.engine.superLcmStore.listNodeIds(h.agent.session.id))
    history(h,round===0?.72:.58,{pieces:10});sync()
    assert.deepEqual(await send(h,'Continue audit round '+round),[])
    await h.engine.settleBackgroundFold(h.agent)
@@ -382,9 +427,19 @@ test('repeated main-model branches reuse old checkpoints and converge to one arc
    assert.ok(h.main.at(-1).content.includes(decision),'the actual model-written parent must reach the resumed conversation')
    const rows=shared.db.prepare('SELECT id,summary FROM nodes WHERE session=?').all('dsh-'+h.agent.session.id)
    assert.ok(rows.every(n=>!n.id.startsWith('dsh-fork-')),'native and archive use the same identity')
+   for(const node of h.engine.superLcmStore.listNodes(h.agent.session.id,{limit:5000})){
+    const content=JSON.stringify([node.summary,node.childIds,node.sourceSeqs])
+    if(immutable.has(node.nodeId))assert.equal(content,immutable.get(node.nodeId),'existing blocks must not be rewritten')
+    else {immutable.set(node.nodeId,content);if(node.kind==='condensed'&&node.childIds.some(id=>oldIds.has(id)))crossRoundMerges++}
+   }
   }
   assert.ok(frozen.length>=4,'later rounds must carry existing checkpoints without rewriting')
   assert.ok(depths.every(depth=>Number.isSafeInteger(depth)&&depth>0),'each model-written parent has a valid semantic depth')
+  const leaves=h.engine.superLcmStore.listNodes(h.agent.session.id,{limit:5000}).filter(n=>!n.childIds.length)
+  assert.ok(crossRoundMerges>0,'old and new blocks must actually merge in later branch responses')
+  assert.ok(Math.max(...depths)<=Math.ceil(Math.log(leaves.length)/Math.log(4))+2,JSON.stringify({depths,leaves:leaves.length}))
+  assert.ok(shared.find('PARENT_ONLY_DECISION_1',{session:'dsh-'+h.agent.session.id}).summaries.length,'historical parent-only decisions stay searchable')
+  t.diagnostic(JSON.stringify({rounds:24,rawBlocks:leaves.length,maxLayers:Math.max(...depths),crossRoundMerges}))
   assert.ok(h.warnings.every(w=>!w.includes('祖先')&&!w.includes('分支摘要树不完整')&&!w.includes('changed')))
  }finally{await archive.close();shared.close();await close(h)}
 })

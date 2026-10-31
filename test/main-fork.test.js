@@ -7,6 +7,7 @@ import {DatabaseSync} from 'node:sqlite'
 import {forkTreePlan,parseForkTree} from '../src/fork-summary.js'
 import {summarizeClaudeFork,summarizeCodexFork} from '../src/native-fork.js'
 import {migrateSummaryModes} from '../src/summary-migration.js'
+import {semanticKind,semanticLevel,granularFrontier} from '../dsh/tree-semantics.js'
 const env={...process.env,SUPERLCM_CLAUDE_CLI_BIN:process.execPath,SUPERLCM_CODEX_CLI_BIN:process.execPath}
 function fake(handler){return (bin,args,options)=>{
   const child=new EventEmitter();Object.assign(child,{stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),exitCode:null})
@@ -14,6 +15,42 @@ function fake(handler){return (bin,args,options)=>{
   handler(child,args,options);return child
 }}
 const emit=(child,item)=>child.stdout.write(JSON.stringify(item)+'\n')
+test('legacy rolling overview ancestry remains readable without becoming granularity layers',()=>{
+ const nodes=new Map(),store={getNode:(_session,id)=>nodes.get(id)}
+ for(let i=0;i<4;i++)nodes.set('leaf-'+i,{kind:'leaf',summary:[{type:'text',text:'Original decision '+i}],childIds:[]})
+ nodes.set('merged',{kind:'condensed',summary:[{type:'text',text:'Summary of four original decisions.'}],childIds:[...nodes.keys()]})
+ let root='merged'
+ for(let i=0;i<24;i++){
+  nodes.set('new-'+i,{kind:'leaf',summary:[{type:'text',text:'New decision '+i}],childIds:[]})
+  nodes.set('overview-'+i,{kind:'condensed',summary:[{type:'text',text:'Unique checkpoint decision '+i}],childIds:[root,'new-'+i]});root='overview-'+i
+ }
+ assert.equal(semanticKind(store,'synthetic',root),'overview')
+ assert.equal(semanticLevel(store,'synthetic',root),3)
+ assert.deepEqual(granularFrontier(store,'synthetic',root),['merged',...Array.from({length:24},(_,i)=>'new-'+i)])
+ assert.equal(nodes.get('overview-0').summary[0].text,'Unique checkpoint decision 0')
+ nodes.set('cycle',{summary:[],childIds:['cycle']})
+ assert.throws(()=>semanticLevel(store,'synthetic','cycle'),/cycle/)
+})
+
+test('incremental fork merges four equal blocks across calls and keeps overviews out of later leaves',()=>{
+ let frontier=[];const counts=[]
+ for(let round=0;round<64;round++){
+  const leaves=[...frontier.map((n,index)=>({index,firstMessage:index-frontier.length,lastMessage:index-frontier.length,frozenSummary:n.summary,frozenLevel:n.semanticLevel,units:n.units,kind:n.kind})),{firstMessage:round,lastMessage:round,units:[round]}]
+  const options={fanout:4,incremental:true},plan=forkTreePlan(leaves,4,options)
+  const text=JSON.stringify({blocks:plan.filter(n=>n.frozenSummary===undefined).map(n=>({index:n.index,summary:'# State\nSynthetic complete historical state '+round+'.'}))})
+  const tree=parseForkTree(text,leaves,undefined,options)
+  for(const n of tree){if(n.children.length)n.units=n.children.flatMap(i=>tree[i].units);if(n.frozenSummary!==undefined)assert.equal(n.summary,n.frozenSummary)}
+  const owned=new Set(tree.flatMap(n=>n.children)),next=tree.filter(n=>n.kind!=='overview'&&!owned.has(n.index))
+  const root=tree.at(-1)
+  // The overview owns frontier members for reading, but is never carried as a leaf.
+  frontier=root.kind==='overview'?root.children.map(i=>tree[i]):next
+  assert.deepEqual(frontier.flatMap(n=>n.units),Array.from({length:round+1},(_,i)=>i))
+  assert.ok(frontier.every(n=>n.kind!=='overview'))
+  if([4,16,64].includes(round+1))counts.push({blocks:round+1,rootLevel:root.semanticLevel})
+ }
+ assert.deepEqual(counts,[{blocks:4,rootLevel:1},{blocks:16,rootLevel:2},{blocks:64,rootLevel:3}])
+})
+
 test('one response must supply a bounded complete summary tree',()=>{
  const leaves=Array.from({length:9},(_,index)=>({index,firstMessage:index*2,lastMessage:index*2+1}))
  const plan=forkTreePlan(leaves,4);assert.equal(plan.length,12);assert.equal(plan.at(-1).level,2)

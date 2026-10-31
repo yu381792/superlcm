@@ -136,7 +136,8 @@ export class ArchiveDatabase {
       for(const n of nodes){
         if(!n.sources.length)throw Error('摘要缺少原文范围')
         this.db.prepare('INSERT OR IGNORE INTO sl_nodes VALUES(?,?,?,?,?,?,?,?,?)').run(id,n.id,n.level,Math.min(...n.sources),Math.max(...n.sources),n.summary,JSON.stringify(n.children),JSON.stringify(n.sources),Date.now())
-        if(n.nativeId){this.db.exec('CREATE TABLE IF NOT EXISTS sl_node_native(session TEXT,id TEXT,nativeId TEXT,kind TEXT,PRIMARY KEY(session,id))');this.db.prepare('INSERT OR IGNORE INTO sl_node_native VALUES(?,?,?,?)').run(id,n.id,n.nativeId,n.kind||null)}
+        this.db.prepare('UPDATE sl_nodes SET level=? WHERE session=? AND id=?').run(n.level,id,n.id)
+        if(n.nativeId||n.kind){this.db.exec('CREATE TABLE IF NOT EXISTS sl_node_native(session TEXT,id TEXT,nativeId TEXT,kind TEXT,PRIMARY KEY(session,id))');this.db.prepare('INSERT INTO sl_node_native VALUES(?,?,?,?) ON CONFLICT(session,id) DO UPDATE SET kind=excluded.kind').run(id,n.id,n.nativeId||null,n.kind||null)}
         if(n.modelSummary){this.db.exec('CREATE TABLE IF NOT EXISTS sl_summary_variants(session TEXT,id TEXT,summary TEXT,PRIMARY KEY(session,id))');this.db.prepare('INSERT OR IGNORE INTO sl_summary_variants VALUES(?,?,?)').run(id,n.id,n.modelSummary)}
       }
       if(receipt){

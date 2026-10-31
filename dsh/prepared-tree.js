@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { markerFromSummary, contentBlocksToText, stripRecallMetadata } from './marker.js'
 import { isCompactCheckpointSource } from '@deepseek-ai/dsh-compaction'
-import { semanticFrontier, isTransparentAssembly } from './tree-semantics.js'
+import { semanticFrontier, reusableGranularFrontier, isTransparentAssembly } from './tree-semantics.js'
 
 // A model's markers are never authority. Only engine-produced, committed tree
 // metadata whose leaves match the verified surface range can enter the index.
@@ -20,8 +20,9 @@ export function preparedTreeNodes(session, event, root, store) {
     const marker = markerFromSummary(source.data.content)
     if (marker) {
       checkpoints.set(marker.id, [seq]); physicalCheckpoints.set(marker.id, [seq])
+      const eventAt=seq=>session.eventAt?session.eventAt(seq):eventMap.get(seq)
       const members = store?.getNode(root.sessionId, marker.id)
-        ? semanticFrontier(store, root.sessionId, marker.id) : [marker.id]
+        ? data.summaryTreeFormat==='incremental-v1'?reusableGranularFrontier(store,root.sessionId,marker.id,eventAt).map(n=>n.id):semanticFrontier(store, root.sessionId, marker.id) : [marker.id]
       const keys = members.map(id => `${seq}:${id}`)
       for (const key of keys) required.add(key)
       witnesses.set(marker.id, keys)
@@ -33,7 +34,7 @@ export function preparedTreeNodes(session, event, root, store) {
   for (const item of declared) {
     const marker = markerFromSummary(item.summary)
     if (!marker || marker.id !== item.nodeId || nodes.has(item.nodeId) || checkpoints.has(item.nodeId)
-      || !['leaf', 'condensed', 'assembled'].includes(item.kind) || !Array.isArray(item.sourceSeqs) || !item.sourceSeqs.length
+      || !['leaf', 'snapshot', 'condensed', 'assembled', 'overview'].includes(item.kind) || !Array.isArray(item.sourceSeqs) || !item.sourceSeqs.length
       || !Array.isArray(item.childIds) || !isDeepStrictEqual(marker.children, item.childIds)
       || new Set(item.sourceSeqs).size !== item.sourceSeqs.length
       || !item.sourceSeqs.every(seq => rootSources.has(seq))) throw Error('invalid prepared summary tree')
@@ -54,7 +55,7 @@ export function preparedTreeNodes(session, event, root, store) {
     const node = nodes.get(id)
     if (!node || visiting.has(id)) throw Error('prepared summary tree has a missing child or cycle')
     visiting.add(id)
-    if (node.kind === 'leaf') {
+    if (node.kind === 'leaf'||node.kind==='snapshot') {
       const expected = [...physicalCheckpoints].filter(([, seqs]) => node.sourceSeqs.includes(seqs[0])).map(([key]) => key)
       if (!isDeepStrictEqual(node.childIds, expected)) throw Error('prepared leaf has untrusted children')
       for (const child of node.childIds) visit(child)
