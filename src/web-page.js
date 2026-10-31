@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { icons } from './web-icons.js'
 import { dshRuntimeState,dshGlobalState } from './dsh-live-state.js'
-const asset = name => readFileSync(new URL(name, import.meta.url), 'utf8')
+// Keep scripts and styles from the same startup as this cached HTML template.
+// Reading them on each request mixes new DOM bindings with old markup after an update.
+const assets = new Map([
+  '../dsh/ui/icon.svg', 'web-style.css', 'web-i18n.js', 'web-client.js',
+  'web-retention-controls.js', 'web-compression.js', 'web-admin.js',
+  'web-dsh-controls.js', 'web-pi-controls.js', 'web-dsh.js'
+].map(name => [name, readFileSync(new URL(name, import.meta.url), 'utf8')]))
+const asset = name => assets.get(name)
 const logo = asset('../dsh/ui/icon.svg').trim().replace('<svg ', '<svg width="20" height="20" aria-hidden="true" ').replace('#B5532F', 'var(--l3)').replace('#CF7A56', 'var(--l2)').replace('#E6AE93', 'var(--l1)')
 const swatches = [['orange', '陶橙', '#C96442'], ['teal', '松石', '#1E6B57'], ['indigo', '靛青', '#3A4FB0'], ['graphite', '石墨', '#2E2E2C']]
 

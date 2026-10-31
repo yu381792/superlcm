@@ -21,6 +21,30 @@ import { PassThrough } from 'node:stream'
 import { runInNewContext } from 'node:vm'
 const fixture=fn=>async t=>{const dir=mkdtempSync(join(tmpdir(),'superlcm-dashboard-')),store=new ClaudeStore(join(dir,'index')),_small=store.db.prepare('INSERT INTO summary_tuning(id,target_chars,batch_size,fanout) VALUES(1,12000,8,4)').run(),env={...process.env,HOME:dir,USERPROFILE:dir,CODEX_HOME:join(dir,'codex'),CLAUDE_CONFIG_DIR:join(dir,'claude')};t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true})});await fn({dir,store,env,t})}
 
+test('web page holds one asset version until restart, with a fresh nonce per response', () => {
+ const moduleUrl=new URL('../src/web-page.js',import.meta.url)
+ const source=readFileSync(moduleUrl,'utf8').replace(/^import .*\n/gm,'').replaceAll('import.meta.url','moduleUrl').replace('export function page','function page')
+ let revision=1
+ const start=()=>{
+  const context={URL,moduleUrl,icons:{},dshRuntimeState:()=>{},dshGlobalState:()=>{},readFileSync:url=>url.pathname.endsWith('.svg')?'<svg></svg>':'/* asset revision '+revision+' */'}
+  runInNewContext(source+'\nthis.page=page',context)
+  return context.page
+ }
+ const running=start()
+ revision=2 // An update lands after startup, before even the first browser request.
+ const first=running('first-nonce'),second=running('second-nonce')
+ for(const html of [first,second]) {
+  assert.match(html,/asset revision 1/)
+  assert.doesNotMatch(html,/asset revision 2/,'updated scripts must not be mixed with the running HTML template')
+ }
+ assert.match(first,/<script nonce="first-nonce">/)
+ assert.match(second,/<script nonce="second-nonce">/)
+ assert.doesNotMatch(second,/first-nonce/)
+ const restarted=start()('restart-nonce')
+ assert.match(restarted,/asset revision 2/)
+ assert.doesNotMatch(restarted,/asset revision 1/)
+})
+
 test('DSH selected coverage UI uses effective counts, exact bands and plugin ownership', () => {
  const code=readFileSync(new URL('../src/web-client.js',import.meta.url),'utf8')
  const node={id:'summary',level:1,first:2,last:5,children:['leaf'],summary:'DSH native summary. Exact selected source records: 2, 4, 5. The range below is a reading envelope, not a claim that every intervening record was summarized.\nUseful navigation summary',source_records:[2,4,5],source_ranges:[{from:2,to:2},{from:4,to:5}]}
