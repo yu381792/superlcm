@@ -18,6 +18,25 @@ async function convert(messages) {
   }
   return converter(messages)
 }
+// Convert through the configured provider without dispatching an HTTP request.
+// Cold sessions can prepare before permitting their first foreground request.
+export async function capturePiContext(ctx,messages,reasoning,signal){
+  const controller=new AbortController(),selected=await convert(messages)
+  let payload
+  const stream=ctx.modelRegistry.streamSimple(ctx.model,{messages:selected},{sessionId:ctx.sessionManager.getSessionId(),reasoning,
+    signal:signal?AbortSignal.any([signal,controller.signal]):controller.signal,
+    onPayload(value){payload=structuredClone(value);controller.abort();throw Error('SuperLcm local request capture complete')}})
+  const result=await stream.result()
+  signal?.throwIfAborted()
+  if(!payload)throw Error('Pi 请求格式转换失败：'+String(result.errorMessage||result.stopReason))
+  return {payload,messages:selected,model:structuredClone(ctx.model),reasoning}
+}
+export async function piCompactedContext(snapshot,compaction,messages){
+  const selected=await convert(snapshot.sourceMessages),indices=messages.flatMap((m,i)=>m.role==='system'?[]:[i])
+  if(!selected.length||selected.length>indices.length||selected.some((m,i)=>!isDeepStrictEqual(m,messages[indices[i]])))throw Error('Pi 待替换请求与已核验原文不一致，原文保留')
+  const summary=await convert([{role:'compactionSummary',summary:compaction.summary,tokensBefore:compaction.tokensBefore,timestamp:Date.now()}])
+  return [...messages.filter(m=>m.role==='system'),...summary,...messages.slice(indices[selected.length-1]+1).filter(m=>m.role!=='system')]
+}
 export async function piForkPlan(snapshot, capture, {checkpoints=[]}={}) {
   const selected = await convert(snapshot.sourceMessages)
   const visible = capture.messages

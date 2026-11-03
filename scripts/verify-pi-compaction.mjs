@@ -82,7 +82,7 @@ try {
       if(malformed)content='invalid JSON from synthetic summary provider'
     }else{
       mainPayloads.push(body);mainCalls++;mainStartedResolve();tool=!(cold&&mainFork)&&mainCalls< (slow?2:3)
-      if(cold&&mainFork){assert.ok(swapEntry,'cold recovery must install the background summary before any main HTTP request');assert.ok(raw.includes('LATE_USER_REQUEST_KEEP_VERBATIM'),'cold recovery must keep the original request in the actual provider context')}
+      if(cold&&mainFork){assert.ok(raw.includes('SuperLcm'),'cold recovery must replace provider context before its first main HTTP request');assert.ok(raw.includes('LATE_USER_REQUEST_KEEP_VERBATIM'),'cold recovery must keep the original request in the actual provider context')}
       if(mainCalls=== (slow?2:3)){if(!passive)assert.ok(swapEntry);assert.ok(raw.includes('LATE_USER_REQUEST_KEEP_VERBATIM'));assert.ok(raw.includes('LATE_TOOL_RESULT_KEEP_VERBATIM'))}
       tokens=(mainCalls===1?(slow||fail||badSummary?95000:(ratio50?49000:79000)):tool?(ratio50?51000:81000):1100)*scale
       content=tool?null:'合成测试正常结束。'
@@ -198,11 +198,9 @@ try {
     while(!swapEntry&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20))
     if(!swapEntry)console.error(JSON.stringify({directory:dir,statuses,lifecycle,apiCalls,mainCalls}))
     assert.ok(swapEntry,'a cold over-capacity session must recover without an initial capture')
-    assert.equal(mainCalls,0);assert.equal(apiCalls,1)
+    assert.equal(mainCalls,1);assert.equal(apiCalls,1)
     assert.ok(readFileSync(manager.getSessionFile(),'utf8').includes('LATE_USER_REQUEST_KEEP_VERBATIM'))
-    await session.prompt('Resume the preserved request after recovery.')
-    assert.equal(mainCalls,1)
-    const receipt={ok:true,mode:'cold-native-recovery',installedPi:JSON.parse(readFileSync(join(packageRoot,'package.json'))).version,directory:dir,mainRequestsBeforeReplacement:0,summaryCalls:apiCalls,fullOriginalPreserved:readFileSync(manager.getSessionFile(),'utf8').startsWith(original),foregroundResumed:true}
+    const receipt={ok:true,mode:'cold-native-recovery',installedPi:JSON.parse(readFileSync(join(packageRoot,'package.json'))).version,directory:dir,mainRequestsBeforePreparedContext:0,summaryCalls:apiCalls,fullOriginalPreserved:readFileSync(manager.getSessionFile(),'utf8').startsWith(original),foregroundResumed:true,nativeBoundaryCommit:true,extraContinueRequired:false}
     writeFileSync(join(dir,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt))
   }else if(passive){
     assert.equal(swapEntry,undefined);assert.equal(apiCalls,1);assert.equal(mainCalls,3)

@@ -1,7 +1,7 @@
 import './env.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { summarizePiFork,piForkPlan } from '../src/pi-fork.js'
+import { summarizePiFork,piForkPlan,capturePiContext,piCompactedContext } from '../src/pi-fork.js'
 import {makePiSnapshot} from '../src/pi-snapshot.js'
 import { forkHash, parseForkSummary } from '../src/fork-summary.js'
 import { estimatePiRequest, limitPiOutput, piCompletionBudget, piOutputReserve, piWindowSafety } from '../src/pi-request.js'
@@ -12,6 +12,25 @@ const messages=[{role:'system',content:'System',toolsAdded:[{name:'read',paramet
 const payload={model:'fixture',messages:[{role:'system',content:'System'},{role:'user',content:first.content},{role:'assistant',content:'Inspection pending.'}],tools:[{type:'function',function:{name:'read'}}],max_tokens:2048,prompt_cache_key:'main-session',temperature:.2}
 const snapshot={session_id:'main-session',sourceMessages:[first,second],source:'source',tokensBefore:10000}
 const capture={payload,messages,model:{provider:'fixture',id:'fixture',contextWindow:1000000,maxTokens:2048},reasoning:'high'}
+test('Pi cold request capture stops before dispatch and keeps the foreground signal alive',async()=>{
+ const parent=new AbortController();let calls=0,localSignal
+ const ctx={model:capture.model,sessionManager:{getSessionId:()=> 'cold'},modelRegistry:{streamSimple(_model,_context,options){
+  calls++;localSignal=options.signal
+  return {result:async()=>{try{options.onPayload(payload)}catch{return {stopReason:'aborted'}};throw Error('provider dispatch must be unreachable')}}
+ }}}
+ const result=await capturePiContext(ctx,messages,'high',parent.signal)
+ assert.equal(calls,1);assert.equal(localSignal.aborted,true);assert.equal(parent.signal.aborted,false)
+ assert.deepEqual(result.payload,payload);assert.deepEqual(result.messages,messages)
+})
+test('Pi prepared request replacement preserves every system update and the exact unsummarized tail',async()=>{
+ const lateSystem={role:'system',content:'',toolsAdded:[{name:'new_tool',parameters:{type:'object'}}],timestamp:3}
+ const tail={role:'user',content:'KEEP THIS EXACT CURRENT REQUEST',timestamp:4},original=[...messages,lateSystem,tail]
+ const changed=await piCompactedContext(snapshot,{summary:'# Prepared state\nKeep the original constraints.',tokensBefore:400000},original)
+ assert.deepEqual(changed.filter(m=>m.role==='system'),[messages[0],lateSystem])
+ assert.equal(changed.at(-1),tail);assert.ok(changed.some(m=>JSON.stringify(m).includes('Prepared state')))
+ assert.deepEqual(original,[...messages,lateSystem,tail])
+ await assert.rejects(()=>piCompactedContext(snapshot,{summary:'# Prepared'},[messages[0],{...first,content:'changed'},second,tail]),/不一致/)
+})
 test('Pi persisted system/tool state stays outside the summary source and native-prefix indices',async()=>{
  const system={role:'system',content:'',sections:{rules:'Deployment requires permission.'},toolsAdded:[{name:'read',parameters:{type:'object'}}],timestamp:0}
  const oldUser={role:'user',content:'Inspect the project without deployment. '.repeat(200),timestamp:1}

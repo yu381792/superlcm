@@ -824,6 +824,27 @@ test('Pi final payload reserves the actual requested output limit in API mode to
   assert.equal(result.max_tokens,18000);assert.equal(payload.max_tokens,90000)
   assert.equal(r.abortCalls, 0)
 })
+test('Pi does not treat the replacement target as the physical request limit',()=>{
+ const r=runtime({tokens:355646,readPolicy:mainForkPolicy})
+ r.ctx.model.contextWindow=500000;r.ctx.model.maxTokens=128000
+ r.rows[1].messages[0].usage={input:353120,output:676}
+ try{
+  const payload={input:[{role:'user',content:'x'.repeat(1604800)}],max_output_tokens:128000}
+  const wire=captureRuntime(r,payload)
+  assert.equal(r.abortCalls,0,'a roughly 401K request can still fit the 500K window')
+  assert.ok(wire.max_output_tokens<90000,'reduce the output reserve by the actual remaining capacity')
+  assert.ok(wire.max_output_tokens>80000)
+  assert.deepEqual(wire.input,payload.input);assert.equal(payload.max_output_tokens,128000)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+test('Pi boundary waiting rejects irreducible oversized tools before starting a background model',async()=>{
+ const r=runtime({tokens:90000,readPolicy:mainForkPolicy})
+ r.ctx.modelRegistry={streamSimple(_model,_context,options){return {result:async()=>{try{options.onPayload({messages:[],tools:[{name:'huge',description:'巨'.repeat(120000)}]})}catch{return {stopReason:'aborted'}}}}}}
+ try{
+  await r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
+  assert.equal(r.abortCalls,1);assert.equal(r.api.getState(),null);assert.deepEqual(r.commands,[])
+ }finally{r.handlers.get('session_shutdown')()}
+})
 
 test('Pi native image payloads count visual tokens instead of encoded image bytes', () => {
   for (const image of [{ type: 'image_url', image_url: { url: 'data:image/png;base64,'+'a'.repeat(1000000) } }, { type: 'input_image', image_url: 'data:image/png;base64,'+'a'.repeat(1000000) }, { inlineData: { mimeType: 'image/png', data: 'a'.repeat(1000000) } }]) {
