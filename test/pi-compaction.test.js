@@ -846,6 +846,36 @@ test('Pi boundary waiting rejects irreducible oversized tools before starting a 
  }finally{r.handlers.get('session_shutdown')()}
 })
 
+test('Pi waits before dispatch when final wire pressure arrives below the measured preparation line',async()=>{
+ let prepared,release,started=false,finished=false
+ const gate=new Promise(resolve=>release=resolve)
+ const r=runtime({tokens:347674,readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixed'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
+  fork:async(_ctx,_snap,capture,{stage})=>{started=true;assert.equal(capture.payload.max_output_tokens,128000);await stage();await gate;return {blocks:[],tree:[]}}})
+ r.ctx.model.contextWindow=500000;r.ctx.model.maxTokens=128000
+ r.rows[0].messages[0].content='巨'.repeat(600000)
+ r.ctx.modelRegistry={streamSimple(_m,_c,opts){return {result:async()=>{try{opts.onPayload({input:[{role:'user',content:'x'.repeat(1957600)}],max_output_tokens:128000})}catch{return {stopReason:'aborted'}}}}}}
+ let work
+ try{
+  work=r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx).then(v=>{finished=true;return v})
+  await until(()=>started);assert.equal(finished,false);assert.equal(r.abortCalls,0)
+  release();const result=await work
+  assert.ok(result.messages);assert.ok(JSON.stringify(result.messages).includes(JSON.stringify(summary).slice(1,-1)))
+  assert.equal(r.abortCalls,0)
+ }finally{release();r.handlers.get('session_shutdown')();await work}
+})
+
+test('Pi background capture retains its original output budget when the foreground cap collapses',async()=>{
+ let captured
+ const r=runtime({tokens:347674,readPolicy:mainForkPolicy,fork:async(_ctx,_snap,c,{stage})=>{captured=c;await stage();return {blocks:[],tree:[]}}})
+ r.ctx.model.contextWindow=500000;r.ctx.model.maxTokens=128000
+ try{
+  captureRuntime(r,{input:[{role:'user',content:'x'.repeat(1957600)}],max_output_tokens:128000})
+  await until(()=>captured)
+  assert.equal(captured.payload.max_output_tokens,128000)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
 test('Pi native image payloads count visual tokens instead of encoded image bytes', () => {
   for (const image of [{ type: 'image_url', image_url: { url: 'data:image/png;base64,'+'a'.repeat(1000000) } }, { type: 'input_image', image_url: 'data:image/png;base64,'+'a'.repeat(1000000) }, { inlineData: { mimeType: 'image/png', data: 'a'.repeat(1000000) } }]) {
     const r = runtime({ tokens: 1000 })

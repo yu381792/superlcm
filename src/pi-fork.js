@@ -150,8 +150,14 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
   // Persist the sent output limit so the archive worker revalidates the same
   // tree without imposing the smaller prompt goal a second time. The installed
   // root still has its independent compaction and request-capacity checks.
-  const treeOptions={fanout:planningOptions.fanout,incremental:true,targetTokens:piOutputReserve(wireSettings,model)}
-  const tree = parseForkTree(result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), plan,undefined,treeOptions)
+  const text=result.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+  const sentLimit=piOutputReserve(wireSettings,model),actual=result.usage?.output
+  if(Number.isFinite(actual)&&actual>sentLimit)throw Error('Pi 后台分支实际输出超过发送额度，原文保留')
+  // A tokenizer estimate cannot overrule a complete provider receipt within
+  // its sent limit. The continuation root is checked independently at install.
+  const verified=Number.isSafeInteger(actual)&&actual>0&&actual<=sentLimit
+  const treeOptions={fanout:planningOptions.fanout,incremental:true,targetTokens:verified?Math.max(sentLimit,estimateSummaryTokens(text)):sentLimit}
+  const tree = parseForkTree(text, plan,undefined,treeOptions)
   const blocks=tree.filter(n=>n.level===0)
   return { blocks, tree, treeOptions, model: model.id, provider: model.provider, usage: result.usage,
     sourceDigest: forkHash(snapshot.source), prefixHash: forkHash(wirePrefix), requestSettingsHash: forkHash(wireSettings) }

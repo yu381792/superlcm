@@ -112,7 +112,17 @@ for(const excess of [.01,.07])test('Pi accepts a complete tree '+Math.round(exce
  assert.equal(result.usage.cacheRead,9000)
 })
 
-test('Pi still rejects a complete tree beyond its final output limit',async()=>{
+test('Pi accepts a complete provider-counted tree when the local tokenizer overestimates output',async()=>{
+ const ctx={model:capture.model,modelRegistry:{streamSimple(_m,_c,options){
+  const wire=options.onPayload({...payload,messages:[...payload.messages,{role:'user',content:'directive'}]})
+  const limit=piOutputReserve(wire,capture.model),summary='# Historical state\n'+'x'.repeat((limit+1)*4)
+  return {result:async()=>({stopReason:'stop',content:[{type:'text',text:JSON.stringify({blocks:[{index:0,summary}]})}],usage:{output:limit}})}
+ }}}
+ const result=await summarizePiFork(ctx,snapshot,capture,{stage:async()=>{}})
+ assert.ok(result.treeOptions.targetTokens>capture.model.maxTokens)
+ assert.ok(result.tree[0].summary.startsWith('# Historical'))
+})
+test('Pi still rejects an unverified complete tree beyond its final output limit',async()=>{
  const ctx={model:capture.model,modelRegistry:{streamSimple(_m,_c,options){
   const wire=options.onPayload({...payload,messages:[...payload.messages,{role:'user',content:'directive'}]})
   const summary='# Historical state\n'+'x'.repeat((piOutputReserve(wire,capture.model)+1)*4)

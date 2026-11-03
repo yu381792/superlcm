@@ -389,8 +389,11 @@ export function registerPiCompaction(pi, options, {
         // At the replacement boundary, wait before dispatching the model.
         // Pi permits request-context transforms here; persist the checkpoint
         // through its next native turn boundary, preserving the exact tail.
-        if(reached(ctx,policy().ratio)&&ctx.modelRegistry?.streamSimple){
+        const atTarget=reached(ctx,policy().ratio),hardInput=ctx.model.contextWindow-piWindowSafety(ctx.model,policy().ratio)-1024
+        const possiblePressure=(capacity(ctx)?.estimated||0)>=hardInput||estimatePiRequest(event.messages)>=hardInput
+        if((atTarget||possiblePressure)&&ctx.modelRegistry?.streamSimple){
           capture=await capturePiContext(ctx,event.messages,settings().thinkingLevel,ctx.signal)
+          if(!atTarget&&Math.max(capacity(ctx)?.observed||0,estimatePiRequest(capture.payload))<hardInput)return
           if(!policy().summaryModel&&fixedRequestTokens(capture.payload)>=ctx.model.contextWindow-piWindowSafety(ctx.model,policy().ratio)-1024){pause(ctx,'fixed-overhead');return}
           prepare(ctx,true)
           const compaction=await guardedReady(ctx,entries(ctx),0,true)
@@ -413,6 +416,7 @@ export function registerPiCompaction(pi, options, {
       reportReplacement(ctx)
       const p = policy()
       if (!p.enabled && !p.summaryEnabled) {captureRecovery=false;return}
+      const originalPayload=event.payload
       let unsafe=false
       if (takeoverEnabled(ctx)) {
         const c=capacity(ctx),safety=piWindowSafety(ctx.model,p.ratio),requested=piOutputReserve(event.payload,ctx.model)
@@ -427,7 +431,9 @@ export function registerPiCompaction(pi, options, {
         event={...event,payload}
       }
       if (p.summaryMode === 'main-fork'){
-        capture = { payload: structuredClone(event.payload), messages: requestMessages, model: structuredClone(ctx.model), reasoning: pi.getThinkingLevel?.() }
+        // The branch has its own selected prefix and output capacity. Never
+        // inherit an emergency foreground cap of only a few hundred tokens.
+        capture = { payload: structuredClone(originalPayload), messages: requestMessages, model: structuredClone(ctx.model), reasoning: pi.getThinkingLevel?.() }
         prepare(ctx,unsafe||captureRecovery)
       }
       captureRecovery=false

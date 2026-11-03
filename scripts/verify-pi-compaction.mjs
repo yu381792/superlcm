@@ -23,6 +23,8 @@ assert.ok(!(otherModel||ratio50||overGoal||earlyNative||imageHistory)||mainFork,
 const passive = process.argv.includes('--passive-only')
 const live = process.argv.includes('--live-luna'), dir = mkdtempSync(join(tmpdir(), 'superlcm-pi-background-'))
 const slow = process.argv.includes('--slow-luna'), fail = process.argv.includes('--fail-luna'), cold = process.argv.includes('--cold-input')
+const wirePressure=process.argv.includes('--wire-pressure')
+assert.ok(!wirePressure||mainFork&&cold&&fullWindow,'wire pressure requires the 500K cold native fixture')
 const huge = process.argv.includes('--huge-tool-output'), largeInput = process.argv.includes('--oversized-input')
 const nativePayload = process.argv.includes('--oversized-native-payload'), nativeOutput = process.argv.includes('--oversized-native-output')
 const malformed = process.argv.includes('--malformed-summary'), missing = process.argv.includes('--missing-summary-node'), truncated = process.argv.includes('--truncated-summary')
@@ -130,7 +132,7 @@ try {
     const coldEvidence=cold&&mainFork?'证'.repeat(Math.ceil(window*(fullWindow?.82:1.03)/12)):''
     const text=`请检查第 ${i} 处。部署必须另行获得用户明确授权。` + '保留准确路径和失败原因。'.repeat(fullWindow?400:40)+coldEvidence
     manager.appendMessage({ role: 'user', content: imageHistory&&i===0?[{type:'text',text},{type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN3cAAAAASUVORK5CYII='}]:text, timestamp: Date.now() })
-    manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: `第 ${i} 处尚未结束。` + '路径为 /tmp/synthetic-project，工具结果回查原文。'.repeat(fullWindow?120:12) }], api: 'openai-completions', provider: 'fixture-main', model: 'scripted-main', usage: usage((cold ? mainFork&&!fullWindow?90000:95000 : ratio50?40000:70000)*scale), stopReason: 'stop', timestamp: Date.now() })
+    manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: `第 ${i} 处尚未结束。` + '路径为 /tmp/synthetic-project，工具结果回查原文。'.repeat(fullWindow?120:12) }], api: 'openai-completions', provider: 'fixture-main', model: 'scripted-main', usage: usage((wirePressure?69000:cold ? mainFork&&!fullWindow?90000:95000 : ratio50?40000:70000)*scale), stopReason: 'stop', timestamp: Date.now() })
   }
   const original = readFileSync(manager.getSessionFile(), 'utf8')
   const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: true, reserveTokens: earlyNative?Math.floor(window*.4):1, keepRecentTokens: 512 }, enableAnalytics: false, enableInstallTelemetry: false })
@@ -234,7 +236,10 @@ try {
     if(otherModel){
       assert.deepEqual({...branch,messages:[],model:undefined,max_tokens:undefined,max_completion_tokens:undefined},{...main,messages:[],model:undefined,max_tokens:undefined,max_completion_tokens:undefined})
       assert.equal(piOutputReserve(branch),1024,'the selected summary model keeps its own output limit')
-    }else assert.deepEqual({...branch,messages:[],model:undefined},{...main,messages:[],model:undefined})
+    }else{
+      assert.deepEqual({...branch,messages:[],model:undefined,max_tokens:undefined,max_completion_tokens:undefined},{...main,messages:[],model:undefined,max_tokens:undefined,max_completion_tokens:undefined})
+      assert.ok(piOutputReserve(branch)>0&&piOutputReserve(branch)<=maxTokens,'background output is independently bounded by its model and selected prefix')
+    }
     assert.equal(branch.model,otherModel?'scripted-summary':'scripted-main');assert.equal(main.model,'scripted-main')
     assert.equal(swapEntry.details.providerUsage.cacheRead,256)
     if(overGoal){
