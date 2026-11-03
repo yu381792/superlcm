@@ -125,7 +125,10 @@ try {
   const manager = sdk.SessionManager.create(cwd, sessions)
   const usage = tokens => ({ input: tokens - 100, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: tokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } })
   for (let i = 0; i < 8; i++) {
-    const text=`请检查第 ${i} 处。部署必须另行获得用户明确授权。` + '保留准确路径和失败原因。'.repeat(fullWindow?400:40)
+    // A cold-capacity fixture must exceed the real wire budget, rather than
+    // merely reporting large synthetic usage for a tiny request that fits.
+    const coldEvidence=cold&&mainFork?'证'.repeat(Math.ceil(window*(fullWindow?.82:1.03)/12)):''
+    const text=`请检查第 ${i} 处。部署必须另行获得用户明确授权。` + '保留准确路径和失败原因。'.repeat(fullWindow?400:40)+coldEvidence
     manager.appendMessage({ role: 'user', content: imageHistory&&i===0?[{type:'text',text},{type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN3cAAAAASUVORK5CYII='}]:text, timestamp: Date.now() })
     manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: `第 ${i} 处尚未结束。` + '路径为 /tmp/synthetic-project，工具结果回查原文。'.repeat(fullWindow?120:12) }], api: 'openai-completions', provider: 'fixture-main', model: 'scripted-main', usage: usage((cold ? mainFork&&!fullWindow?90000:95000 : ratio50?40000:70000)*scale), stopReason: 'stop', timestamp: Date.now() })
   }

@@ -27,6 +27,8 @@ Claude Code, Pi and DSH share the same Compression controls: takeover, replaceme
 
 Source granularity defaults to about 20,000 estimated tokens, with four adjacent children per parent. Every level is requested in the same response and atomically saved after source and completeness checks. Cache hits are measured from provider usage, never guaranteed. See [architecture and verification](docs/MAIN-FORK.md).
 
+Pi and DSH reuse saved blocks across compactions and merge adjacent blocks of the same granularity using the configured fanout. Each background response writes only new blocks, required parents and the current continuation overview. Existing blocks stay unchanged; overviews are stored separately, avoiding an extra historical level on every replacement. Earlier overviews remain searchable.
+
 Start with the [installation package](docs/RELEASE.md), run `superlcm web`, and choose your tool under **Tools**. Claude Code users can also [install the Claude plugin](#install-as-a-claude-plugin) and open `/superlcm:console`. The DSH plugin is bundled with SuperLcm: connect once globally and reload dsh harness to see SuperLcm under Plugins. No separate dsh-superlcm installation is needed; see [dsh harness setup](docs/DSH.md).
 
 ## Move a whole conversation, summaries and all, into another tool

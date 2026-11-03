@@ -471,6 +471,19 @@ test('Pi persisted system/tools are counted once as fixed overhead, outside dial
  const result=await turn(r)
  assert.equal(result.entries[0].type,'compaction');assert.equal(r.abortCalls,0)
 })
+test('Pi measured safe requests are not paused by large archive previews before the real threshold',async()=>{
+ const r=runtime({tokens:60000,readPolicy:mainForkPolicy})
+ r.rows[0].messages[0].content='Archive JSON preview overhead. '.repeat(18000)
+ r.rows[1].messages[0].usage={input:59000,output:1000}
+ await turn(r)
+ assert.equal(r.abortCalls,0);assert.deepEqual(r.commands,[])
+ captureRuntime(r,{messages:[{role:'user',content:'Actual safe wire input. '.repeat(5000)}],max_tokens:16000})
+ assert.equal(r.abortCalls,0);assert.deepEqual(r.commands,[],'measured usage below 70% must not start a false recovery')
+ r.ctx.tokens=70000;captureRuntime(r)
+ await until(()=>r.commands.includes('pi-ready'))
+ assert.ok(r.commands.includes('pi-ready'),'preparation begins at the configured measured threshold')
+ r.handlers.get('session_shutdown')()
+})
 test('a large output reserve cannot move preparation or replacement before their total-window thresholds', async () => {
   const r = runtime({ tokens: 60000 }); r.ctx.model.maxTokens = 50000
   // A previous measured request includes fixed costs. Use a large compressible
@@ -622,10 +635,34 @@ test('Pi cold resume without a draft can capture recovery before blocking the pr
  const controller=new AbortController();r.ctx.signal=controller.signal;r.ctx.abort=()=>controller.abort()
  try{
   assert.equal(await r.handlers.get('input')({text:'CONTINUE AFTER RESTART'},r.ctx),undefined)
-  captureRuntime(r)
+  captureRuntime(r,{messages:[{role:'user',content:'中'.repeat(90000)}],max_tokens:50000})
   await until(()=>calls===1)
   assert.equal(controller.signal.aborted,true)
   assert.ok(r.api.getState(),'capacity abort retains the recovery job')
+ }finally{r.handlers.get('session_shutdown')()}
+})
+test('Pi cold recovery lets a final safe wire request continue while preparing in the background',async()=>{
+ let calls=0
+ const r=runtime({tokens:80000,readPolicy:mainForkPolicy,responder:async()=>null,fork:async()=>{calls++;return new Promise(()=>{})}})
+ r.ctx.model.maxTokens=50000
+ const controller=new AbortController();r.ctx.signal=controller.signal;r.ctx.abort=()=>controller.abort()
+ try{
+  assert.equal(await r.handlers.get('input')({text:'CONTINUE AFTER RESTART'},r.ctx),undefined)
+  const payload=captureRuntime(r)
+  await until(()=>calls===1)
+  assert.equal(controller.signal.aborted,false,'an earlier estimate must not abort a verified safe wire request')
+  assert.ok(payload?.messages);assert.ok(r.api.getState())
+ }finally{r.handlers.get('session_shutdown')()}
+})
+test('Pi oversized final wire request still starts an earlier-prefix recovery branch before pausing the foreground',async()=>{
+ let calls=0
+ const r=runtime({tokens:99000,readPolicy:mainForkPolicy,responder:async()=>null,fork:async()=>{calls++;return new Promise(()=>{})}})
+ r.rows[0].messages[0].content='Large compressible historical evidence. '.repeat(10000)
+ const controller=new AbortController();r.ctx.signal=controller.signal;r.ctx.abort=()=>controller.abort()
+ try{
+  captureRuntime(r,{messages:[{role:'user',content:'中'.repeat(120000)}],max_tokens:50000})
+  await until(()=>calls===1)
+  assert.equal(controller.signal.aborted,true);assert.ok(r.api.getState(),'foreground protection must retain the recovery branch')
  }finally{r.handlers.get('session_shutdown')()}
 })
 

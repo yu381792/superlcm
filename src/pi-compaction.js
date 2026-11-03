@@ -13,6 +13,7 @@ import { detectSummaryLanguage, userTextFromRecord } from './summary-language.js
 import { estimateSummaryTokens, takeTokenPrefix } from './summary-tokens.js'
 import { isReducedSummary } from './summary-fitting.js'
 import {hasUnrepresentedContent} from './source-completeness.js'
+import {piCheckpointBlocks,savePiForkTree} from './pi-summary-tree.js'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
 export function piSourceChunks(text, budget = 20000) {
@@ -46,15 +47,15 @@ export function piPreparationRevision(store, session, env = process.env) {
   const policy = readPiPolicy(store.dir)
   // A ready draft must have been checked under the current summary policy.
   // Earlier fork trees may also lack model-written parent facts.
-  return policy.summaryMode === 'main-fork' ? forkHash(['pi-main-fork-tree-v3',SUMMARY_POLICY_VERSION,policy]) : forkHash(['pi-api-preparation-v2',SUMMARY_POLICY_VERSION,policy,summarySettingsRevision(store, session, env)])
+  return policy.summaryMode === 'main-fork' ? forkHash(['pi-main-fork-tree-v4',SUMMARY_POLICY_VERSION,policy]) : forkHash(['pi-api-preparation-v2',SUMMARY_POLICY_VERSION,policy,summarySettingsRevision(store, session, env)])
 }
 export function stagePi(store, input, { env = process.env } = {}) {
   const policy = readPiPolicy(store.dir)
   if ((!policy.enabled && !policy.summaryEnabled) || !store.integrationEnabled('pi')) throw Error('Pi 后台摘要未启用')
   const captured = capturePi(store, input, { env, automatic: true })
   if (captured.skipped) throw Error('Pi 原文归档尚未完成')
-  activeBranch(store, captured.session, input.leafId, input.firstKeptEntryId)
-  return { archived: true, revision: piPreparationRevision(store, captured.session, env) }
+  const {branch}=activeBranch(store, captured.session, input.leafId, input.firstKeptEntryId)
+  return { archived: true, revision: piPreparationRevision(store, captured.session, env),checkpoints:piCheckpointBlocks(store,captured.session,input,branch) }
 }
 export async function compactPi(store, input, { signal, summarize = summarizeWithModel, env = process.env } = {}) {
   const policy = readPiPolicy(store.dir)
@@ -112,10 +113,11 @@ export async function compactPi(store, input, { signal, summarize = summarizeWit
     fork = input.forkSummary
     if (!fork || fork.sourceDigest !== forkHash(input.source) || !fork.model || !Array.isArray(fork.blocks) || !fork.blocks.length) throw Error('Pi 后台分支摘要或原文对应关系缺失')
     if (input.forkRevision !== revision) throw Error('Pi 压缩设置已变化，保留原上下文')
-    let end = -1
+    let end = -1,previous=null
     for (const [index, block] of fork.blocks.entries()) {
-      if (block.index !== index || !Number.isSafeInteger(block.firstMessage) || !Number.isSafeInteger(block.lastMessage) || block.firstMessage <= end || block.lastMessage < block.firstMessage) throw Error('Pi 后台分支摘要范围无效')
-      checkedSummary(block.summary, { language, requireHeading: true, maxChars: null }); end = block.lastMessage
+      const sharedCheckpoint=block.frozenEntryId&&block.frozenEntryId===previous?.frozenEntryId&&block.firstMessage===previous.firstMessage&&block.lastMessage===previous.lastMessage&&block.firstMessage===block.lastMessage
+      if (block.index !== index || !Number.isSafeInteger(block.firstMessage) || !Number.isSafeInteger(block.lastMessage) || block.firstMessage <= end&&!sharedCheckpoint || block.lastMessage < block.firstMessage) throw Error('Pi 后台分支摘要范围无效')
+      checkedSummary(block.summary, {language:block.frozenEntryId?undefined:language,requireHeading:!block.frozenEntryId,maxChars:null});end=block.lastMessage;previous=block
     }
   }
   const pieces = fork ? fork.blocks : piSourceChunks(input.source), summaries = []
@@ -146,7 +148,10 @@ export async function compactPi(store, input, { signal, summarize = summarizeWit
   }
   // Check the archived bytes again after model work. No uncertain cut point is published.
   activeBranch(store, session, input.leafId, input.firstKeptEntryId)
-  if(fork?.tree&&fork.blocks.every(b=>Array.isArray(b.entryIds)&&b.entryIds.length)){
+  let treeDetails={}
+  if(fork?.treeOptions?.incremental){
+    treeDetails=savePiForkTree(store,session,input,fork,piCheckpointBlocks(store,session,input,branch),()=>{valid();return true})
+  }else if(fork?.tree&&fork.blocks.every(b=>Array.isArray(b.entryIds)&&b.entryIds.length)){
     const byId=new Map(store.eventRows(session).map(row=>[JSON.parse(store.exact(session,row.ordinal)).id,row]))
     const ranges=fork.blocks.map(block=>{
       const rows=block.entryIds.map(id=>byId.get(id));if(rows.some(r=>!r))throw Error('Pi 分块原文编号已失效')
@@ -163,7 +168,7 @@ export async function compactPi(store, input, { signal, summarize = summarizeWit
     throw Error('Pi 完整替换摘要没有缩短原文，结果未发布')
   }
   return { summary, firstKeptEntryId: input.firstKeptEntryId, tokensBefore: input.tokensBefore,
-    details: { superlcm: true, model: fork?.model || setting.model, summaryMode: policy.summaryMode || 'api', ...(fork ? {provider:fork.provider, providerUsage:fork.usage, prefixHash:fork.prefixHash, requestSettingsHash:fork.requestSettingsHash, sourceBlocks:fork.blocks,...(fork.tree?{summaryTree:fork.tree}:{})} : {}), ratio: policy.ratio, summaryRevision:revision, session, leafId: input.leafId, chunks: pieces.length, calls, cached,
+    details: { superlcm: true,...treeDetails,summaryDigest:forkHash(summary),model: fork?.model || setting.model, summaryMode: policy.summaryMode || 'api', ...(fork ? {provider:fork.provider, providerUsage:fork.usage, prefixHash:fork.prefixHash, requestSettingsHash:fork.requestSettingsHash, sourceBlocks:fork.blocks,...(fork.tree?{summaryTree:fork.tree}:{})} : {}), ratio: policy.ratio, summaryRevision:revision, session, leafId: input.leafId, chunks: pieces.length, calls, cached,
       readFiles: input.readFiles || [], modifiedFiles: input.modifiedFiles || [] } }
 }
 

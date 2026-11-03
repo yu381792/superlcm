@@ -18,32 +18,45 @@ async function convert(messages) {
   }
   return converter(messages)
 }
-export async function piForkPlan(snapshot, capture) {
+export async function piForkPlan(snapshot, capture, {checkpoints=[]}={}) {
   const selected = await convert(snapshot.sourceMessages)
   const visible = capture.messages
   // Every selected message must be the exact beginning of the captured main
   // transcript after system messages. Changed context extensions are blocked.
   const indices = visible.flatMap((message, index) => message.role === 'system' ? [] : [index])
   if (selected.length > indices.length || selected.some((message, i) => !isDeepStrictEqual(message,visible[indices[i]]))) throw Error('Pi 原始请求与归档选区不同，无法原样分支')
-  const mapped=[],humanIndices=new Set()
+  const mapped=[],humanIndices=new Set(),checkpointAt=new Map()
   if(snapshot.sourceEntryIds){
     const individual=[]
     for(let i=0;i<snapshot.sourceMessages.length;i++){
       const part=await convert([snapshot.sourceMessages[i]])
+      if(snapshot.sourceMessages[i].role==='compactionSummary'){
+        const checkpoint=checkpoints.find(c=>c.entryId===snapshot.sourceEntryIds[i])
+        if(!checkpoint||part.length!==1||checkpoint.summaryDigest!==forkHash(snapshot.sourceMessages[i].summary))throw Error('Pi 旧摘要尚未完成归档核验')
+        checkpointAt.set(individual.length,checkpoint)
+      }
       if(snapshot.sourceMessages[i].role==='user')humanIndices.add(individual.length)
       individual.push(...part);mapped.push(...part.map(()=>snapshot.sourceEntryIds[i]))
     }
     if(serializePiMessages(individual)!==serializePiMessages(selected))throw Error('Pi 消息映射不兼容，原文保留')
   }
   const plan = []; let first = 0, tokens = 0;const pending=new Set()
+  const add=(from,to)=>plan.push({index:plan.length,firstMessage:indices[from],lastMessage:indices[to],...forkAnchors(selected.slice(from,to+1)),...(mapped.length?{entryIds:[...new Set(mapped.slice(from,to+1))]}:{})})
   for (let i = 0; i < selected.length; i++) {
+    const checkpoint=checkpointAt.get(i)
+    if(checkpoint){
+      if(pending.size)throw Error('Pi 旧摘要边界存在未闭合工具组')
+      if(i>first)add(first,i-1)
+      for(const block of checkpoint.blocks)plan.push({...block,index:plan.length,firstMessage:indices[i],lastMessage:indices[i],frozenEntryId:checkpoint.entryId})
+      first=i+1;tokens=0;continue
+    }
     tokens += estimateSummaryTokens(serializePiMessages([selected[i]]))
     const pairing=summaryToolPairing(JSON.stringify({type:'message',message:selected[i]}))
     if(pairing.endsTurn||humanIndices.has(i))pending.clear()
     for(const id of pairing.opened)pending.add(id);for(const id of pairing.closed)pending.delete(id)
     if(pending.size)continue
     if (tokens < (snapshot.summaryTuning?.targetTokens||20000) && i < selected.length - 1) continue
-    plan.push({ index: plan.length, firstMessage: indices[first], lastMessage: indices[i], ...forkAnchors(selected.slice(first,i+1)),...(mapped.length?{entryIds:[...new Set(mapped.slice(first,i+1))]}:{}) }); first = i + 1; tokens = 0
+    add(first,i); first = i + 1; tokens = 0
   }
   if(first!==selected.length)throw Error('Pi 选区存在未闭合工具组，保留原文')
   return plan
@@ -60,12 +73,12 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
     if(separator<1||!model)throw Error('所选 Pi 摘要模型不可用，请重新选择')
   }
   const override=model.provider!==capture.model.provider||model.id!==capture.model.id
-  const plan = await piForkPlan(snapshot, capture).catch(error=>{error.code='SUPERLCM_PI_CAPTURE_INVALID';throw error})
-  await stage() // Exact originals must be durably archived before model work.
+  const staged=await stage() // Exact originals and old blocks must be durably archived before model work.
+  const plan = await piForkPlan(snapshot, capture,staged).catch(error=>{error.code='SUPERLCM_PI_CAPTURE_INVALID';throw error})
   signal?.throwIfAborted()
   const target = Math.min(20000, Math.max(2048, snapshot.tokensBefore * .15))
   const nativeReserve=override?piOutputReserve(null,model):piOutputReserve(capture.payload,model)
-  const planningOptions={fanout:snapshot.summaryTuning?.fanout||4,targetTokens:Math.max(256,Math.min(target,12000,Math.floor(nativeReserve*.65)))}
+  const planningOptions={fanout:snapshot.summaryTuning?.fanout||4,incremental:true,targetTokens:Math.max(256,Math.min(target,12000,Math.floor(nativeReserve*.65)))}
   const directive = forkDirective(plan, planningOptions.targetTokens,undefined,planningOptions)
   let images = 0
   const encoded = JSON.stringify(capture.messages, (_key,value) => { if(value?.type === 'image'){images++;return {type:'image'}};return value })
@@ -118,7 +131,7 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
   // Persist the sent output limit so the archive worker revalidates the same
   // tree without imposing the smaller prompt goal a second time. The installed
   // root still has its independent compaction and request-capacity checks.
-  const treeOptions={fanout:planningOptions.fanout,targetTokens:piOutputReserve(wireSettings,model)}
+  const treeOptions={fanout:planningOptions.fanout,incremental:true,targetTokens:piOutputReserve(wireSettings,model)}
   const tree = parseForkTree(result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), plan,undefined,treeOptions)
   const blocks=tree.filter(n=>n.level===0)
   return { blocks, tree, treeOptions, model: model.id, provider: model.provider, usage: result.usage,
