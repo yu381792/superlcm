@@ -10,6 +10,12 @@ import {parseForkTree,forkDirective} from '../src/fork-summary.js'
 import {summarizeWithModel,buildHierarchy} from '../src/summarize.js'
 import {ClaudeStore} from '../src/store.js'
 import {dshSummaryLanguage} from '../dsh/summary-language.js'
+test('provider handoff history does not override the current human language',()=>{
+ const wrapper='Context handoff (delta_since_target_last_seen):\nProvider context handoff. Thread: synthetic-thread.\n'+'The project has a pending task and the original content should be preserved. '.repeat(200)
+ assert.equal(detectSummaryLanguage([userTextFromRecord({type:'message',message:{role:'user',content:wrapper+'\nUser message:\n请继续检查配置，保留所有原始记录。'}})]).code,'zh')
+ assert.equal(userTextFromRecord({type:'message',message:{role:'user',content:wrapper}}),'')
+ assert.equal(detectSummaryLanguage([userTextFromRecord({role:'user',content:'Please inspect this project and preserve the originals.'})]).code,'en')
+})
 
 // #19's real-world examples and an Urdu example with the Persian letters
 // shared by both languages. Do not contact a model provider in these tests.

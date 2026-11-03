@@ -423,6 +423,21 @@ test('genuinely oversized fixed context still triggers protection before dispatc
     await turn(r); assert.equal(r.abortCalls, 1); assert.deepEqual(r.commands, ['pi-prepare'])
   }
 })
+test('Pi persisted system/tools are counted once as fixed overhead, outside dialogue and retained tail',async()=>{
+ const r=runtime({tokens:60000})
+ const system='Fixed system state. '.repeat(11000)
+ r.ctx.getSystemPrompt=()=>system
+ r.rows.unshift({sourceEntry:{id:'sys',type:'system'},messages:[{role:'system',content:system}]})
+ assert.equal(await turn(r),undefined)
+ assert.deepEqual(r.commands,[],'duplicating system state must not prepare or pause below 70%')
+ assert.equal(r.abortCalls,0)
+ r.ctx.tokens=70000;await turn(r);await r.complete()
+ assert.equal(r.draft.snapshot.sourceMessages,undefined,'legacy API preparation does not gain a model route')
+ assert.ok(!r.draft.snapshot.source.includes('Fixed system state.'),'system state must not enter a replaceable history range')
+ r.ctx.tokens=80000
+ const result=await turn(r)
+ assert.equal(result.entries[0].type,'compaction');assert.equal(r.abortCalls,0)
+})
 test('a large output reserve cannot move preparation or replacement before their total-window thresholds', async () => {
   const r = runtime({ tokens: 60000 }); r.ctx.model.maxTokens = 50000
   // A previous measured request includes fixed costs. Use a large compressible

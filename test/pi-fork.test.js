@@ -1,7 +1,8 @@
 import './env.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { summarizePiFork } from '../src/pi-fork.js'
+import { summarizePiFork,piForkPlan } from '../src/pi-fork.js'
+import {makePiSnapshot} from '../src/pi-snapshot.js'
 import { forkHash, parseForkSummary } from '../src/fork-summary.js'
 import { estimatePiRequest, limitPiOutput, piCompletionBudget, piOutputReserve, piWindowSafety } from '../src/pi-request.js'
 import { estimateSummaryTokens } from '../src/summary-tokens.js'
@@ -11,6 +12,22 @@ const messages=[{role:'system',content:'System',toolsAdded:[{name:'read',paramet
 const payload={model:'fixture',messages:[{role:'system',content:'System'},{role:'user',content:first.content},{role:'assistant',content:'Inspection pending.'}],tools:[{type:'function',function:{name:'read'}}],max_tokens:2048,prompt_cache_key:'main-session',temperature:.2}
 const snapshot={session_id:'main-session',sourceMessages:[first,second],source:'source',tokensBefore:10000}
 const capture={payload,messages,model:{provider:'fixture',id:'fixture',contextWindow:1000000,maxTokens:2048},reasoning:'high'}
+test('Pi persisted system/tool state stays outside the summary source and native-prefix indices',async()=>{
+ const system={role:'system',content:'',sections:{rules:'Deployment requires permission.'},toolsAdded:[{name:'read',parameters:{type:'object'}}],timestamp:0}
+ const oldUser={role:'user',content:'Inspect the project without deployment. '.repeat(200),timestamp:1}
+ const oldAssistant={role:'assistant',content:[{type:'text',text:'Inspection remains incomplete. '.repeat(100)}],timestamp:2}
+ const tail={role:'user',content:'Keep this exact current request. '.repeat(100),timestamp:3}
+ const rows=[system,oldUser,oldAssistant,tail].map((m,i)=>({sourceEntry:{id:'e'+i,type:i?'message':'system'},messages:[m]}))
+ const ctx={model:capture.model,getContextUsage:()=>({tokens:10000}),sessionManager:{buildSessionProjection:()=>({entries:rows}),getSessionId:()=> 'native-system',getSessionFile:()=> '/synthetic.jsonl',getLeafId:()=> 'e3'}}
+ const selected=makePiSnapshot(ctx,{summaryMode:'main-fork',ratio:.8},{compaction:{keepRecentTokens:512}})
+ assert.deepEqual(selected.sourceMessages,[oldUser,oldAssistant])
+ assert.deepEqual(selected.sourceEntryIds,['e1','e2'])
+ const plan=await piForkPlan(selected,{messages:[system,oldUser,oldAssistant,tail]})
+ assert.equal(plan[0].firstMessage,1);assert.equal(plan.at(-1).lastMessage,2)
+ assert.deepEqual(plan.flatMap(n=>n.entryIds),['e1','e2'])
+ // Excluding system state must not weaken the dialogue prefix check.
+ await assert.rejects(piForkPlan(selected,{messages:[system,{...oldUser,content:'changed'},oldAssistant,tail]}),/归档选区/)
+})
 test('Pi branch keeps all nested timers alive only for meaningful stream output',async t=>{
  const gates=[];let started,progress=0
  const begun=new Promise(resolve=>started=resolve)

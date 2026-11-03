@@ -16,6 +16,10 @@ export function serializePiMessages(messages) {
 }
 const view = entries => entries.map(e => ({ id: e.sourceEntry.id, messages: e.messages }))
 export const estimatePiMessages=messages=>Math.max(estimateSummaryTokens(serializePiMessages(messages)),estimatePiRequest(messages))
+// Pi 1.5 persists system prompts and tool declarations inside the projection.
+// Pi retains that state across compaction; it is fixed overhead, not dialogue
+// that the background branch may replace with a historical summary.
+export const piDialogueMessages=entries=>entries.flatMap(e=>e.messages.filter(m=>m.role!=='system'))
 export const snapshotPrefix = (entries, index) => piDigest(view(entries.slice(0, index)))
 export function piSignature(ctx, policy, settings = {}) {
   return piDigest([policy, ctx.model?.provider, ctx.model?.id, ctx.model?.contextWindow, ctx.model?.maxTokens, ctx.model?.api, ctx.model?.baseUrl, settings.thinkingLevel, settings.compaction])
@@ -28,7 +32,7 @@ export function snapshotMatches(snapshot, entries, signature) {
 // also supports a long autonomous turn without splitting an invocation/result pair.
 export function makePiSnapshot(ctx, policy, settings = {}, {keepLimit=Infinity}={}) {
   const entries = ctx.sessionManager.buildSessionProjection().entries
-  const sizes = entries.map(e => estimatePiMessages(e.messages))
+  const sizes = entries.map(e => estimatePiMessages(e.messages.filter(m=>m.role!=='system')))
   const requestedKeep = policy.keep === undefined ? Math.max(512, settings.compaction?.keepRecentTokens ?? 20000) : cappedRecentKeep(policy.keep, sizes.reduce((a,b)=>a+b,0))
   const keep=Math.min(requestedKeep,keepLimit)
   let retain = 0, desired = entries.length
@@ -56,7 +60,7 @@ export function makePiSnapshot(ctx, policy, settings = {}, {keepLimit=Infinity}=
     const unsupported=entries.slice(0,cut).findIndex(e=>e.messages.some(m=>Array.isArray(m.content)&&m.content.some(b=>!['text','toolCall','thinking','redactedThinking'].includes(b.type))))
     if(unsupported>=0){cut=safeCuts.filter(i=>i<=unsupported).at(-1)??-1;if(cut<=0)return null}
   }
-  const messages = entries.slice(0, cut).flatMap(e => e.messages)
+  const messages = piDialogueMessages(entries.slice(0, cut))
   if (!messages.some(m => !['compactionSummary', 'branchSummary'].includes(m.role))) return null
   const source = serializePiMessages(messages)
   if (!source.trim()) return null
@@ -68,7 +72,7 @@ export function makePiSnapshot(ctx, policy, settings = {}, {keepLimit=Infinity}=
     leafId: ctx.sessionManager.getLeafId(), firstKeptEntryId: entries[cut].sourceEntry.id,
     tokensBefore: ctx.getContextUsage()?.tokens || sizes.reduce((a, b) => a + b, 0), source, protectedRequest,
     sourceTokens:estimatePiMessages(messages),
-    ...(policy.summaryMode === "main-fork" ? {summaryModel:policy.summaryModel||null,sourceMessages: messages,sourceEntryIds:entries.slice(0,cut).flatMap(e=>e.messages.map(()=>e.sourceEntry.id)),summaryTuning:{targetTokens:policy.targetTokens||20000,fanout:policy.fanout||4}} : {}),
+    ...(policy.summaryMode === "main-fork" ? {summaryModel:policy.summaryModel||null,sourceMessages: messages,sourceEntryIds:entries.slice(0,cut).flatMap(e=>e.messages.filter(m=>m.role!=='system').map(()=>e.sourceEntry.id)),summaryTuning:{targetTokens:policy.targetTokens||20000,fanout:policy.fanout||4}} : {}),
     prefixDigest: snapshotPrefix(entries, cut), signature: piSignature(ctx, policy, settings),
   }
   snapshot.draftKey = piDigest([snapshot.session_id, snapshot.firstKeptEntryId, snapshot.prefixDigest, snapshot.signature])

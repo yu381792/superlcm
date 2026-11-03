@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process'
 import { summarizePiFork } from './pi-fork.js'
 import { readPiPolicy } from './pi-compaction-policy.js'
-import { makePiSnapshot, snapshotMatches, piSignature, serializePiMessages,estimatePiMessages } from './pi-snapshot.js'
+import { makePiSnapshot, snapshotMatches, piSignature, serializePiMessages,estimatePiMessages,piDialogueMessages } from './pi-snapshot.js'
 import { estimateSummaryTokens } from './summary-tokens.js'
 import { abortable, summaryAttempt } from './summary-attempt.js'
 import { estimatePiRequest, piOutputReserve,piWindowSafety,piCompletionBudget,limitPiOutput } from './pi-request.js'
@@ -89,9 +89,9 @@ export function registerPiCompaction(pi, options, {
     if (!Number.isFinite(u.window) || u.window <= 0) return null
     const reserve = Number.isFinite(ctx.model?.maxTokens) ? Math.max(0, ctx.model.maxTokens) : Math.min(16384, u.window * .1)
     const inputLimit = Math.max(0, u.window - piCompletionBudget(ctx.model,policy().ratio,reserve) - piWindowSafety(ctx.model,policy().ratio))
-    const whole = estimatePiMessages(current.flatMap(e => e.messages))
+    const whole = estimatePiMessages(piDialogueMessages(current))
     const active = pi.getActiveTools?.(), tools = (pi.getAllTools?.() || []).filter(t => !active || active.includes(t.name))
-    const declared = estimateSummaryTokens(ctx.getSystemPrompt?.() || '') + estimateSummaryTokens(JSON.stringify(tools))
+    const declared = Math.max(estimateSummaryTokens(ctx.getSystemPrompt?.() || '') + estimateSummaryTokens(JSON.stringify(tools)),estimatePiMessages(current.flatMap(e=>e.messages.filter(m=>m.role==='system'))))
     // Fixed prompts/tools are not compressible. Never subtract them from the
     // summary budget or pretend that replacing old dialogue removes them.
     const fixed = Math.max(declared, (u.tokens || 0) - whole, 0)
@@ -204,7 +204,7 @@ export function registerPiCompaction(pi, options, {
       stop(); failed(ctx); return null
     }
     const c = capacity(ctx, current), cut = current.findIndex(e => e.sourceEntry.id === selected.snapshot.firstKeptEntryId)
-    const tail = estimatePiMessages(current.slice(cut).flatMap(e => e.messages))
+    const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)))
     if (!c || c.fixed + tail + estimateSummaryTokens(compaction.summary) + extra >= c.inputLimit) {
       stop(); status(ctx, 'SuperLCM：旧摘要覆盖不足，后台重新准备'); return null
     }

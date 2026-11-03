@@ -9,7 +9,14 @@ const languages = {
 export const languageInfo = code => ({code: languages[code] ? code : 'und', name:languages[code]?.[0]??null, script:languages[code]?.[1]??null})
 const count = (text, pattern) => (text.match(pattern)||[]).length
 export function cleanUserText(text) {
-  return String(text||'')
+  text=String(text||'')
+  // T3 provider switches prepend an imported history to the current human
+  // input. Imported prose must not outweigh the language of the real request.
+  if(/^Context handoff \([^\n]*\):\s*\nProvider context handoff\./.test(text)){
+    const boundary=text.lastIndexOf('\nUser message:\n')
+    text=boundary>=0?text.slice(boundary+'\nUser message:\n'.length):''
+  }
+  return text
     .replace(/<(system-reminder|system_reminder|environment_context|heartbeat|instructions|attached_document|tool_result|task-notification|preceding_summary|historical_draft)\b[^>]*>[\s\S]*?<\/\1>/gi,' ')
     .replace(/<(system-reminder|environment_context|heartbeat)\b[^>]*>[\s\S]*$/gi,' ')
     .replace(/```[^\n]*\n[\s\S]*?(?:```|$)/g,' ').replace(/`[^`\n]*`/g,' ')
