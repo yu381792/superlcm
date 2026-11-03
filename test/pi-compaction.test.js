@@ -152,6 +152,37 @@ function runtime({ tokens = 70000, idle = false, responder, compactEffect, guard
   return { handlers, commands, ctx, rows, api, draft, complete, rejectPrepare, deferredInputs, get compactCalls() { return compactCalls }, get abortCalls() { return abortCalls } }
 }
 const turn = r => r.handlers.get('turn_end')({ entries: [], context: { contextEntries: r.rows } }, r.ctx)
+test('Pi announces replacement only after its checkpoint exists, once across lifecycle hooks',async()=>{
+ const r=runtime(),notices=[]
+ r.ctx.ui.notify=(text,type)=>notices.push({text,type})
+ await turn(r);await r.complete()
+ assert.equal(notices.length,1);assert.match(notices[0].text,/正在后台准备/)
+ const successes=()=>notices.filter(n=>n.text.includes('已替换为后台摘要'))
+ assert.equal(successes().length,0,'a prepared draft is not an installed replacement')
+ r.ctx.tokens=80000
+ const draft=(await turn(r)).entries[0]
+ assert.equal(successes().length,0,'returning a boundary draft does not prove persistence')
+ r.handlers.get('agent_settled')({},r.ctx)
+ assert.equal(successes().length,0,'a cancelled or failed boundary write must not report success')
+ r.rows.splice(0,3,{sourceEntry:{...draft,id:'installed-checkpoint',tokensBefore:80000},messages:[{role:'compactionSummary',summary:draft.summary}]})
+ r.ctx.tokens=2000
+ r.handlers.get('session_compact')({},r.ctx)
+ assert.equal(successes().length,1);assert.equal(successes()[0].type,'info')
+ assert.match(successes()[0].text,/已替换为后台摘要.*80K → .*K/)
+ assert.match(successes()[0].text,/原文和最近内容已保留/)
+ r.handlers.get('agent_settled')({},r.ctx)
+ assert.equal(successes().length,1,'subsequent settled hooks must not duplicate the notice')
+})
+test('Pi does not announce a pending replacement in a different session',async()=>{
+ const r=runtime(),notices=[]
+ r.ctx.ui.notify=text=>notices.push(text)
+ await turn(r);await r.complete();r.ctx.tokens=80000
+ const draft=(await turn(r)).entries[0]
+ r.handlers.get('session_before_switch')()
+ r.rows.splice(0,3,{sourceEntry:{...draft,id:'other-session-checkpoint',tokensBefore:80000},messages:[{role:'compactionSummary',summary:draft.summary}]})
+ r.ctx.tokens=2000;r.handlers.get('agent_settled')({},r.ctx)
+ assert.equal(notices.filter(n=>n.includes('已替换为后台摘要')).length,0)
+})
 const tick=()=>new Promise(resolve=>setImmediate(resolve))
 async function until(check){for(let i=0;i<100;i++){if(check())return;await tick()}throw Error('Pi state did not advance')}
 const mainForkPolicy=()=>({enabled:true,summaryEnabled:true,summaryMode:'main-fork',ratio:.8})
@@ -224,7 +255,7 @@ test('Pi runtime keeps a progressing background branch past the idle limit',asyn
 })
 
 test('Pi retries independently past fifty minutes and keeps pressure waiting until the eighth attempt succeeds',async t=>{
- let release,settled=false,prepared;const gate=new Promise(resolve=>release=resolve),captures=[]
+ let release,settled=false,prepared;const gate=new Promise(resolve=>release=resolve),captures=[],notices=[]
  const r=runtime({readPolicy:mainForkPolicy,guardTimeoutMs:20,
   responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixed'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
   fork:async(ctx,snap,capture,{signal,stage})=>{
@@ -236,6 +267,7 @@ test('Pi retries independently past fifty minutes and keeps pressure waiting unt
   }})
  let waiting
  try{
+  r.ctx.ui.notify=text=>notices.push(text)
   r.ctx.model.maxTokens=50000
   r.rows[0].messages[0].content='compressible history '.repeat(10000)
   t.mock.timers.enable({apis:['setTimeout','Date']})
@@ -257,6 +289,7 @@ test('Pi retries independently past fifty minutes and keeps pressure waiting unt
   assert.equal(result.entries[0].type,'compaction')
   assert.equal(r.commands.filter(c=>c==='pi-prepare').length,1)
   assert.ok(captures.every(c=>c===captures[0]),'retry uses one frozen capture')
+  assert.equal(notices.filter(text=>text.includes('正在后台准备')).length,1,'retries do not repeat the preparation notice')
   release();await tick()
   assert.equal(r.commands.filter(c=>c==='pi-prepare').length,1,'late attempts never publish')
  }finally{r.handlers.get('session_shutdown')();release();t.mock.timers.reset();await waiting}

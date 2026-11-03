@@ -47,7 +47,7 @@ export function registerPiCompaction(pi, options, {
 } = {}) {
   let state = null, swapping = null, retryAfter = 0, failures = 0, retrySignature = null, capture = null, requestMessages = null, epoch = 0, sessionController = new AbortController()
   let activitySignal,activityCleanup,protectionAbort=false
-  let captureRecovery=false
+  let captureRecovery=false, pendingReplacement=null
   const capacityWaiters=new Set()
   const settings = () => ({...(pi.getSettings?.() || {}), thinkingLevel:pi.getThinkingLevel?.()})
   const entries = ctx => ctx.sessionManager.buildSessionProjection().entries
@@ -63,6 +63,21 @@ export function registerPiCompaction(pi, options, {
   const signature = ctx => piSignature(ctx, policy(), settings())
   const status = (ctx, text) => ctx.ui?.setStatus?.('superlcm-compaction', text)
   const notice = (ctx, text) => ctx.ui?.notify?.(text, 'warning')
+  const info = (ctx, text) => {try{ctx.ui?.notify?.(text,'info')}catch{}}
+  // Boundary drafts are only proposals until Pi has appended the checkpoint.
+  // Report at the next public lifecycle hook, after checking the persisted view.
+  const reportReplacement = ctx => {
+    if(!pendingReplacement)return
+    try{
+      const current=entries(ctx),checkpoint=current.find(e=>e.sourceEntry.type==='compaction')?.sourceEntry
+      if(!checkpoint||checkpoint.summary!==pendingReplacement.summary||checkpoint.firstKeptEntryId!==pendingReplacement.firstKeptEntryId)return
+      const before=checkpoint.tokensBefore,after=estimatePiMessages(current.flatMap(e=>e.messages))
+      const size=Number.isFinite(before)&&before>0?`（约 ${Math.round(before/1000)}K → ${Math.round(after/1000)}K）`:`（当前约 ${Math.round(after/1000)}K）`
+      pendingReplacement=null
+      status(ctx,'SuperLCM：上下文已替换为后台摘要')
+      info(ctx,`上下文已替换为后台摘要${size}。原文和最近内容已保留。`)
+    }catch{} // A UI notification must never interrupt a model/tool request.
+  }
   const stop = () => { state?.controller.abort(); state = null }
   const clearRetries = () => { retryAfter = 0; failures = 0; retrySignature = null }
   const failed = ctx => {
@@ -72,7 +87,7 @@ export function registerPiCompaction(pi, options, {
     retryAfter = Date.now() + 60000 * 2 ** Math.min(4, failures - 1)
   }
   const clearSnapshot = () => { stop(); clearRetries(); capture = null; requestMessages = null;captureRecovery=false }
-  const reset = () => { epoch++;capacityWaiters.clear(); activityCleanup?.();activitySignal=undefined;protectionAbort=false;sessionController.abort(Error('Pi 会话已切换或结束')); sessionController = new AbortController(); clearSnapshot(); swapping = null }
+  const reset = () => { epoch++;pendingReplacement=null;capacityWaiters.clear(); activityCleanup?.();activitySignal=undefined;protectionAbort=false;sessionController.abort(Error('Pi 会话已切换或结束')); sessionController = new AbortController(); clearSnapshot(); swapping = null }
   const bindActivity=ctx=>{
     const signal=ctx.signal
     if(!signal||signal===activitySignal)return
@@ -108,6 +123,7 @@ export function registerPiCompaction(pi, options, {
   }
   function prepare(ctx, force = false) {
     try {
+      reportReplacement(ctx)
       bindActivity(ctx)
       if(ctx.signal?.aborted)return
       const p = policy()
@@ -122,8 +138,9 @@ export function registerPiCompaction(pi, options, {
       let selectedCapture=capture
       const current = { snapshot, controller: new AbortController(), ready: null, promise: null,attempt:0 }
       state = current; status(ctx, p.summaryMode === 'main-fork' ? 'SuperLCM：主模型后台分支摘要' : 'SuperLCM：Luna 后台准备摘要')
+      const announcePreparation=()=>{if(!current.announced){current.announced=true;info(ctx,p.enabled?'正在后台准备上下文摘要。摘要准备完成后，将在需要时替换上下文。':'正在后台生成归档摘要，完成后保存到 SuperLcm。')}}
       const work = async (signal,progress) => {
-        if (p.summaryMode !== 'main-fork') return request({ ...options, command: 'pi-prepare' }, snapshot, signal)
+        if (p.summaryMode !== 'main-fork') {announcePreparation();return request({ ...options, command: 'pi-prepare' }, snapshot, signal)}
         let restored=null
         if(!current.ignorePrepared)try{restored=await request({ ...options, command: 'pi-ready' }, {session_id:snapshot.session_id,draftKey:snapshot.draftKey}, signal)}
         catch(error){if(signal.aborted||!(error instanceof SyntaxError))throw error;current.ignorePrepared=true}
@@ -132,7 +149,7 @@ export function registerPiCompaction(pi, options, {
         if(!selectedCapture||['id','provider','contextWindow','maxTokens','api','baseUrl'].some(key=>selectedCapture.model?.[key]!==ctx.model?.[key])||selectedCapture.reasoning!==settings().thinkingLevel)throw Object.assign(Error('Pi 等待捕获当前模型请求后恢复后台摘要'),{code:'SUPERLCM_PI_CAPTURE_INVALID'})
         let staged
         const forkSummary = await fork(ctx, snapshot, selectedCapture, { signal, progress,
-          stage: async () => { staged = await request({ ...options, command: 'pi-stage' }, snapshot, signal) } })
+          stage: async () => { staged = await request({ ...options, command: 'pi-stage' }, snapshot, signal);announcePreparation() } })
         signal.throwIfAborted()
         if (state !== current || !valid(ctx)) throw Error('Pi 后台分支已过期')
         return request({ ...options, command: 'pi-prepare' }, { ...snapshot, sourceMessages: undefined, forkSummary, forkRevision: staged.revision }, signal)
@@ -243,7 +260,7 @@ export function registerPiCompaction(pi, options, {
     const selectedEpoch = epoch, selectedState = state, token = {}; swapping = token
     try {
       await summaryAttempt(signal => abortable(new Promise((resolve, reject) => {
-        try { ctx.compact({ onComplete: () => { if (epoch === selectedEpoch && !signal.aborted) { if (state === selectedState) stop(); status(ctx, 'SuperLCM：已替换为后台摘要') }; resolve() },
+        try { ctx.compact({ onComplete: () => { if (epoch === selectedEpoch && !signal.aborted) { reportReplacement(ctx); if (state === selectedState) stop(); status(ctx, 'SuperLCM：已替换为后台摘要') }; resolve() },
           onError: reject }) }
         catch (error) { reject(error) }
       }), signal), sessionController.signal, guardTimeoutMs)
@@ -260,7 +277,7 @@ export function registerPiCompaction(pi, options, {
       if(event.reason==='threshold'&&!reached(ctx,policy().ratio)&&!danger(ctx))return {cancel:true}
       const compaction = await ready(ctx, entries(ctx), event.signal)
       if (epoch !== selectedEpoch) return { cancel: true }
-      if (compaction) return { compaction: { ...compaction, tokensBefore: event.preparation.tokensBefore } }
+      if (compaction) {pendingReplacement=compaction;return { compaction: { ...compaction, tokensBefore: event.preparation.tokensBefore } }}
       status(ctx, 'SuperLCM：后台摘要尚未准备好，保留原文')
       return { cancel: true }
     } catch (error) { notice(ctx, error.message); return { cancel: true } }
@@ -280,6 +297,7 @@ export function registerPiCompaction(pi, options, {
           if (!compaction) { pause(ctx); return }
         }
         if (compaction) {
+          pendingReplacement=compaction
           status(ctx, 'SuperLCM：直接替换后台摘要')
           return { entries: [...(event.entries || []), { type: 'compaction', summary: compaction.summary,
             firstKeptEntryId: compaction.firstKeptEntryId, details: compaction.details }] }
@@ -288,7 +306,7 @@ export function registerPiCompaction(pi, options, {
       if (takeoverEnabled(ctx) && event.context?.contextEntries && danger(ctx, event.context.contextEntries)) {
         const compaction = await guardedReady(ctx, event.context.contextEntries)
         if (epoch !== selectedEpoch) return
-        if (compaction) return { entries: [...(event.entries || []), { type: 'compaction', summary: compaction.summary, firstKeptEntryId: compaction.firstKeptEntryId, details: compaction.details }] }
+        if (compaction) {pendingReplacement=compaction;return { entries: [...(event.entries || []), { type: 'compaction', summary: compaction.summary, firstKeptEntryId: compaction.firstKeptEntryId, details: compaction.details }] }}
         pause(ctx); return
       }
       prepare(ctx) // deliberately fire-and-forget; the main tool loop continues
@@ -296,6 +314,7 @@ export function registerPiCompaction(pi, options, {
   })
   for (const name of ['agent_settled', 'model_select', 'session_start']) pi.on(name, (_event, ctx) => {
     if(name==='model_select'||name==='session_start')reset()
+    reportReplacement(ctx)
     if(_event?.aborted){if(protectionAbort){protectionAbort=false;return};stop();clearRetries();return}
     prepare(ctx); if (state?.ready) void swapIdle(ctx)
   })
@@ -352,6 +371,7 @@ export function registerPiCompaction(pi, options, {
   })
   pi.on('before_provider_request', (event, ctx) => {
     try {
+      reportReplacement(ctx)
       const p = policy()
       if (!p.enabled && !p.summaryEnabled) {captureRecovery=false;return}
       let unsafe=false
@@ -375,7 +395,7 @@ export function registerPiCompaction(pi, options, {
   pi.on('session_before_switch', () => reset())
   pi.on('session_before_fork', () => reset())
   pi.on('session_tree', () => reset())
-  pi.on('session_compact', () => clearSnapshot())
+  pi.on('session_compact', (_event,ctx) => {reportReplacement(ctx);pendingReplacement=null;clearSnapshot()})
   pi.registerCommand('compact-policy', { description: 'Show SuperLCM background compaction policy', handler: async (_args, ctx) => {
     const p = policy()
     ctx.ui?.notify?.(`SuperLCM：${p.enabled ? '开启' : '关闭'}。提前后台准备${p.summaryMode === 'main-fork' ? '主模型分支' : 'Luna'}摘要，到 ${Math.round(p.ratio * 100)}% 直接替换。当前${state?.ready ? '已准备' : state ? '准备中' : '等待准备'}。`, 'info')
