@@ -47,7 +47,7 @@ export function piPreparationRevision(store, session, env = process.env) {
   const policy = readPiPolicy(store.dir)
   // A ready draft must have been checked under the current summary policy.
   // Earlier fork trees may also lack model-written parent facts.
-  return policy.summaryMode === 'main-fork' ? forkHash(['pi-main-fork-tree-v4',SUMMARY_POLICY_VERSION,policy]) : forkHash(['pi-api-preparation-v2',SUMMARY_POLICY_VERSION,policy,summarySettingsRevision(store, session, env)])
+  return policy.summaryMode === 'main-fork' ? forkHash(['pi-main-fork-tree-v5',SUMMARY_POLICY_VERSION,policy]) : forkHash(['pi-api-preparation-v3',SUMMARY_POLICY_VERSION,policy,summarySettingsRevision(store, session, env)])
 }
 export function stagePi(store, input, { env = process.env } = {}) {
   const policy = readPiPolicy(store.dir)
@@ -196,8 +196,9 @@ export function readPreparedPi(store,input,{env=process.env}={}) {
   if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='pi_prepared_compactions'").get())return null
   const session='pi-'+input.session_id
   const saved=store.db.prepare('SELECT * FROM pi_prepared_compactions WHERE session=? AND draft_key=?').get(session,input.draftKey)
+    ||(input.allowEarlier===true?store.db.prepare('SELECT * FROM pi_prepared_compactions WHERE session=?').get(session):null)
   if(!saved||!store.source(session)||store.isDeleted(session)||piPreparationRevision(store,session,env)!==saved.revision)return null
-  const discard=()=>{store.db.prepare('DELETE FROM pi_prepared_compactions WHERE session=? AND draft_key=? AND revision=? AND snapshot=? AND compaction=?').run(session,input.draftKey,saved.revision,saved.snapshot,saved.compaction);return null}
+  const discard=()=>{store.db.prepare('DELETE FROM pi_prepared_compactions WHERE session=? AND draft_key=? AND revision=? AND snapshot=? AND compaction=?').run(session,saved.draft_key,saved.revision,saved.snapshot,saved.compaction);return null}
   let snapshot,compaction
   try{snapshot=JSON.parse(saved.snapshot);compaction=JSON.parse(saved.compaction)}catch{return discard()}
   if(!snapshot||typeof snapshot!=='object'||!compaction||typeof compaction!=='object'||!compaction.details||typeof compaction.details!=='object'||
@@ -210,5 +211,5 @@ export function readPreparedPi(store,input,{env=process.env}={}) {
   if(captured.skipped)return null
   const branch=activeBranch(store,session,snapshot.leafId,snapshot.firstKeptEntryId).branch
   if(readPiPolicy(store.dir).summaryMode==='api'&&branch.slice(0,branch.findIndex(e=>e.id===snapshot.firstKeptEntryId)).some(e=>hasUnrepresentedContent(JSON.stringify(e))))return null
-  return {draftKey:input.draftKey,compaction}
+  return {draftKey:saved.draft_key,compaction,...(saved.draft_key!==input.draftKey?{snapshot}:{})}
 }

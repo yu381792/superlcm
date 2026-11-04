@@ -8,7 +8,7 @@ import {pathToFileURL} from 'node:url'
 import {findCli} from '../src/runtime.js'
 import {ClaudeStore} from '../src/store.js'
 import {makePiSnapshot} from '../src/pi-snapshot.js'
-import {summarizePiFork} from '../src/pi-fork.js'
+import {piCompactedContext,summarizePiFork} from '../src/pi-fork.js'
 import {stagePi,preparePi,savePiPolicy,readPiPolicy} from '../src/pi-compaction.js'
 import {forkTreePlan,parseForkTree} from '../src/fork-summary.js'
 let root=dirname(realpathSync(findCli('pi')))
@@ -34,10 +34,11 @@ function fixture(t,{stableSummaries=false}={}){
   manager.appendMessage({role:'assistant',content:[{type:'text',text:('Historical inspection '+round+' remains incomplete. ').repeat(100)}],timestamp:Date.now(),api:model.api,provider:model.provider,model:model.id,stopReason:'stop',usage:{input:349000,output:1000,cacheRead:0,cacheWrite:0,totalTokens:350000}})
   manager.appendMessage({role:'user',content:('CURRENT REQUEST '+round+' KEEP EXACT. ').repeat(1000),timestamp:Date.now()})
  }
- const generate=async({prepare=true}={})=>{
+ const generate=async({prepare=true,raw=false}={})=>{
   const snapshot=makePiSnapshot(ctx,readPiPolicy(store.dir),{compaction:{keepRecentTokens:5000}})
   assert.ok(snapshot)
-  const before=readFileSync(manager.getSessionFile()),messages=sdk.convertToLlm(manager.buildSessionProjection().messages),capture={model,messages,payload:{model:'scripted',messages,max_tokens:50000}}
+  const before=readFileSync(manager.getSessionFile()),projection=manager.buildSessionProjection().messages
+  const messages=raw?projection:sdk.convertToLlm(projection),capture={model,messages,payload:{model:'scripted',messages:sdk.convertToLlm(messages),max_tokens:50000}}
   let staged
   const forkSummary=await summarizePiFork(ctx,snapshot,capture,{stage:async()=>staged=stagePi(store,snapshot,{env})})
   const input={...snapshot,forkSummary,forkRevision:staged.revision}
@@ -72,6 +73,39 @@ test('Pi reuses immutable blocks and merges across 24 native compactions without
  }
  assert.ok(merges>8,'actual cross-round parents were generated')
  assert.ok(maxLevel<5,'granularity grows with block count rather than compaction count')
+})
+
+test('Pi re-compacts a live raw projection containing an earlier native compaction',async t=>{
+ const f=fixture(t);f.append(0)
+ const first=await f.generate(),c=first.prepared.compaction
+ f.manager.appendCompaction(c.summary,c.firstKeptEntryId,c.tokensBefore,c.details,true)
+ f.append(1)
+ const {snapshot,prepared,before}=await f.generate({raw:true}),raw=f.manager.buildSessionProjection().messages
+ assert.equal(raw.find(m=>m.role!=='system').role,'compactionSummary')
+ const replaced=await piCompactedContext(snapshot,prepared.compaction,raw)
+ assert.ok(replaced.some(m=>m.role==='user'&&JSON.stringify(m.content).includes('CURRENT REQUEST 1 KEEP EXACT')))
+ const changed=structuredClone(raw);changed.find(m=>m.role==='compactionSummary').summary+=' changed'
+ await assert.rejects(()=>piCompactedContext(snapshot,prepared.compaction,changed),/原文不一致/)
+ assert.ok(readFileSync(f.manager.getSessionFile()).equals(before))
+})
+
+test('Pi incremental summary excludes hidden shell entries while covering visible shell evidence',async t=>{
+ const f=fixture(t)
+ f.manager.appendMessage({role:'user',content:'Inspect history and never deploy. '.repeat(400),timestamp:1})
+ const visible=f.manager.appendMessage({role:'bashExecution',command:'visible check',output:'FAILED: disk full',exitCode:1,cancelled:false,truncated:false,timestamp:2})
+ const unknown=f.manager.appendMessage({role:'unknownExtension',content:'Ignored by Pi conversion',timestamp:2})
+ const hidden=f.manager.appendMessage({role:'bashExecution',command:'PRIVATE COMMAND',output:'PRIVATE OUTPUT',exitCode:0,cancelled:false,truncated:false,excludeFromContext:true,timestamp:3})
+ f.manager.appendMessage({role:'user',content:'CURRENT REQUEST KEEP EXACT. '.repeat(1000),timestamp:4})
+ const {snapshot,forkSummary,prepared,before}=await f.generate()
+ assert.ok(snapshot.sourceEntryIds.includes(visible))
+ assert.ok(!snapshot.sourceEntryIds.includes(hidden))
+ assert.ok(!snapshot.sourceEntryIds.includes(unknown))
+ assert.match(snapshot.source,/visible check/)
+ assert.doesNotMatch(snapshot.source,/PRIVATE COMMAND|PRIVATE OUTPUT/)
+ assert.ok(forkSummary.blocks.some(b=>b.entryIds.includes(visible)))
+ assert.ok(forkSummary.blocks.every(b=>!b.entryIds.includes(hidden)))
+ assert.ok(prepared.compaction)
+ assert.ok(readFileSync(f.manager.getSessionFile()).equals(before))
 })
 
 test('Pi refuses a missing new block even when the reduced tree is structurally valid',async t=>{

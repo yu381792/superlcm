@@ -1,14 +1,17 @@
 // Background preparation and lookup-only installation through Pi public hooks.
 import { spawn } from 'node:child_process'
-import { summarizePiFork,capturePiContext,piCompactedContext } from './pi-fork.js'
+import { summarizePiFork,capturePiContext,piCompactedContext,normalizePiReasoning } from './pi-fork.js'
 import { readPiPolicy } from './pi-compaction-policy.js'
-import { makePiSnapshot, snapshotMatches, piSignature, serializePiMessages,estimatePiMessages,piDialogueMessages } from './pi-snapshot.js'
+import { makePiSnapshot, snapshotMatches, piSignature,piDigest, serializePiMessages,estimatePiMessages,piDialogueMessages } from './pi-snapshot.js'
 import { estimateSummaryTokens } from './summary-tokens.js'
 import { abortable, summaryAttempt } from './summary-attempt.js'
-import { estimatePiRequest, piOutputReserve,piWindowSafety,piCompletionBudget,limitPiOutput } from './pi-request.js'
+import { estimatePiRequest,estimatePiWireWithReceipt, piOutputReserve,piWindowSafety,piCompletionBudget,limitPiOutput } from './pi-request.js'
 import { checkedSummary } from './summary-policy.js'
+import { piProviderBoundary, isPiAuxiliaryRequest } from './pi-provider-boundary.js'
 export { serializePiMessages } from './pi-snapshot.js'
 export { estimatePiRequest } from './pi-request.js'
+
+const terminalFailure = error => ['SUPERLCM_PI_UNSUPPORTED_REQUEST','SUPERLCM_PI_UNSHRINKABLE_PREFIX','SUPERLCM_PI_INVALID_BUDGET','SUPERLCM_PI_REPLAY_REFUSED','SUPERLCM_PI_INVALID_SUMMARY'].includes(error.code)
 
 export function piCompactRequest({ node, script, home, command = 'pi-prepare' }, input, signal) {
   return new Promise((resolve, reject) => {
@@ -43,19 +46,20 @@ export function piCompactRequest({ node, script, home, command = 'pi-prepare' },
 }
 
 export function registerPiCompaction(pi, options, {
-  request = piCompactRequest, policy = () => readPiPolicy(options.home), makeSnapshot = makePiSnapshot, guardTimeoutMs = 180000,attemptTimeoutMs=600000,fork=summarizePiFork,
+  request = piCompactRequest, policy = () => readPiPolicy(options.home), makeSnapshot = makePiSnapshot, guardTimeoutMs = 180000,attemptTimeoutMs=600000,fork=summarizePiFork, createBoundary=piProviderBoundary,
 } = {}) {
-  let state = null, swapping = null, retryAfter = 0, failures = 0, retrySignature = null, capture = null, requestMessages = null, epoch = 0, sessionController = new AbortController()
+  let state = null, swapping = null, retryAfter = 0, failures = 0, retrySignature = null, capture = null, foregroundCapture = null, epoch = 0, sessionController = new AbortController()
   let activitySignal,activityCleanup,protectionAbort=false
-  let captureRecovery=false, pendingReplacement=null,pendingContextCompaction=null
-  const capacityWaiters=new Set()
+  let captureRecovery=false, pendingReplacement=null,pendingContextCompaction=null,blockedPayload=null
+  const capacityWaiters=new Set(),rejectedPrepared=new Set()
+  const boundary=createBoundary(finalRequest)
   const settings = () => ({...(pi.getSettings?.() || {}), thinkingLevel:pi.getThinkingLevel?.()})
   const entries = ctx => ctx.sessionManager.buildSessionProjection().entries
   const takeoverEnabled=ctx=>{
     const p=policy()
     if(!p.enabled)return false
     if(p.summaryMode==='api'&&entries(ctx).some(e=>e.messages.some(m=>Array.isArray(m.content)&&m.content.some(b=>!['text','toolCall','thinking','redactedThinking'].includes(b.type))))){
-      ctx.ui?.setStatus?.('superlcm-compaction','SuperLCM：图片或附件由原生压缩处理')
+      ctx.ui?.setStatus?.('superlcm-compaction',undefined)
       return false
     }
     return true
@@ -74,20 +78,22 @@ export function registerPiCompaction(pi, options, {
       const before=pendingReplacement.tokensBefore||checkpoint.tokensBefore,after=estimatePiMessages(current.flatMap(e=>e.messages))
       const size=Number.isFinite(before)&&before>0?`（约 ${Math.round(before/1000)}K → ${Math.round(after/1000)}K）`:`（当前约 ${Math.round(after/1000)}K）`
       pendingReplacement=null
-      status(ctx,'SuperLCM：上下文已替换为后台摘要')
-      info(ctx,`上下文已替换为后台摘要${size}。原文和最近内容已保留。`)
+      status(ctx,'SuperLCM：上下文已压缩')
+      info(ctx,`上下文已压缩${size}`)
     }catch{} // A UI notification must never interrupt a model/tool request.
   }
-  const stop = () => { state?.controller.abort(); state = null;pendingContextCompaction=null }
-  const clearRetries = () => { retryAfter = 0; failures = 0; retrySignature = null }
+  // Cancelling generation must not erase a replacement already used by a
+  // foreground request. Only session invalidation or its boundary clears it.
+  const stop = () => { state?.controller.abort(); state = null }
+  const clearRetries = () => { retryAfter = 0; failures = 0; retrySignature = null;blockedPayload=null }
   const failed = ctx => {
     let current
     try { current = signature(ctx) } catch { current = 'unavailable-policy' }
     failures = retrySignature === current ? failures + 1 : 1; retrySignature = current
     retryAfter = Date.now() + 60000 * 2 ** Math.min(4, failures - 1)
   }
-  const clearSnapshot = () => { stop(); clearRetries(); capture = null; requestMessages = null;captureRecovery=false }
-  const reset = () => { epoch++;pendingReplacement=null;capacityWaiters.clear(); activityCleanup?.();activitySignal=undefined;protectionAbort=false;sessionController.abort(Error('Pi 会话已切换或结束')); sessionController = new AbortController(); clearSnapshot(); swapping = null }
+  const clearSnapshot = () => { stop(); clearRetries(); rejectedPrepared.clear();capture = null; foregroundCapture = null;captureRecovery=false;pendingContextCompaction=null }
+  const reset = () => { epoch++;boundary.disarm();pendingReplacement=null;capacityWaiters.clear(); activityCleanup?.();activitySignal=undefined;protectionAbort=false;sessionController.abort(Error('Pi 会话已切换或结束')); sessionController = new AbortController(); clearSnapshot(); swapping = null }
   const bindActivity=ctx=>{
     const signal=ctx.signal
     if(!signal||signal===activitySignal)return
@@ -101,6 +107,9 @@ export function registerPiCompaction(pi, options, {
   const fixedRequestTokens=payload=>{
     const fixed={...payload}
     for(const key of ['messages','input'])if(Array.isArray(fixed[key]))fixed[key]=fixed[key].filter(m=>['system','developer'].includes(m.role))
+    // Google keeps the fixed system instruction in config, outside contents.
+    if(Array.isArray(fixed.contents))fixed.contents=[]
+    if(Array.isArray(fixed.context?.messages))fixed.context={...fixed.context,messages:fixed.context.messages.filter(m=>['system','developer'].includes(m.role))}
     return estimatePiRequest(fixed)
   }
   const reached = (ctx, ratio) => { const u = usage(ctx),tokens=capacity(ctx)?.observed||0; return Number.isFinite(u.window) && u.window > 0 && tokens >= u.window * ratio }
@@ -127,6 +136,10 @@ export function registerPiCompaction(pi, options, {
     const c = capacity(ctx, current)
     return c && (usage(ctx).tokens >= c.guard || c.observed >= c.inputLimit)
   }
+  const wireInput = (ctx,payload,c=capacity(ctx)) => {
+    const calibrated=foregroundCapture?.signature===signature(ctx)?estimatePiWireWithReceipt(payload,foregroundCapture,entries(ctx),c?.observed,ctx.model):null
+    return calibrated??estimatePiRequest(payload)
+  }
   const pause = (ctx,reason='capacity') => {
     try{const c=capacity(ctx);pi.appendEntry?.('superlcm-compaction-pause',{reason,tokens:usage(ctx).tokens,observed:c?.observed,projection:c?.estimated,inputLimit:c?.inputLimit,capturedWire:capture?estimatePiRequest(capture.payload):null,attempt:state?.attempt||0,lastFailure:state?.lastFailure?.message||null})}catch{}
     status(ctx, 'SuperLCM：已暂停，防止上下文超限')
@@ -143,29 +156,59 @@ export function registerPiCompaction(pi, options, {
       if (!p.enabled&&!p.summaryEnabled) { stop(); status(ctx, undefined); return }
       if (state && !valid(ctx)) stop()
       if (retrySignature && retrySignature !== signature(ctx)) clearRetries()
+      if(retryAfter===Infinity&&blockedPayload&&capture?.payload&&blockedPayload!==piDigest(capture.payload))clearRetries()
       if (state || Date.now() < retryAfter || (!force && !reached(ctx, Math.round((p.ratio-.1)*1e12)/1e12))) return
       const available=force?capacity(ctx):null
       const keepLimit=available?Math.max(0,Math.floor((available.inputLimit-available.fixed)/2)):Infinity
-      const snapshot = makeSnapshot(ctx, p, settings(),{keepLimit})
+      let snapshot = makeSnapshot(ctx, p, settings(),{keepLimit})
       if (!snapshot) return
       let selectedCapture=capture
       const current = { snapshot, controller: new AbortController(), ready: null, promise: null,attempt:0 }
-      state = current; status(ctx, p.summaryMode === 'main-fork' ? 'SuperLCM：主模型后台分支摘要' : 'SuperLCM：Luna 后台准备摘要')
-      const announcePreparation=()=>{if(!current.announced){current.announced=true;info(ctx,p.enabled?'正在后台准备上下文摘要。摘要准备完成后，将在需要时替换上下文。':'正在后台生成归档摘要，完成后保存到 SuperLcm。')}}
+      state = current; status(ctx, undefined)
       const work = async (signal,progress) => {
-        if (p.summaryMode !== 'main-fork') {announcePreparation();return request({ ...options, command: 'pi-prepare' }, snapshot, signal)}
+        if (p.summaryMode !== 'main-fork') return request({ ...options, command: 'pi-prepare' }, snapshot, signal)
         let restored=null
-        if(!current.ignorePrepared)try{restored=await request({ ...options, command: 'pi-ready' }, {session_id:snapshot.session_id,draftKey:snapshot.draftKey}, signal)}
+        if(!current.ignorePrepared)try{
+          restored=await request({ ...options, command: 'pi-ready' }, {session_id:snapshot.session_id,draftKey:snapshot.draftKey,allowEarlier:true}, signal)
+          if(restored&&rejectedPrepared.has(restored.draftKey))restored=null
+          if(restored?.snapshot){
+            // A completed capacity-resized draft may have a different key from
+            // the default selection after restart. Rebuild its exact boundary;
+            // the stored prefix and current model/settings must still agree.
+            const saved=restored.snapshot
+            const aligned=restored.compaction?.firstKeptEntryId===saved.firstKeptEntryId&&snapshotMatches(saved,entries(ctx),signature(ctx))?makeSnapshot(ctx,p,settings(),{keepLimit,firstKeptEntryId:saved.firstKeptEntryId}):null
+            if(aligned?.draftKey===restored.draftKey){snapshot=aligned;current.snapshot=aligned}
+            else restored=null
+          }
+        }
         catch(error){if(signal.aborted||!(error instanceof SyntaxError))throw error;current.ignorePrepared=true}
         if (restored?.compaction) return restored
         if(!selectedCapture)selectedCapture=capture
-        if(!selectedCapture||['id','provider','contextWindow','maxTokens','api','baseUrl'].some(key=>selectedCapture.model?.[key]!==ctx.model?.[key])||selectedCapture.reasoning!==settings().thinkingLevel)throw Object.assign(Error('Pi 等待捕获当前模型请求后恢复后台摘要'),{code:'SUPERLCM_PI_CAPTURE_INVALID'})
-        let staged
-        const forkSummary = await fork(ctx, snapshot, selectedCapture, { signal, progress,
-          stage: async () => { staged = await request({ ...options, command: 'pi-stage' }, snapshot, signal);announcePreparation();return staged } })
-        signal.throwIfAborted()
-        if (state !== current || !valid(ctx)) throw Error('Pi 后台分支已过期')
-        return request({ ...options, command: 'pi-prepare' }, { ...snapshot, sourceMessages: undefined, forkSummary, forkRevision: staged.revision }, signal)
+        if(!selectedCapture||['id','provider','contextWindow','maxTokens','api','baseUrl'].some(key=>selectedCapture.model?.[key]!==ctx.model?.[key])||normalizePiReasoning(selectedCapture.reasoning)!==normalizePiReasoning(settings().thinkingLevel)||!!selectedCapture.blockImages!==!!settings().images?.blockImages)throw Object.assign(Error('Pi 等待捕获当前模型请求后恢复后台摘要'),{code:'SUPERLCM_PI_CAPTURE_INVALID'})
+        // Generation and archive submission are separate phases. A transient
+        // save failure retries the same completed output, never the model.
+        if(!current.generated){
+          let staged
+          const forkSummary=await fork(ctx,snapshot,selectedCapture,{signal,progress,forcePrefix:!!current.forcePrefix,isCurrent:()=>state===current&&valid(ctx),
+            stage:async()=>{
+              staged=await request({...options,command:'pi-stage'},snapshot,signal)
+              if(state!==current||!valid(ctx))throw Object.assign(Error('Pi 后台分支来源或设置已变化，原文保留'),{code:'SUPERLCM_PI_CAPTURE_INVALID'})
+              return staged
+            }})
+          signal.throwIfAborted()
+          if(state!==current||!valid(ctx))throw Object.assign(Error('Pi 后台分支已过期'),{code:'SUPERLCM_PI_CAPTURE_INVALID'})
+          current.generated={forkSummary,forkRevision:staged.revision}
+        }
+        let prepared
+        try{prepared=await request({ ...options, command: 'pi-prepare' }, { ...snapshot, sourceMessages: undefined, ...current.generated }, signal)}
+        catch(error){
+          // A rejected tree/source will not become valid by resubmitting it.
+          // Only a transient archive I/O failure can retry this saved output.
+          if(!signal.aborted&&!/database is locked|SQLITE_BUSY|SQLITE_LOCKED|EAGAIN|EBUSY|超时|timed? ?out/i.test(String(error.message||error)))error.code='SUPERLCM_PI_INVALID_SUMMARY'
+          throw error
+        }
+        rejectedPrepared.delete(snapshot.draftKey)
+        return prepared
       }
       const run=async()=>{
         for(;;){
@@ -183,18 +226,32 @@ export function registerPiCompaction(pi, options, {
             }
             return result
           }catch(error){
+            if(error.code==='SUPERLCM_PI_PREFIX_CAPACITY'&&p.summaryMode==='main-fork'&&!current.controller.signal.aborted&&state===current&&valid(ctx)){
+              const sourceLimit=Math.floor(snapshot.sourceTokens*.8)
+              let next=makeSnapshot(ctx,p,settings(),{keepLimit,sourceLimit})
+              if(!next||next.firstKeptEntryId===snapshot.firstKeptEntryId||next.sourceTokens>=snapshot.sourceTokens)
+                next=makeSnapshot(ctx,p,settings(),{keepLimit,beforeFirstKeptEntryId:snapshot.firstKeptEntryId})
+              if(next&&next.firstKeptEntryId!==snapshot.firstKeptEntryId&&next.sourceTokens<snapshot.sourceTokens){
+                try{pi.appendEntry?.('superlcm-summary-resize',{sourceLeaf:snapshot.leafId,previousCut:snapshot.firstKeptEntryId,firstKeptEntryId:next.firstKeptEntryId,sourceTokens:next.sourceTokens})}catch{}
+                snapshot=next;current.snapshot=next;current.ignorePrepared=false;current.forcePrefix=true;current.generated=null
+                continue // The rejected request never left the SDK; no timed retry.
+              }
+              error=Object.assign(Error('完整消息组与系统或工具定义无法放入后台摘要窗口。原文保留，请减少固定内容或选择更大窗口的摘要模型。'),{code:'SUPERLCM_PI_UNSHRINKABLE_PREFIX'})
+            }
             if(selectedCapture||error.code!=='SUPERLCM_PI_CAPTURE_INVALID')try{pi.appendEntry?.('superlcm-summary-failure',{attempt:current.attempt,sourceLeaf:snapshot.leafId,code:error.code||null,message:String(error.message||error).slice(0,2000)})}catch{}
             if(error.code==='SUPERLCM_PI_CAPTURE_INVALID'){
               if(capture===selectedCapture)capture=null
               throw error
             }
+            if(terminalFailure(error))throw error
             if(p.summaryMode!=='main-fork'||current.controller.signal.aborted||state!==current||!valid(ctx))throw error
-            if(result?.compaction)current.ignorePrepared=true
+            if(result?.compaction){current.ignorePrepared=true;current.generated=null}
             current.lastFailure={attempt:current.attempt,message:String(error.message||error),at:Date.now()}
             failed(ctx)
             const delay=Math.min(300000,Math.max(0,retryAfter-Date.now()))
             current.retryAt=Date.now()+delay
             status(ctx,`SuperLCM：第 ${current.attempt} 次摘要未完成，${Math.ceil(delay/1000)} 秒后自动重试：${current.lastFailure.message.slice(0,160)}`)
+            notice(ctx,`后台摘要失败：${current.lastFailure.message.slice(0,200)}。${Math.ceil(delay/1000)} 秒后重试。`)
             await retryDelay(delay,current.controller.signal)
           }
         }
@@ -203,15 +260,20 @@ export function registerPiCompaction(pi, options, {
         if (state !== current) return
         if (!valid(ctx)) { stop(); return }
         if (!result?.compaction) throw Error('Pi 后台摘要未返回完整结果，原文保留')
-        current.ready = result; clearRetries(); status(ctx, takeoverEnabled(ctx) ? `SuperLCM：摘要已准备，${Math.round(policy().ratio*100)}% 时替换` : 'SuperLCM：后台摘要已保存')
+        current.ready = result; clearRetries(); status(ctx, undefined)
         if (!capacityWaiters.size&&takeoverEnabled(ctx)&&ctx.isIdle() && (reached(ctx, policy().ratio) || danger(ctx))) void swapIdle(ctx)
       }).catch(error => {
         if (state !== current) return
         state = null
         if(error.code==='SUPERLCM_PI_CAPTURE_INVALID'){
-          clearRetries();status(ctx,'SuperLCM：等待当前模型的有效请求')
+          clearRetries();status(ctx,undefined)
           if(capture&&capture!==selectedCapture)prepare(ctx)
           return
+        }
+        if(terminalFailure(error)){
+          retrySignature=signature(ctx);retryAfter=Infinity
+          if(['SUPERLCM_PI_UNSHRINKABLE_PREFIX','SUPERLCM_PI_INVALID_BUDGET'].includes(error.code))blockedPayload=piDigest(selectedCapture?.payload||capture?.payload||null)
+          status(ctx,'SuperLCM：后台摘要已停止自动重试');notice(ctx,error.message);return
         }
         failed(ctx)
         status(ctx, 'SuperLCM：后台准备失败，原文保留'); notice(ctx, error.message)
@@ -230,14 +292,14 @@ export function registerPiCompaction(pi, options, {
     if (!valid(ctx, current) || !result?.compaction) { stop(); return null }
     const compaction = result.compaction
     try { checkedSummary(compaction.summary, { requireHeading: true, maxChars: null }) }
-    catch { stop(); failed(ctx); return null }
+    catch { rejectedPrepared.add(selected.snapshot.draftKey);stop(); failed(ctx); return null }
     if (compaction.firstKeptEntryId !== selected.snapshot.firstKeptEntryId || estimateSummaryTokens(compaction.summary) >= (selected.snapshot.sourceTokens??estimateSummaryTokens(selected.snapshot.source))) {
-      stop(); failed(ctx); return null
+      rejectedPrepared.add(selected.snapshot.draftKey);stop(); failed(ctx); return null
     }
     const c = capacity(ctx, current), cut = current.findIndex(e => e.sourceEntry.id === selected.snapshot.firstKeptEntryId)
     const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)))
     if (!c || c.fixed + tail + estimateSummaryTokens(compaction.summary) + extra >= c.inputLimit) {
-      stop(); status(ctx, 'SuperLCM：旧摘要覆盖不足，后台重新准备'); return null
+      rejectedPrepared.add(selected.snapshot.draftKey);stop(); status(ctx, 'SuperLCM：旧摘要覆盖不足，后台重新准备'); return null
     }
     return { ...compaction, tokensBefore: ctx.getContextUsage()?.tokens || compaction.tokensBefore,
       details: { ...compaction.details, backgroundPrepared: true, replacementModelCalls: 0 } }
@@ -245,7 +307,7 @@ export function registerPiCompaction(pi, options, {
   async function guardedReady(ctx, current = entries(ctx), extra = 0,force=false) {
     const c = capacity(ctx, current)
     if (!force&&!danger(ctx, current) && (!c || c.observed + extra < c.inputLimit)) return null
-    status(ctx, 'SuperLCM：预留空间不足，暂停下一轮并等待后台摘要')
+    status(ctx, undefined)
     const selectedEpoch = epoch
     const waiter={};capacityWaiters.add(waiter)
     try {
@@ -255,8 +317,8 @@ export function registerPiCompaction(pi, options, {
         signal.throwIfAborted()
         let result = await ready(ctx, current, signal, extra)
         if (!result) {
-          // A completed but insufficient draft may restage once. Native branch
-          // retries have no overall deadline; session cancellation still wins.
+          // A completed but insufficient draft may restage once. The wait is
+          // cancellable and explicit non-replayable failures do not restart.
           signal.throwIfAborted()
           prepare(ctx, true)
           const next = state?.promise
@@ -274,7 +336,7 @@ export function registerPiCompaction(pi, options, {
     const selectedEpoch = epoch, selectedState = state, token = {}; swapping = token
     try {
       await summaryAttempt(signal => abortable(new Promise((resolve, reject) => {
-        try { ctx.compact({ onComplete: () => { if (epoch === selectedEpoch && !signal.aborted) { reportReplacement(ctx); if (state === selectedState) stop(); status(ctx, 'SuperLCM：已替换为后台摘要') }; resolve() },
+        try { ctx.compact({ onComplete: () => { if (epoch === selectedEpoch && !signal.aborted) { reportReplacement(ctx); if (state === selectedState) stop() }; resolve() },
           onError: reject }) }
         catch (error) { reject(error) }
       }), signal), sessionController.signal, guardTimeoutMs)
@@ -289,48 +351,55 @@ export function registerPiCompaction(pi, options, {
     try {
       if (!takeoverEnabled(ctx)) return
       if(event.reason==='threshold'&&!reached(ctx,policy().ratio)&&!danger(ctx))return {cancel:true}
-      const compaction = await ready(ctx, entries(ctx), event.signal)
+      let compaction=await ready(ctx,entries(ctx),event.signal)
+      if(epoch!==selectedEpoch)return {cancel:true}
+      if(!compaction&&(event.reason==='overflow'||event.reason==='manual'||danger(ctx))){
+        // Native overflow recovery runs after the failed foreground has ended.
+        // Its own cancellation signal, not that old turn's signal, owns this wait.
+        const signal=event.signal?AbortSignal.any([sessionController.signal,event.signal]):sessionController.signal
+        const recovery={...ctx,signal}
+        // A cold session has not exposed its complete request-processing chain.
+        // Let its first foreground provider boundary capture and recover it;
+        // never send an auxiliary request without those transformations.
+        if(policy().summaryMode==='main-fork'&&!capture){
+          if(event.reason==='manual')notice(ctx,'当前会话尚未捕获完整请求处理链；请先正常输入，发送前会安全准备摘要。原文保留。')
+          return {cancel:true}
+        }
+        if(event.reason==='manual')clearRetries() // Explicit /compact may retry a stopped job once.
+        prepare(recovery,true)
+        compaction=await guardedReady(recovery,entries(ctx),0,true)
+      }
       if (epoch !== selectedEpoch) return { cancel: true }
       if (compaction) {pendingReplacement=compaction;return { compaction: { ...compaction, tokensBefore: event.preparation.tokensBefore } }}
-      status(ctx, 'SuperLCM：后台摘要尚未准备好，保留原文')
       return { cancel: true }
-    } catch (error) { notice(ctx, error.message); return { cancel: true } }
+    } catch (error) { if(epoch===selectedEpoch)notice(ctx, error.message);return { cancel: true } }
   })
+  const boundaryDraft=(event,ctx,compaction)=>{
+    pendingReplacement=compaction
+    status(ctx,undefined)
+    return {entries:[...(event.entries||[]),{type:'compaction',summary:compaction.summary,firstKeptEntryId:compaction.firstKeptEntryId,details:compaction.details,usage:compaction.usage}]}
+  }
   pi.on('turn_end', async (event, ctx) => {
     const selectedEpoch = epoch
-    // The capacity gate deliberately aborts the foreground request after
-    // capturing it. Its aborted turn must not cancel the recovery branch.
-    if(ctx.signal?.aborted)return
     try {
+      // A request-time replacement is already in use. Finalize its durable
+      // checkpoint even if that request was cancelled; never discard the tail.
       if(pendingContextCompaction){
         const selected=pendingContextCompaction;pendingContextCompaction=null
-        if(snapshotMatches(selected.snapshot,entries(ctx),signature(ctx))){
-          pendingReplacement=selected.compaction;stop()
-          return {entries:[...(event.entries||[]),{type:'compaction',summary:selected.compaction.summary,firstKeptEntryId:selected.compaction.firstKeptEntryId,details:selected.compaction.details}]}
-        }
+        if(snapshotMatches(selected.snapshot,event.context?.contextEntries||entries(ctx),signature(ctx)))
+          return boundaryDraft(event,ctx,selected.compaction)
       }
-      if (takeoverEnabled(ctx) && event.context?.contextEntries && reached(ctx, policy().ratio)) {
-        let compaction = await ready(ctx, event.context.contextEntries)
-        if (epoch !== selectedEpoch) return
-        if (!compaction && danger(ctx, event.context.contextEntries)) {
-          compaction = await guardedReady(ctx, event.context.contextEntries)
-          if (epoch !== selectedEpoch) return
-          if (!compaction) { pause(ctx); return }
-        }
-        if (compaction) {
-          pendingReplacement=compaction
-          status(ctx, 'SuperLCM：直接替换后台摘要')
-          return { entries: [...(event.entries || []), { type: 'compaction', summary: compaction.summary,
-            firstKeptEntryId: compaction.firstKeptEntryId, details: compaction.details }] }
-        }
+      if(ctx.signal?.aborted)return
+      const current=event.context?.contextEntries,pressure=current&&danger(ctx,current)
+      if(takeoverEnabled(ctx)&&current&&(reached(ctx,policy().ratio)||pressure)){
+        let compaction=await ready(ctx,current)
+        if(epoch!==selectedEpoch)return
+        if(!compaction&&pressure)compaction=await guardedReady(ctx,current)
+        if(epoch!==selectedEpoch)return
+        if(compaction)return boundaryDraft(event,ctx,compaction)
+        if(pressure){pause(ctx);return}
       }
-      if (takeoverEnabled(ctx) && event.context?.contextEntries && danger(ctx, event.context.contextEntries)) {
-        const compaction = await guardedReady(ctx, event.context.contextEntries)
-        if (epoch !== selectedEpoch) return
-        if (compaction) {pendingReplacement=compaction;return { entries: [...(event.entries || []), { type: 'compaction', summary: compaction.summary, firstKeptEntryId: compaction.firstKeptEntryId, details: compaction.details }] }}
-        pause(ctx); return
-      }
-      prepare(ctx) // deliberately fire-and-forget; the main tool loop continues
+      prepare(ctx) // fire-and-forget while the foreground still fits
     } catch (error) { if (epoch !== selectedEpoch) return; notice(ctx, error.message); if (danger(ctx)) pause(ctx) }
   })
   for (const name of ['agent_settled', 'model_select', 'session_start']) pi.on(name, (_event, ctx) => {
@@ -340,6 +409,9 @@ export function registerPiCompaction(pi, options, {
     prepare(ctx); if (state?.ready) void swapIdle(ctx)
   })
   pi.on('input', async (event, ctx) => {
+    // Queue ownership stays with Pi. A steering/follow-up message must not be
+    // consumed as a custom archive entry while another turn is running.
+    if(event.streamingBehavior)return
     const selectedEpoch = epoch
     const pending = estimatePiRequest({ text: event.text, images: event.images })
     const unsafeInput = () => { const c = capacity(ctx); return danger(ctx) || (c && c.observed + pending >= c.inputLimit) }
@@ -376,75 +448,66 @@ export function registerPiCompaction(pi, options, {
     }
     } catch (error) { notice(ctx, error.message); return defer() }
   })
-  // Final public request-time hook also sees newly expanded user input, prompt
-  // sections, images and tool declarations that were absent from the input hook.
-  pi.on('context_with_system', async (event, ctx) => {
-    try {
-      if (!policy().enabled&&!policy().summaryEnabled) return
-      if (policy().summaryMode === 'main-fork') requestMessages = structuredClone(event.messages)
-      if(!takeoverEnabled(ctx))return
-      // Native branches need the exact final wire request. Its later hook is
-      // the capacity gate; aborting here would prevent cold-resume capture.
-      if(policy().summaryMode==='main-fork'){
-        // At the replacement boundary, wait before dispatching the model.
-        // Pi permits request-context transforms here; persist the checkpoint
-        // through its next native turn boundary, preserving the exact tail.
-        const atTarget=reached(ctx,policy().ratio),hardInput=ctx.model.contextWindow-piWindowSafety(ctx.model,policy().ratio)-1024
-        const possiblePressure=(capacity(ctx)?.estimated||0)>=hardInput||estimatePiRequest(event.messages)>=hardInput
-        if((atTarget||possiblePressure)&&ctx.modelRegistry?.streamSimple){
-          capture=await capturePiContext(ctx,event.messages,settings().thinkingLevel,ctx.signal)
-          if(!atTarget&&Math.max(capacity(ctx)?.observed||0,estimatePiRequest(capture.payload))<hardInput)return
-          if(!policy().summaryModel&&fixedRequestTokens(capture.payload)>=ctx.model.contextWindow-piWindowSafety(ctx.model,policy().ratio)-1024){pause(ctx,'fixed-overhead');return}
-          prepare(ctx,true)
-          const compaction=await guardedReady(ctx,entries(ctx),0,true)
-          if(compaction){
-            const snapshot=state.snapshot,messages=await piCompactedContext(snapshot,compaction,event.messages)
-            pendingContextCompaction={snapshot,compaction};captureRecovery=false;requestMessages=structuredClone(messages)
-            status(ctx,'SuperLCM：后台摘要已就绪，正在继续原请求')
-            return {messages}
-          }
-        }
-        return
-      }
-      const c = capacity(ctx)
-      if (!c || estimatePiRequest(event.messages) >= c.inputLimit) pause(ctx)
-    } catch (error) { if(ctx.signal?.aborted)return;notice(ctx, error.message); pause(ctx) }
+  // Arm the provider boundary, but never summarize or rewrite halfway through
+  // Pi's context/payload handler chain. The effective provider calls finalRequest.
+  pi.on('context_with_system', (_event, ctx) => {
+    if(isPiAuxiliaryRequest())return
+    try{if(policy().enabled||policy().summaryEnabled)return boundary.arm(ctx,_event.messages)}
+    catch(error){notice(ctx,error.message);pause(ctx)}
   })
-  pi.on('before_provider_request', (event, ctx) => {
-    try {
-      if(ctx.signal?.aborted)return
+  async function finalRequest({raw,payload,model,messages,transformPayload,requestHeaders,signal},ctx){
+    const selectedEpoch=epoch
+    try{
+      signal?.throwIfAborted()
       reportReplacement(ctx)
-      const p = policy()
-      if (!p.enabled && !p.summaryEnabled) {captureRecovery=false;return}
-      const originalPayload=event.payload
-      let unsafe=false
-      if (takeoverEnabled(ctx)) {
-        const c=capacity(ctx),safety=piWindowSafety(ctx.model,p.ratio),requested=piOutputReserve(event.payload,ctx.model)
-        const inputTokens=Math.max(pendingContextCompaction?0:c?.observed||0,estimatePiRequest(event.payload)),available=ctx.model.contextWindow-inputTokens-safety-1
-        const payload=limitPiOutput(event.payload,ctx.model,Math.min(piCompletionBudget(ctx.model,p.ratio,requested),Math.max(1,Math.floor(available))))
-        // The replacement target schedules a boundary swap. It is not the
-        // physical window limit: a conservative wire estimate may pass it
-        // while measured context remains below it. Shrink only output here.
-        const limit=ctx.model.contextWindow-piOutputReserve(payload,ctx.model)-safety
-        unsafe=!c||available<Math.min(1024,requested)||inputTokens>=limit
-        if(unsafe&&!p.summaryModel&&fixedRequestTokens(payload)>=ctx.model.contextWindow-piWindowSafety(ctx.model,p.ratio)-1024){captureRecovery=false;pause(ctx,'fixed-overhead');return}
-        event={...event,payload}
+      const p=policy()
+      if(!p.enabled&&!p.summaryEnabled)return payload
+      if(p.summaryMode==='main-fork'){
+        capture={payload:raw,messages,model:structuredClone(ctx.model),reasoning:normalizePiReasoning(pi.getThinkingLevel?.()),
+          blockImages:!!settings().images?.blockImages,leafId:ctx.sessionManager.getLeafId(),signature:signature(ctx),transformPayload,requestHeaders}
       }
-      if (p.summaryMode === 'main-fork'){
-        // The branch has its own selected prefix and output capacity. Never
-        // inherit an emergency foreground cap of only a few hundred tokens.
-        capture = { payload: structuredClone(originalPayload), messages: requestMessages, model: structuredClone(ctx.model), reasoning: pi.getThinkingLevel?.() }
-        prepare(ctx,unsafe||captureRecovery)
-      }
+      const enabled=takeoverEnabled(ctx),c=capacity(ctx),safety=piWindowSafety(ctx.model,p.ratio)
+      if(enabled)piOutputReserve(payload,ctx.model) // Reject invalid settings before purchasing background work.
+      const input=Math.max(c?.observed||0,wireInput(ctx,payload,c)),hardInput=ctx.model.contextWindow-safety-1024
+      if(enabled&&!p.summaryModel&&fixedRequestTokens(payload)>=hardInput)throw Object.assign(Error('Pi 固定请求内容超出窗口'),{pauseReason:'fixed-overhead'})
+      const pressure=enabled&&input>=hardInput
+      prepare(ctx,pressure||captureRecovery)
       captureRecovery=false
-      // A cold capture is useful even when the final request turns out to fit.
-      // If it does not fit, keep the captured prefix so the background branch
-      // can summarize an earlier complete boundary while the foreground waits.
-      if(takeoverEnabled(ctx)&&unsafe){pause(ctx);return}
-      return event.payload
-    } catch (error) { notice(ctx, error.message); pause(ctx) }
-  })
-  pi.on('session_shutdown', () => reset())
+      if(enabled&&(pressure||reached(ctx,p.ratio))){
+        const compaction=pressure?await guardedReady(ctx,entries(ctx),0,true):await ready(ctx)
+        if(epoch!==selectedEpoch)throw Error('Pi 会话在请求准备期间已切换')
+        signal?.throwIfAborted()
+        if(compaction){
+          const snapshot=state.snapshot
+          const source=snapshot.sourceMessages?snapshot:{...snapshot,sourceMessages:piDialogueMessages(entries(ctx).slice(0,entries(ctx).findIndex(e=>e.sourceEntry.id===snapshot.firstKeptEntryId)))}
+          const compacted=await piCompactedContext(source,compaction,messages,{converted:true,blockImages:!!settings().images?.blockImages})
+          const converted=await capturePiContext(ctx,compacted,settings().thinkingLevel,signal,{blockImages:!!settings().images?.blockImages})
+          const field=value=>['messages','input','contents'].find(key=>Array.isArray(value?.[key]))||(Array.isArray(value?.context?.messages)?'context.messages':null)
+          const name=field(raw)
+          if(!name||field(converted.payload)!==name)throw Error('Pi 替换请求结构不兼容，原文保留')
+          const rebuilt=name==='context.messages'?{...raw,context:{...raw.context,messages:converted.payload.context.messages}}:{...raw,[name]:converted.payload[name]}
+          payload=await transformPayload(rebuilt)
+          if(epoch!==selectedEpoch)throw Error('Pi 会话在请求替换期间已切换')
+          signal?.throwIfAborted()
+          pendingContextCompaction={snapshot,compaction}
+        }else if(pressure)throw Error('Pi 摘要尚不可用，本次请求未发送，原文保留')
+      }
+      if(enabled){
+        const requested=piOutputReserve(payload,ctx.model)
+        const inputTokens=pendingContextCompaction?estimatePiRequest(payload):Math.max(c?.observed||0,wireInput(ctx,payload,c))
+        const available=ctx.model.contextWindow-inputTokens-safety-1
+        if(available<Math.min(1024,requested))throw Error('Pi 最终请求超出窗口，原文保留')
+        payload=limitPiOutput(payload,ctx.model,Math.min(piCompletionBudget(ctx.model,p.ratio,requested),available))
+        if(inputTokens+piOutputReserve(payload,ctx.model)+safety>=ctx.model.contextWindow)throw Error('Pi 最终请求超出窗口，原文保留')
+      }
+      if(capture&&!pendingContextCompaction)foregroundCapture={...capture,payload:structuredClone(payload)}
+      return payload
+    }catch(error){
+      if(epoch===selectedEpoch&&!ctx.signal?.aborted){notice(ctx,error.message);pause(ctx,error.pauseReason)}
+      throw error // Throw at the provider boundary, where Pi's hook runner cannot swallow it.
+    }
+  }
+  pi.on('session_shutdown', () => {reset();boundary.close()})
   pi.on('session_before_switch', () => reset())
   pi.on('session_before_fork', () => reset())
   pi.on('session_tree', () => reset())

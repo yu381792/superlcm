@@ -1,9 +1,11 @@
 import './env.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { piExtension } from '../src/pi.js'
 import { runInNewContext } from 'node:vm'
 import { ClaudeStore } from '../src/store.js'
 import { piCompressionSettings, savePiCompression } from '../src/pi-controls.js'
@@ -17,6 +19,23 @@ function fixture(t) {
   const model = store.saveApiModel({ provider: 'openai', url: 'http://127.0.0.1:9/v1', model: 'fixture-luna', effort: 'high' })
   return { store, model }
 }
+test('Pi reports a failed SuperLcm tool call as a tool failure', async t => {
+  const { store } = fixture(t), handlers = new Map(), registered = new Map()
+  const path = join(store.dir, 'extension.mjs'), cli = fileURLToPath(new URL('../src/cli.js', import.meta.url))
+  writeFileSync(path, piExtension({ node: process.execPath, script: cli, home: store.dir }))
+  const extension = (await import(pathToFileURL(path))).default
+  extension({ on(name, fn) { handlers.set(name, [...(handlers.get(name) || []), fn]) }, registerTool(tool) { registered.set(tool.name, tool) }, registerCommand() {} })
+  const ctx = { sessionManager: { getSessionId: () => null, getSessionFile: () => null }, ui: { notify(message) { throw Error(message) } } }
+  try {
+    await handlers.get('session_start').at(-1)({}, ctx)
+    const tool = registered.get('lcm_read'); assert.ok(tool)
+    const result = await tool.execute('missing', { conversation: 'missing-conversation', from: 0 }, new AbortController().signal).then(value => ({ value }), error => ({ error }))
+    assert.ok(result.error || result.value?.isError === true, 'a failed lookup must not be reported as success')
+    const find = await registered.get('lcm_find').execute('success', {}, new AbortController().signal)
+    assert.notEqual(find.isError, true); assert.match(find.content[0].text, /conversations/)
+  } finally { await handlers.get('session_shutdown').at(-1)({}, ctx) }
+})
+
 test('Pi console persists the same policy and summary route consumed by the extension', t => {
   const { store, model } = fixture(t), before = piCompressionSettings(store)
   const saved = savePiCompression(store, { revision: before.revision, enabled: true, ratio: .8, summaryMode:'api', api_ref: model.id })

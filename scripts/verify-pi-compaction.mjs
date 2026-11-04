@@ -11,20 +11,29 @@ import { piExtension } from '../src/pi.js'
 import { savePiPolicy } from '../src/pi-compaction-policy.js'
 import { readApiKey, saveApiKey } from '../src/api-credentials.js'
 import { findCli } from '../src/runtime.js'
-import { piOutputReserve } from '../src/pi-request.js'
+import { estimatePiRequest, piOutputReserve, piWindowSafety } from '../src/pi-request.js'
 import { estimateSummaryTokens } from '../src/summary-tokens.js'
 const mainFork = process.argv.includes('--main-fork')
+const lateRedactor=process.argv.includes('--late-redactor'),privateSentinel='PRIVATE_SUMMARY_SOURCE_ONLY'
+const queuedInput=process.argv.includes('--queued-input'),abortAfterReplacement=process.argv.includes('--abort-after-replacement'),nativeOverflow=process.argv.includes('--native-overflow')
+assert.ok(!(queuedInput||abortAfterReplacement||nativeOverflow)||mainFork,'lifecycle fixtures require --main-fork')
 const overGoal=process.argv.includes('--over-planning-target')
 const earlyNative=process.argv.includes('--early-native-compaction')
-const imageHistory=process.argv.includes('--image-history'),modelInput=imageHistory?['text','image']:['text']
+const imageHistory=process.argv.includes('--image-history'),blockImages=process.argv.includes('--block-images'),modelInput=imageHistory?['text','image']:['text']
+const imageData='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN3cAAAAASUVORK5CYII='
+assert.ok(!blockImages||imageHistory,'blocked-image fixture needs image history')
 const fullWindow=process.argv.includes('--full-window'),scale=fullWindow?5:1,window=100000*scale,maxTokens=fullWindow?128000:1024
 const otherModel=process.argv.includes('--other-model'), ratio50=process.argv.includes('--ratio50')
 assert.ok(!(otherModel||ratio50||overGoal||earlyNative||imageHistory)||mainFork,'native model/ratio fixtures require --main-fork')
 const passive = process.argv.includes('--passive-only')
 const live = process.argv.includes('--live-luna'), dir = mkdtempSync(join(tmpdir(), 'superlcm-pi-background-'))
 const slow = process.argv.includes('--slow-luna'), fail = process.argv.includes('--fail-luna'), cold = process.argv.includes('--cold-input')
-const wirePressure=process.argv.includes('--wire-pressure')
+const wirePressure=process.argv.includes('--wire-pressure'),lateSystem=process.argv.includes('--late-system'),foregroundDuringSummary=process.argv.includes('--foreground-during-summary'),oversizedBranchPrefix=process.argv.includes('--oversized-branch-prefix')
 assert.ok(!wirePressure||mainFork&&cold&&fullWindow,'wire pressure requires the 500K cold native fixture')
+assert.ok(!abortAfterReplacement||cold,'abort-after-replacement requires cold recovery')
+assert.ok(!lateSystem||mainFork&&cold,'late system fixture requires cold native recovery')
+assert.ok(!oversizedBranchPrefix||mainFork&&cold&&fullWindow,'oversized prefix fixture requires 500K cold recovery')
+assert.ok(!foregroundDuringSummary||mainFork&&fullWindow&&!cold,'foreground concurrency fixture requires the 500K live native loop')
 const huge = process.argv.includes('--huge-tool-output'), largeInput = process.argv.includes('--oversized-input')
 const nativePayload = process.argv.includes('--oversized-native-payload'), nativeOutput = process.argv.includes('--oversized-native-output')
 const malformed = process.argv.includes('--malformed-summary'), missing = process.argv.includes('--missing-summary-node'), truncated = process.argv.includes('--truncated-summary')
@@ -48,9 +57,10 @@ const { fauxAssistantMessage, fauxToolCall } = await import(pathToFileURL(join(a
 const archive = new ClaudeStore(join(dir, 'archive'))
 let server, mainServer, faultTimer, branchSummaryBudget, apiCalls = 0, session, mainCalls = 0, readyApiCalls, swapApiCalls, swapEntry, abortedNativeCalls = 0, transportCalls = 0
 const mainPayloads = [], branchPayloads = []
-const statuses=[],lifecycle=[]
-let mainStartedResolve
+const statuses=[],lifecycle=[],notifications=[]
+let mainStartedResolve,releaseBranch,foregroundBeforeSummary=false,branchReleased=false
 const mainStarted = new Promise(resolve => { mainStartedResolve = resolve })
+const branchGate = new Promise(resolve => { releaseBranch = resolve })
 try {
   let model
   mainServer = createServer(async (req, res) => {
@@ -58,17 +68,24 @@ try {
     if (!mainFork) { res.writeHead(500); res.end('unexpected main HTTP request'); return }
     req.setEncoding('utf8')
     let raw=''; for await (const data of req) raw+=data
+    if(blockImages)assert.ok(!raw.includes(imageData),'blocked image must never reach the provider')
+    if(lateRedactor){assert.ok(!raw.includes(privateSentinel),'the late redactor must cover foreground, branch and directive anchors');assert.equal(req.headers['x-fixture-redacted'],'yes','auxiliary requests inherit the header processing chain')}
     const body=JSON.parse(raw), last=body.messages.at(-1)?.content
     const directive=typeof last==='string'?last:JSON.stringify(last)
     const branch=directive?.includes('Return one JSON object without fences')
     let content, tool=false, tokens
     if(branch){
       apiCalls++;branchPayloads.push(body)
+      if(lateSystem){
+        assert.ok(raw.includes('LATE_SYSTEM_POLICY_KEEP'),'the branch must keep the latest folded system policy')
+        assert.ok(!raw.includes('LATE_USER_REQUEST_KEEP_VERBATIM'),'the cold branch must omit the retained dialogue tail')
+      }
+      if(foregroundDuringSummary){let timer;await Promise.race([branchGate,new Promise(resolve=>{timer=setTimeout(resolve,5000)})]);clearTimeout(timer);branchReleased=true}
       // Main-fork failure now retries indefinitely. Explicit user cancellation
       // ends this failure-only fixture after the saved foreground turn pauses.
       if((fail||badSummary)&&!faultTimer)faultTimer=setTimeout(()=>{void session.abort()},500)
       if(fail){res.writeHead(503);res.end('synthetic branch failure');return}
-      if(slow)await new Promise(resolve=>setTimeout(resolve,400))
+      if(slow||nativeOverflow)await new Promise(resolve=>setTimeout(resolve,nativeOverflow?150:400))
       const plan=JSON.parse(directive.split('\n').find(line=>line.startsWith('[{"index":')))
       if(missing)plan.pop()
       const blocks=plan.map(part=>({index:part.index,summary:'# 当前状态\n检查尚未结束。部署必须另行获得用户明确授权。原始路径和证据请回查。'}))
@@ -83,10 +100,19 @@ try {
       content=JSON.stringify({blocks});tokens=500
       if(malformed)content='invalid JSON from synthetic summary provider'
     }else{
-      mainPayloads.push(body);mainCalls++;mainStartedResolve();tool=!(cold&&mainFork)&&mainCalls< (slow?2:3)
+      mainPayloads.push(body);mainCalls++;mainStartedResolve();tool=!nativeOverflow&&!(cold&&mainFork)&&mainCalls< (foregroundDuringSummary||slow?2:3)
+      if(nativeOverflow&&mainCalls===1){res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'maximum context length exceeded',type:'invalid_request_error',code:'context_length_exceeded'}}));return}
+      if(nativeOverflow){assert.ok(raw.includes('SuperLcm'),'native overflow recovery must install before retry');assert.equal(mainCalls,2)}
+      if(queuedInput&&mainCalls===3)assert.ok(raw.includes('QUEUED_INPUT_KEEP_VERBATIM'),'steering must reach the next real provider request')
+      if(abortAfterReplacement){setTimeout(()=>{void session.abort()},0);await new Promise(resolve=>setTimeout(resolve,40))}
+      if(foregroundDuringSummary){
+        const hard=window-piWindowSafety({contextWindow:window},.8)-1024
+        assert.ok(mainCalls===1?estimatePiRequest(body)<hard:estimatePiRequest(body)>hard,'the second raw request must cross the coarse physical guard')
+        if(mainCalls===2){foregroundBeforeSummary=apiCalls===1&&!branchReleased;releaseBranch()}
+      }
       if(cold&&mainFork){assert.ok(raw.includes('SuperLcm'),'cold recovery must replace provider context before its first main HTTP request');assert.ok(raw.includes('LATE_USER_REQUEST_KEEP_VERBATIM'),'cold recovery must keep the original request in the actual provider context')}
       if(mainCalls=== (slow?2:3)){if(!passive)assert.ok(swapEntry);assert.ok(raw.includes('LATE_USER_REQUEST_KEEP_VERBATIM'));assert.ok(raw.includes('LATE_TOOL_RESULT_KEEP_VERBATIM'))}
-      tokens=(mainCalls===1?(slow||fail||badSummary?95000:(ratio50?49000:79000)):tool?(ratio50?51000:81000):1100)*scale
+      tokens=(mainCalls===1?(foregroundDuringSummary?70000:slow||fail||badSummary?95000:(ratio50?49000:79000)):tool?(ratio50?51000:81000):1100)*scale
       content=tool?null:'合成测试正常结束。'
     }
     const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'call-'+mainCalls,type:'function',function:{name:'background_checkpoint',arguments:'{}'}}]}:{role:'assistant',content}
@@ -122,28 +148,30 @@ try {
   archive.setHarnessSetting('pi', 'api', null, null, null, model.id); archive.setIntegrationEnabled('pi', true)
   savePiPolicy(archive, { enabled: !passive, ratio: ratio50?.5:.8, ...(mainFork?{summaryMode:'main-fork'}:{}) })
   writeFileSync(join(agentDir, 'extensions/superlcm.ts'), piExtension({ node: process.execPath, script: fileURLToPath(new URL('../src/cli.js', import.meta.url)), home: archive.dir }))
+  if(lateRedactor)writeFileSync(join(agentDir,'extensions/zz-redactor.ts'),`export default function(pi){pi.on('before_provider_request',event=>JSON.parse(JSON.stringify(event.payload).replaceAll(${JSON.stringify(privateSentinel)},'[REDACTED]')));pi.on('before_provider_headers',event=>{event.headers['x-fixture-redacted']='yes'})}`)
   if(mainFork&&cold)writeFileSync(join(agentDir,'extensions/99-wire.ts'),`import{writeFileSync}from'node:fs';export default function(pi){pi.on('before_provider_request',event=>{writeFileSync(${JSON.stringify(join(dir,'cold-main-wire.json'))},JSON.stringify(event.payload))})}`)
-  if(nativeFault||nativeOutput)writeFileSync(join(agentDir,'extensions/00-native-fault.ts'), `export default function(pi){pi.on('before_provider_request',event=>({...event.payload,${nativePayload?"tools:[{type:'function',function:{name:'oversized_tool',description:'中'.repeat(120000),parameters:{type:'object',properties:{}}}}]":"max_tokens:90000"}}))}`)
+  if(nativeFault||nativeOutput)writeFileSync(join(agentDir,'extensions/zz-native-fault.ts'), `export default function(pi){pi.on('before_provider_request',event=>({...event.payload,${nativePayload?"tools:[{type:'function',function:{name:'oversized_tool',description:'中'.repeat(120000),parameters:{type:'object',properties:{}}}}]":"max_tokens:90000"}}))}`)
   const manager = sdk.SessionManager.create(cwd, sessions)
   const usage = tokens => ({ input: tokens - 100, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: tokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } })
   for (let i = 0; i < 8; i++) {
     // A cold-capacity fixture must exceed the real wire budget, rather than
     // merely reporting large synthetic usage for a tiny request that fits.
-    const coldEvidence=cold&&mainFork?'证'.repeat(Math.ceil(window*(fullWindow?.82:1.03)/12)):''
-    const text=`请检查第 ${i} 处。部署必须另行获得用户明确授权。` + '保留准确路径和失败原因。'.repeat(fullWindow?400:40)+coldEvidence
-    manager.appendMessage({ role: 'user', content: imageHistory&&i===0?[{type:'text',text},{type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN3cAAAAASUVORK5CYII='}]:text, timestamp: Date.now() })
+    const coldEvidence=cold&&mainFork?'证'.repeat(Math.ceil(window*(oversizedBranchPrefix?1.15:fullWindow?.82:1.03)/12)):foregroundDuringSummary?'证'.repeat(33000):''
+    const text=`请检查第 ${i} 处。部署必须另行获得用户明确授权。` + (lateRedactor?privateSentinel:'') + '保留准确路径和失败原因。'.repeat(fullWindow?400:40)+coldEvidence
+    manager.appendMessage({ role: 'user', content: imageHistory&&i===0?[{type:'text',text},{type:'image',mimeType:'image/png',data:imageData}]:text, timestamp: Date.now() })
     manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: `第 ${i} 处尚未结束。` + '路径为 /tmp/synthetic-project，工具结果回查原文。'.repeat(fullWindow?120:12) }], api: 'openai-completions', provider: 'fixture-main', model: 'scripted-main', usage: usage((wirePressure?69000:cold ? mainFork&&!fullWindow?90000:95000 : ratio50?40000:70000)*scale), stopReason: 'stop', timestamp: Date.now() })
   }
+  if(lateSystem)manager.appendMessage({role:'system',content:'LATE_SYSTEM_POLICY_KEEP',timestamp:Date.now()})
   const original = readFileSync(manager.getSessionFile(), 'utf8')
-  const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: true, reserveTokens: earlyNative?Math.floor(window*.4):1, keepRecentTokens: 512 }, enableAnalytics: false, enableInstallTelemetry: false })
+  const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: true, reserveTokens: earlyNative?Math.floor(window*.4):1, keepRecentTokens: 512 }, images:{blockImages}, enableAnalytics: false, enableInstallTelemetry: false })
   const loader = new sdk.DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true, noContextFiles: true, noPromptTemplates: true, noThemes: true })
   await loader.reload(); assert.deepEqual(loader.getExtensions().errors, [])
   const modelsFile=join(agentDir,'models.json')
-  if(mainFork){
+  {
     writeFileSync(modelsFile,JSON.stringify({providers:{'fixture-main':{baseUrl:`http://127.0.0.1:${mainServer.address().port}/v1`,api:'openai-completions',apiKey:'synthetic-no-credential',models:[...(otherModel?[{id:'scripted-summary',name:'Scripted summary',reasoning:false,input:modelInput,contextWindow:window,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}]:[]),{id:'scripted-main',name:'Scripted main',reasoning:false,input:modelInput,contextWindow:window,maxTokens,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}]}}}))
   }
   if(otherModel)archive.setHarnessSetting('pi','main-fork','fixture-main/scripted-summary')
-  const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(agentDir, 'auth.json'), modelsPath: mainFork?modelsFile:null, refreshOnCreate: false })
+  const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(agentDir, 'auth.json'), modelsPath: modelsFile, refreshOnCreate: false })
   if(mainFork&&cold){
     const stream=modelRuntime.streamSimple.bind(modelRuntime)
     modelRuntime.streamSimple=(model,context,options)=>stream(model,context,{...options,onPayload(payload){try{return options.onPayload(payload)}catch(error){writeFileSync(join(dir,'cold-branch-wire.json'),JSON.stringify(payload));throw error}}})
@@ -153,7 +181,11 @@ try {
   modelRuntime.hasConfiguredAuth = provider => provider === 'fixture-main' || hasAuth(provider)
   const key = 'pi-' + manager.getSessionId()
   const checkpoint = { name: 'background_checkpoint', label: 'fixture checkpoint', description: 'Deterministic test barrier', parameters: { type: 'object', properties: {} }, async execute() {
-    if (mainCalls === 1 && !slow && !fail && !badSummary) {
+    if(foregroundDuringSummary&&mainCalls===1){
+      const deadline=Date.now()+10000
+      while(!apiCalls&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20))
+      assert.equal(apiCalls,1,'the background branch must start before the tool returns')
+    }else if (mainCalls === 1 && !slow && !fail && !badSummary) {
       const deadline = Date.now() + (mainFork?20000:240000)
       while (Date.now() < deadline) {
         if (archive.db.prepare("SELECT 1 FROM sqlite_master WHERE name='pi_prepared_compactions'").get() && archive.db.prepare('SELECT 1 FROM pi_prepared_compactions WHERE session=?').get(key)) break
@@ -162,16 +194,20 @@ try {
       assert.ok(archive.db.prepare('SELECT 1 FROM pi_prepared_compactions WHERE session=?').get(key), 'background draft must complete while the main tool call is alive')
       readyApiCalls = apiCalls
     }
-    return { content: [{ type: 'text', text: 'LATE_TOOL_RESULT_KEEP_VERBATIM' + (huge ? '巨'.repeat(120000) : '') }], details: {} }
+    if(queuedInput&&mainCalls===2)assert.equal(await session.steer('QUEUED_INPUT_KEEP_VERBATIM：保留这条在途追加指令。'),'queued')
+    return { content: [{ type: 'text', text: 'LATE_TOOL_RESULT_KEEP_VERBATIM' + (huge ? '巨'.repeat(120000) : foregroundDuringSummary?'证'.repeat(20000):'') }], details: {} }
   } }
   const result = await sdk.createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader, sessionManager: manager, modelRuntime, customTools: [checkpoint],
     model: { id: 'scripted-main', name: 'Scripted test model', api: 'openai-completions', provider: 'fixture-main', baseUrl: `http://127.0.0.1:${mainServer.address().port}/v1`, reasoning: false, input: modelInput, contextWindow: window, maxTokens, cost: usage(1000).cost } })
   session = result.session
-  const nativeStream = session.agent.streamFunction
-  if(!mainFork) session.agent.streamFunction = (_model, context, options) => {
-    // Use the real provider for an aborted request: verify that it never reaches
-    // its configured local HTTP endpoint, instead of making a fake honor abort.
-    if (options.signal?.aborted) { abortedNativeCalls++; return nativeStream(_model, context, { ...options, apiKey: 'synthetic-no-credential' }) }
+  if(!mainFork) modelRuntime.getProvider('fixture-main').streamSimple = (_model, context, options) => {
+    const stream = createAssistantMessageEventStream()
+    queueMicrotask(async()=>{
+      try{
+        // Exercise the same effective-provider boundary as a real SDK instead
+        // of bypassing it with an agent.streamFunction override.
+        await options.onPayload?.({messages:context.messages,max_tokens:_model.maxTokens})
+        options.signal?.throwIfAborted()
     mainCalls++; mainStartedResolve()
     assert.ok(!cold, 'cold input at capacity must never reach the main provider')
     assert.ok(!largeInput, 'oversized input must never reach the main provider')
@@ -187,22 +223,42 @@ try {
     assert.ok(mainCalls <= finalCall, 'tool chain must continue naturally, without extra injected turns')
     const message = fauxAssistantMessage(mainCalls < finalCall ? [fauxToolCall('background_checkpoint', {}, { id: 'call-' + mainCalls })] : '合成测试正常结束。', { stopReason: mainCalls < finalCall ? 'toolUse' : 'stop' })
     Object.assign(message, { usage: usage(mainCalls === 1 ? (slow || fail ? 95000 : (ratio50?49000:79000)) : mainCalls === finalCall ? 1100 : (ratio50?51000:81000)), provider: 'fixture-main', model: 'scripted-main' })
-    const stream = createAssistantMessageEventStream()
-    queueMicrotask(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'done', reason: message.stopReason, message }); stream.end(message) })
+
+        stream.push({type:'start',partial:message});stream.push({type:'done',reason:message.stopReason,message});stream.end(message)
+      }catch(error){
+        const message=fauxAssistantMessage('',{stopReason:options.signal?.aborted?'aborted':'error'})
+        message.errorMessage=error.message;stream.push({type:'error',reason:message.stopReason,error:message});stream.end(message)
+      }
+    })
     return stream
   }
   session.subscribe(event => {if(['agent_settled','compaction_start','compaction_end'].includes(event.type))lifecycle.push({type:event.type,aborted:event.aborted,errorMessage:event.errorMessage});if (event.type === 'entry_appended' && event.entry.type === 'compaction') { swapEntry = event.entry; swapApiCalls = apiCalls };if(event.type==='compaction_end'&&event.result){swapEntry=manager.getEntries().findLast(e=>e.type==='compaction');swapApiCalls=apiCalls} })
-  await session.bindExtensions({onError:error=>console.error('Fixture extension error:',error.message),uiContext:{notify:text=>console.error('Fixture notice:',text),setStatus:(_key,text)=>statuses.push(text)}})
+  await session.bindExtensions({onError:error=>console.error('Fixture extension error:',error.message),uiContext:{notify:text=>{notifications.push(text);console.error('Fixture notice:',text)},setStatus:(_key,text)=>statuses.push(text)}})
   assert.ok(session.getActiveToolNames().includes('lcm_read'))
   await session.prompt('LATE_USER_REQUEST_KEEP_VERBATIM：继续检查，禁止部署。' + (largeInput ? '中'.repeat(120000) : ''))
-  if(mainFork&&cold){
+  if(nativeOverflow){
+    assert.ok(swapEntry,'native overflow must not cancel an unfinished background draft')
+    assert.equal(mainCalls,2);assert.equal(apiCalls,1)
+    assert.ok(readFileSync(manager.getSessionFile(),'utf8').startsWith(original))
+    assert.ok(lifecycle.some(e=>e.type==='compaction_end'&&!e.errorMessage))
+    console.log(JSON.stringify({ok:true,mode:'native-overflow',summaryCalls:apiCalls,mainCalls,nativeRetryContinued:true,fullOriginalPreserved:true,directory:dir}))
+  }else if(foregroundDuringSummary){
+    assert.equal(mainCalls,2);assert.equal(apiCalls,1)
+    assert.ok(foregroundBeforeSummary,'the next foreground request must run before the slow background summary finishes')
+    assert.ok(readFileSync(manager.getSessionFile(),'utf8').startsWith(original))
+    console.log(JSON.stringify({ok:true,mode:'foreground-during-summary',summaryCalls:apiCalls,mainCalls,foregroundBeforeSummary,fullOriginalPreserved:true,directory:dir}))
+  }else if(mainFork&&cold){
     const deadline=Date.now()+20000
     while(!swapEntry&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20))
     if(!swapEntry)console.error(JSON.stringify({directory:dir,statuses,lifecycle,apiCalls,mainCalls}))
     assert.ok(swapEntry,'a cold over-capacity session must recover without an initial capture')
     assert.equal(mainCalls,1);assert.equal(apiCalls,1)
+    if(oversizedBranchPrefix){
+      assert.ok(manager.getEntries().some(e=>e.type==='custom'&&e.customType==='superlcm-summary-resize'),'an oversized source must move to an earlier complete boundary')
+      assert.ok(!manager.getEntries().some(e=>e.type==='custom'&&e.customType==='superlcm-summary-failure'),'local capacity rejection must not enter timed retry')
+    }
     assert.ok(readFileSync(manager.getSessionFile(),'utf8').includes('LATE_USER_REQUEST_KEEP_VERBATIM'))
-    const receipt={ok:true,mode:'cold-native-recovery',installedPi:JSON.parse(readFileSync(join(packageRoot,'package.json'))).version,directory:dir,mainRequestsBeforePreparedContext:0,summaryCalls:apiCalls,fullOriginalPreserved:readFileSync(manager.getSessionFile(),'utf8').startsWith(original),foregroundResumed:true,nativeBoundaryCommit:true,extraContinueRequired:false}
+    const receipt={ok:true,mode:abortAfterReplacement?'abort-after-request-replacement':'cold-native-recovery',foregroundAborted:abortAfterReplacement,installedPi:JSON.parse(readFileSync(join(packageRoot,'package.json'))).version,directory:dir,mainRequestsBeforePreparedContext:0,summaryCalls:apiCalls,fullOriginalPreserved:readFileSync(manager.getSessionFile(),'utf8').startsWith(original),foregroundResumed:!abortAfterReplacement,nativeBoundaryCommit:true,extraContinueRequired:false}
     writeFileSync(join(dir,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt))
   }else if(passive){
     assert.equal(swapEntry,undefined);assert.equal(apiCalls,1);assert.equal(mainCalls,3)
@@ -226,7 +282,7 @@ try {
     const branchPlans=branchPayloads.map(p=>JSON.parse(p.messages.at(-1).content.split('\n').find(line=>line.startsWith('[{"index":'))))
     if(branchPlans.length>1){
       assert.ok(slow&&fullWindow,'only a verified insufficient draft may require expanded recovery')
-      assert.equal(branchPlans.length,2);assert.ok(statuses.some(text=>text.includes('旧摘要覆盖不足')))
+      assert.equal(branchPlans.length,2);assert.ok(statuses.some(text=>text?.includes('旧摘要覆盖不足')))
       assert.ok(branchPlans[1].at(-1).lastMessage>branchPlans[0].at(-1).lastMessage,'recovery must cover additional source, not regenerate the same range')
     }else assert.equal(branchPlans.length,1)
     assert.equal(apiCalls,branchPlans.length)
@@ -257,9 +313,13 @@ try {
   assert.ok(archive.eventRows(key).map(row => archive.exact(key, row.ordinal)).join('').startsWith(original))
   const receipt = { ok: true, directory: dir, installedPi: JSON.parse(readFileSync(join(packageRoot, 'package.json'))).version, backgroundAt: ratio50?'40%':'70%', replacedAt: ratio50?'50%':'80%', mainContinuedDuringPreparation: true,
     mode: mainFork?'native-main-fork':slow ? 'slow-summary-capacity-wait' : 'normal',contextWindow:window,configuredMaxTokens:maxTokens,effectiveMaxTokens:mainFork?piOutputReserve(mainPayloads[0]):undefined, uninterruptedMainTurns: mainCalls, summaryModel: mainFork?(otherModel?'scripted-summary':'scripted-main'):model.model, summaryModelCalls:apiCalls,expandedRecovery:mainFork&&branchPayloads.length>1, replacementSummaryHttpRequests: live || slow ? 'lookup-only path' : swapApiCalls - readyApiCalls,
-    nativeBoundaryCommit: true, appendedUserAndToolResultsPreserved: true, fullOriginalPreserved: true,...(overGoal?{branchSummaryBudget}:{}),...(earlyNative?{earlyNativeCompactionRespected:true}:{}) }
+    nativeBoundaryCommit: true, appendedUserAndToolResultsPreserved: true, fullOriginalPreserved: true,...(queuedInput?{queuedInputDelivered:true}:{}),...(overGoal?{branchSummaryBudget}:{}),...(earlyNative?{earlyNativeCompactionRespected:true}:{}) }
   writeFileSync(join(dir, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n'); console.log(JSON.stringify(receipt))
   }
+  if(lateRedactor){assert.ok(original.includes(privateSentinel));assert.ok(readFileSync(manager.getSessionFile(),'utf8').startsWith(original));assert.ok(apiCalls>0);console.log(JSON.stringify({lateRedactor:true,foregroundRequests:mainCalls,summaryRequests:apiCalls,secretReachedProvider:false,originalsUnchanged:true}))}
+  assert.ok(!notifications.some(text=>/正在后台准备|正在后台生成归档|摘要准备完成后/.test(text)),'normal background preparation must not notify')
+  const completed=notifications.filter(text=>text.startsWith('上下文已压缩'))
+  assert.equal(completed.length,swapEntry?1:0,'notify exactly once, and only after the native checkpoint is installed')
 } finally {
   clearTimeout(faultTimer)
   if (session) { await session.extensionRunner?.emit?.({ type: 'session_shutdown' }); session.dispose() }

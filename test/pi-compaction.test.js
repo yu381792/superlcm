@@ -1,5 +1,5 @@
 import './env.mjs'
-import test from 'node:test'
+import test, {afterEach} from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -7,8 +7,12 @@ import { join } from 'node:path'
 import { ClaudeStore } from '../src/store.js'
 import { compactPi, preparePi, readPreparedPi, stagePi, piSourceChunks, readPiPolicy, savePiPolicy } from '../src/pi-compaction.js'
 import { registerPiCompaction, serializePiMessages, piCompactRequest } from '../src/pi-runtime.js'
+import {capturePiContext} from '../src/pi-fork.js'
 import { estimateSummaryTokens } from '../src/summary-tokens.js'
-import { makePiSnapshot, snapshotMatches } from '../src/pi-snapshot.js'
+import { makePiSnapshot, snapshotMatches, piSignature } from '../src/pi-snapshot.js'
+import { forkHash } from '../src/fork-summary.js'
+import { SUMMARY_POLICY_VERSION } from '../src/summary-policy.js'
+import { summarySettingsRevision } from '../src/summarize.js'
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'superlcm-pi-compact-')), store = new ClaudeStore(join(dir, 'archive'))
@@ -27,6 +31,13 @@ function fixture(t) {
   return { dir, store, input, entries, env: { ...process.env, PI_CODING_AGENT_DIR: root } }
 }
 const summary = '# Current state\nThe inspection is unfinished. All source records remain available.\n\n## Recall for details\nRead the original tool outputs before using exact values.'
+
+test('Pi changing image blocking invalidates the prepared-context signature',()=>{
+ const ctx={model:{provider:'fixture',id:'fixture',contextWindow:100000}},policy={enabled:true,summaryMode:'main-fork'}
+ const open=piSignature(ctx,policy,{images:{blockImages:false}})
+ assert.notEqual(open,piSignature(ctx,policy,{images:{blockImages:true}}))
+ assert.equal(open,piSignature(ctx,policy,{}))
+})
 
 test('Pi takeover archives exact bytes, uses the selected Luna API, and preserves Pi cut point', async t => {
   const f = fixture(t), original = readFileSync(f.input.session_file, 'utf8'); let options
@@ -64,6 +75,26 @@ test('broken Pi prepared JSON is discarded without repurchasing valid chunks',as
    assert.ok((await preparePi(f.store,f.input,options)).compaction)
   }
   assert.equal(calls,1,'valid source pieces remain reusable')
+})
+test('Pi lookup can recover the completed earlier prefix without invoking a model',async t=>{
+ const f=fixture(t);f.input.draftKey='9'.repeat(64);f.input.signature='fixture-signature';f.input.prefixDigest='fixture-prefix'
+ let calls=0
+ const prepared=await preparePi(f.store,f.input,{env:f.env,summarize:async()=>{calls++;return summary}})
+ const query={session_id:f.input.session_id,draftKey:'a'.repeat(64),allowEarlier:true}
+ const found=readPreparedPi(f.store,query,{env:f.env})
+ assert.equal(found?.draftKey,f.input.draftKey);assert.deepEqual(found.compaction,prepared.compaction)
+ assert.equal(found.snapshot.signature,f.input.signature);assert.equal(found.snapshot.prefixDigest,f.input.prefixDigest)
+ assert.equal(calls,1)
+ assert.equal(readPreparedPi(f.store,{...query,allowEarlier:false},{env:f.env}),null)
+})
+
+test('Pi does not reuse a draft prepared before visible shell commands were preserved',async t=>{
+  const f=fixture(t); f.input.draftKey='8'.repeat(64)
+  await preparePi(f.store,f.input,{env:f.env,summarize:async()=>summary})
+  const policy=readPiPolicy(f.store.dir),session='pi-'+f.input.session_id
+  const oldRevision=forkHash(['pi-api-preparation-v2',SUMMARY_POLICY_VERSION,policy,summarySettingsRevision(f.store,session,f.env)])
+  f.store.db.prepare('UPDATE pi_prepared_compactions SET revision=? WHERE session=?').run(oldRevision,session)
+  assert.equal(readPreparedPi(f.store,f.input,{env:f.env}),null)
 })
 test('a non-shrinking merge is regenerated on retry while successful source pieces are reused',async t=>{
   const f=fixture(t);let leaves=0,merges=0
@@ -123,6 +154,28 @@ test('Pi serializer keeps long tool results, failure evidence and call identifie
     { role: 'toolResult', toolCallId: 'call-1', isError: true, content: [{ type: 'text', text }] }])
   assert.ok(output.includes(text)); assert.match(output, /ERROR \/ failed/); assert.match(output, /call-1/)
 })
+test('Pi API summary receives visible shell commands and failure details but never excluded commands', async t => {
+  const f = fixture(t)
+  const visible = { role: 'bashExecution', command: 'inspect fixtures', output: 'FAILED: missing result', exitCode: 23, cancelled: false, truncated: true, fullOutputPath: '/tmp/complete-output' }
+  const hidden = { role: 'bashExecution', command: 'PRIVATE COMMAND', output: 'PRIVATE OUTPUT', exitCode: 0, excludeFromContext: true }
+  f.entries.splice(3, 0, { type: 'message', id: 'shell', parentId: 'b', message: visible }, { type: 'message', id: 'hidden', parentId: 'shell', message: hidden })
+  f.entries.at(-1).parentId = 'hidden'
+  writeFileSync(f.input.session_file, f.entries.map(JSON.stringify).join('\n') + '\n')
+  const original = readFileSync(f.input.session_file, 'utf8')
+  f.input.source = serializePiMessages(f.entries.slice(1, -1).map(e => e.message))
+  let submitted
+  await compactPi(f.store, f.input, { env: f.env, summarize: async text => { submitted = text; return summary } })
+  assert.match(submitted, /inspect fixtures/)
+  assert.match(submitted, /FAILED: missing result/)
+  assert.match(submitted, /23/)
+  assert.match(submitted, /truncat/i)
+  assert.match(submitted, /\/tmp\/complete-output/)
+  assert.doesNotMatch(submitted, /PRIVATE COMMAND|PRIVATE OUTPUT/)
+  assert.equal((submitted.match(/bashExecution/g) || []).length, 1)
+  assert.equal(readFileSync(f.input.session_file, 'utf8'), original)
+})
+const runtimeCleanups=new Set()
+afterEach(()=>{for(const close of runtimeCleanups)close();runtimeCleanups.clear()})
 function runtime({ tokens = 70000, idle = false, responder, compactEffect, guardTimeoutMs,attemptTimeoutMs,fork, readPolicy = () => ({ enabled: true, ratio: .8 }) } = {}) {
   const handlers = new Map(), commands = [], draft = {}, settings = { compaction: { keepRecentTokens: 512 } }
   const rows = [
@@ -144,20 +197,37 @@ function runtime({ tokens = 70000, idle = false, responder, compactEffect, guard
     if (options.command === 'pi-prepare') { draft.snapshot = input; draft.signal = signal; return pending }
     return Promise.resolve(draft.prepared)
   }
-  api = registerPiCompaction({ on: (name, fn) => handlers.set(name, fn), getSettings: () => settings, registerCommand() {}, appendEntry: (type, data) => deferredInputs.push({ type, data }) }, { home: '/unused' }, { policy: readPolicy, request, guardTimeoutMs,attemptTimeoutMs,fork })
+  // Simulate the host's final provider boundary without a transport. Provider
+  // chain composition itself is exercised by the installed-SDK integration test.
+  let requestMessages,armController
+  const createBoundary=handle=>{
+    const dispatch=(event,context)=>handle({raw:structuredClone(event.payload),payload:event.payload,model:context.model,
+      messages:requestMessages||rows.flatMap(e=>e.messages),transformPayload:async value=>value,signal:context.signal},context).catch(()=>undefined)
+    handlers.set('before_provider_request',dispatch)
+    return {arm(context,messages){
+      requestMessages=messages
+      if(!context.modelRegistry?.streamSimple)return
+      armController=new AbortController()
+      return capturePiContext(context,messages,undefined,armController.signal).then(c=>dispatch({payload:c.payload},context)).catch(()=>undefined)
+    },disarm(){armController?.abort(Error('Pi 会话已切换或结束'))},close(){armController?.abort()}}
+  }
+  api = registerPiCompaction({ on: (name, fn) => handlers.set(name, fn), getSettings: () => settings, registerCommand() {}, appendEntry: (type, data) => deferredInputs.push({ type, data }) }, { home: '/unused' }, { policy: readPolicy, request, guardTimeoutMs,attemptTimeoutMs,fork,createBoundary })
+  runtimeCleanups.add(()=>handlers.get('session_shutdown')())
   const complete = async () => {
     draft.prepared = { draftKey: draft.snapshot.draftKey, compaction: { summary, firstKeptEntryId: draft.snapshot.firstKeptEntryId, tokensBefore: 70000, details: { model: 'fixture-luna' } } }
     resolvePrepare(draft.prepared); await api.getState()?.promise
   }
-  return { handlers, commands, ctx, rows, api, draft, complete, rejectPrepare, deferredInputs, get compactCalls() { return compactCalls }, get abortCalls() { return abortCalls } }
+  return { handlers, commands, ctx, rows, api, draft, settings, complete, rejectPrepare, deferredInputs, get compactCalls() { return compactCalls }, get abortCalls() { return abortCalls } }
 }
 const turn = r => r.handlers.get('turn_end')({ entries: [], context: { contextEntries: r.rows } }, r.ctx)
 test('Pi announces replacement only after its checkpoint exists, once across lifecycle hooks',async()=>{
- const r=runtime(),notices=[]
+ const r=runtime(),notices=[],statuses=[]
  r.ctx.ui.notify=(text,type)=>notices.push({text,type})
+ r.ctx.ui.setStatus=(_key,text)=>{if(text)statuses.push(text)}
  await turn(r);await r.complete()
- assert.equal(notices.length,1);assert.match(notices[0].text,/正在后台准备/)
- const successes=()=>notices.filter(n=>n.text.includes('已替换为后台摘要'))
+ assert.equal(notices.length,0,'preparation and ready drafts stay silent')
+ assert.deepEqual(statuses,[],'normal preparation is silent in the footer too')
+ const successes=()=>notices.filter(n=>n.text.includes('上下文已压缩'))
  assert.equal(successes().length,0,'a prepared draft is not an installed replacement')
  r.ctx.tokens=80000
  const draft=(await turn(r)).entries[0]
@@ -168,10 +238,20 @@ test('Pi announces replacement only after its checkpoint exists, once across lif
  r.ctx.tokens=2000
  r.handlers.get('session_compact')({},r.ctx)
  assert.equal(successes().length,1);assert.equal(successes()[0].type,'info')
- assert.match(successes()[0].text,/已替换为后台摘要.*80K → .*K/)
- assert.match(successes()[0].text,/原文和最近内容已保留/)
+ assert.match(successes()[0].text,/^上下文已压缩（约 80K → \d+K）$/)
  r.handlers.get('agent_settled')({},r.ctx)
  assert.equal(successes().length,1,'subsequent settled hooks must not duplicate the notice')
+})
+test('Pi archive-only background preparation and completion stay silent',async()=>{
+ const r=runtime({readPolicy:()=>({enabled:false,summaryEnabled:true,summaryMode:'api',ratio:.8})}),notices=[],statuses=[]
+ r.ctx.ui.notify=text=>notices.push(text)
+ r.ctx.ui.setStatus=(_key,text)=>{if(text)statuses.push(text)}
+ try{
+  await turn(r);await r.complete()
+  assert.ok(r.api.getState()?.ready)
+  assert.deepEqual(notices,[]);assert.deepEqual(statuses,[])
+  assert.equal(r.compactCalls,0)
+ }finally{r.handlers.get('session_shutdown')()}
 })
 test('Pi does not announce a pending replacement in a different session',async()=>{
  const r=runtime(),notices=[]
@@ -181,7 +261,7 @@ test('Pi does not announce a pending replacement in a different session',async()
  r.handlers.get('session_before_switch')()
  r.rows.splice(0,3,{sourceEntry:{...draft,id:'other-session-checkpoint',tokensBefore:80000},messages:[{role:'compactionSummary',summary:draft.summary}]})
  r.ctx.tokens=2000;r.handlers.get('agent_settled')({},r.ctx)
- assert.equal(notices.filter(n=>n.includes('已替换为后台摘要')).length,0)
+ assert.equal(notices.filter(n=>n.includes('上下文已压缩')).length,0)
 })
 const tick=()=>new Promise(resolve=>setImmediate(resolve))
 async function until(check){for(let i=0;i<100;i++){if(check())return;await tick()}throw Error('Pi state did not advance')}
@@ -190,6 +270,155 @@ function captureRuntime(r,payload={messages:[{role:'user',content:'captured pref
  r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
  return r.handlers.get('before_provider_request')({payload},r.ctx)
 }
+
+test('Pi never starts a branch when image blocking changes during archive staging',async()=>{
+ let entered,release,sends=0
+ const begun=new Promise(resolve=>entered=resolve),waiting=new Promise(resolve=>release=resolve)
+ const responder=async options=>options.command==='pi-ready'?null:options.command==='pi-stage'?(entered(),waiting):null
+ const fork=async(_ctx,_snapshot,_capture,{stage})=>{await stage();sends++;return {}}
+ const r=runtime({tokens:70000,readPolicy:mainForkPolicy,responder,fork})
+ captureRuntime(r);await begun
+ const active=r.api.getState();assert.ok(active)
+ r.settings.images={blockImages:true};release({checkpoints:[]})
+ await active.promise
+ assert.equal(sends,0,'old image-visible capture must not be sent after images are blocked')
+})
+
+test('Pi session switch cancels a stalled request capture without pausing the next session',async()=>{
+ const r=runtime({tokens:90000,readPolicy:mainForkPolicy})
+ let started,release,options
+ const begun=new Promise(resolve=>started=resolve),blocked=new Promise(resolve=>release=resolve)
+ r.ctx.modelRegistry={streamSimple(_model,_context,opts){options=opts;started();return {result:()=>blocked}}}
+ const work=r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
+ await begun;r.handlers.get('session_before_switch')()
+ const observed=await Promise.race([work.then(()=> 'finished'),new Promise(resolve=>setTimeout(()=>resolve('hung'),100))])
+ assert.throws(()=>options.onPayload({messages:[]}),/会话已切换或结束/)
+ release({stopReason:'aborted'});await work
+ assert.equal(observed,'finished');assert.equal(r.abortCalls,0)
+})
+
+for(const provider of ['google','pi-messages'])test('Pi excludes '+provider+' conversation contents from fixed request overhead',async()=>{
+ let started,release
+ const begun=new Promise(resolve=>started=resolve),blocked=new Promise(resolve=>release=resolve)
+ const r=runtime({tokens:90000,readPolicy:mainForkPolicy,
+  responder:async opts=>opts.command==='pi-stage'?{revision:'fixture'}:null,
+  fork:async(_ctx,_snapshot,_capture,{stage})=>{await stage();started();return blocked}})
+ r.ctx.model.api=provider==='google'?'google-generative-ai':'pi-messages';r.ctx.model.maxTokens=2048
+ r.ctx.modelRegistry={streamSimple(_model,_context,options){return {result(){
+  const content='中'.repeat(100000)
+  const payload=provider==='google'?{contents:[{role:'user',parts:[{text:content}]}],config:{maxOutputTokens:2048}}:{context:{messages:[{role:'user',content}]},options:{maxTokens:2048}}
+  try{options.onPayload(payload)}catch{};return new Promise(()=>{})
+ }}}}
+ const work=r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
+ const observed=await Promise.race([begun.then(()=> 'prepared'),work.then(()=> 'stopped'),new Promise(resolve=>setTimeout(()=>resolve('hung'),500))])
+ r.handlers.get('session_before_switch')();release();await work
+ assert.equal(observed,'prepared');assert.equal(r.abortCalls,0)
+})
+
+test('Pi shrinks an oversized branch to an earlier complete boundary without retrying the same source',async()=>{
+ const cuts=[],diagnostics=[];let prepared
+ const r=runtime({tokens:75000,readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixture'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
+  fork:async(_ctx,snap,_capture,{stage})=>{await stage();cuts.push({cut:snap.firstKeptEntryId,tokens:snap.sourceTokens,ids:snap.sourceEntryIds});if(cuts.length<3)throw Object.assign(Error('no room'),{code:'SUPERLCM_PI_PREFIX_CAPACITY'});return {blocks:[],tree:[]}}})
+ r.rows.splice(0,r.rows.length,...Array.from({length:14},(_,i)=>({sourceEntry:{id:'source-'+i,type:'message'},messages:[{role:i%2?'assistant':'user',content:i%2?[{type:'text',text:'Inspection evidence. '.repeat(200)}]:'Keep the original constraints. '.repeat(200)}]})))
+ try{
+  captureRuntime(r);await until(()=>r.api.getState()?.ready)
+  assert.equal(cuts.length,3)
+  assert.ok(cuts[1].tokens<cuts[0].tokens&&cuts[2].tokens<cuts[1].tokens)
+  assert.equal(new Set(cuts.map(c=>c.cut)).size,3)
+  assert.equal(r.api.getState().snapshot.firstKeptEntryId,cuts[2].cut)
+  assert.deepEqual(cuts[2].ids,cuts[0].ids.slice(0,cuts[2].ids.length))
+  assert.equal(r.commands.filter(c=>c==='pi-prepare').length,1)
+  assert.equal(r.deferredInputs.filter(e=>e.type==='superlcm-summary-resize').length,2)
+  assert.equal(r.deferredInputs.filter(e=>e.type==='superlcm-summary-failure').length,0)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+test('Pi capacity resizing uses the nearest complete boundary when an eighty-percent step is too small',async()=>{
+ const cuts=[];let prepared
+ const r=runtime({readPolicy:mainForkPolicy,responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixture'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
+  fork:async(_ctx,snap,_capture,opts)=>{await opts.stage();cuts.push(snap);if(cuts.length===1)throw Object.assign(Error('no room'),{code:'SUPERLCM_PI_PREFIX_CAPACITY'});assert.equal(opts.forcePrefix,true);return {blocks:[],tree:[]}}})
+ r.rows[0].messages[0].content='x'.repeat(48000)
+ try{
+  captureRuntime(r);await until(()=>r.api.getState()?.ready)
+  assert.equal(cuts.length,2)
+  assert.ok(cuts[1].sourceTokens>cuts[0].sourceTokens*.8&&cuts[1].sourceTokens<cuts[0].sourceTokens)
+  assert.notEqual(cuts[1].firstKeptEntryId,cuts[0].firstKeptEntryId)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+test('Pi cold restart restores a completed resized prefix without another summary request',async()=>{
+ let saved,forks=0
+ const r=runtime({readPolicy:mainForkPolicy,responder:async(opts,input)=>opts.command==='pi-ready'&&input.allowEarlier?saved:opts.command==='pi-ready'?{draftKey:saved.draftKey,compaction:saved.compaction}:null,
+  fork:async()=>{forks++;throw Error('must reuse completed prefix')}})
+ r.rows.splice(0,r.rows.length,...Array.from({length:14},(_,i)=>({sourceEntry:{id:'restart-'+i,type:'message'},messages:[{role:i%2?'assistant':'user',content:i%2?[{type:'text',text:'Historical result. '.repeat(200)}]:'Keep these constraints. '.repeat(200)}]})))
+ const initial=makePiSnapshot(r.ctx,mainForkPolicy(),r.settings)
+ const smaller=makePiSnapshot(r.ctx,mainForkPolicy(),r.settings,{sourceLimit:Math.floor(initial.sourceTokens*.8)})
+ saved={draftKey:smaller.draftKey,snapshot:smaller,compaction:{summary,firstKeptEntryId:smaller.firstKeptEntryId}}
+ try{
+  await turn(r);await until(()=>r.api.getState()?.ready)
+  assert.equal(forks,0);assert.equal(r.api.getState().snapshot.draftKey,smaller.draftKey)
+  assert.deepEqual(r.api.getState().snapshot.sourceEntryIds,smaller.sourceEntryIds)
+  assert.ok((await r.api.ready(r.ctx))?.summary)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+for(const changed of ['prefix','settings','boundary'])test('Pi cold restart refuses a resized draft with changed '+changed,async()=>{
+ let saved,prepared,forks=0
+ const r=runtime({readPolicy:mainForkPolicy,responder:async(opts,snap)=>opts.command==='pi-ready'?(snap.allowEarlier?saved:prepared):opts.command==='pi-stage'?{revision:'fixture'}:(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}),
+  fork:async(_ctx,_snap,_capture,{stage})=>{forks++;await stage();return {blocks:[],tree:[]}}})
+ const original=makePiSnapshot(r.ctx,mainForkPolicy(),r.settings)
+ const earlier=makePiSnapshot(r.ctx,mainForkPolicy(),r.settings,{firstKeptEntryId:r.rows[1].sourceEntry.id})
+ saved={draftKey:earlier.draftKey,snapshot:{...earlier},compaction:{summary,firstKeptEntryId:earlier.firstKeptEntryId}}
+ if(changed==='prefix')saved.snapshot.prefixDigest='modified'
+ if(changed==='settings')saved.snapshot.signature='modified'
+ if(changed==='boundary')saved.compaction.firstKeptEntryId='other-branch'
+ try{
+  captureRuntime(r);await until(()=>r.api.getState()?.ready)
+  assert.equal(forks,1);assert.equal(r.api.getState().snapshot.draftKey,original.draftKey)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+test('Pi reports an indivisible oversized prefix once instead of retrying it forever',async t=>{
+ let forks=0;const notices=[]
+ const r=runtime({tokens:70000,readPolicy:mainForkPolicy,responder:async()=>null,
+  fork:async()=>{forks++;throw Object.assign(Error('no room'),{code:'SUPERLCM_PI_PREFIX_CAPACITY'})}})
+ r.rows[0].messages[0].content='证'.repeat(20000);r.rows.splice(1,2)
+ r.ctx.ui.notify=text=>notices.push(text)
+ try{
+  t.mock.timers.enable({apis:['setTimeout','Date']});captureRuntime(r)
+  await until(()=>forks===1&&!r.api.getState())
+  t.mock.timers.tick(86400000);await turn(r);await tick()
+  assert.equal(forks,1);assert.equal(notices.length,1)
+  assert.match(notices[0],/完整消息组/)
+ }finally{r.handlers.get('session_shutdown')();t.mock.timers.reset()}
+})
+
+test('Pi resumes a blocked capacity prefix when the captured tools change, but not on identical recapture',async()=>{
+ let forks=0,prepared
+ const r=runtime({readPolicy:mainForkPolicy,responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixture'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
+  fork:async(_ctx,_snap,_capture,{stage})=>{forks++;if(forks===1)throw Object.assign(Error('no room'),{code:'SUPERLCM_PI_PREFIX_CAPACITY'});await stage();return {blocks:[],tree:[]}}})
+ r.rows[0].messages[0].content='证'.repeat(20000);r.rows.splice(1,2)
+ const payload={messages:[{role:'user',content:'exact prefix'}],tools:[{name:'large_tool',description:'schema'}],max_tokens:1024}
+ try{
+  captureRuntime(r,payload);await until(()=>forks===1&&!r.api.getState())
+  captureRuntime(r,payload);await tick();assert.equal(forks,1)
+  captureRuntime(r,{...payload,tools:[]});await until(()=>r.api.getState()?.ready)
+  assert.equal(forks,2)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+test('Pi stops retrying an unsupported provider until its settings change',async t=>{
+ let forks=0;const notices=[]
+ const r=runtime({readPolicy:mainForkPolicy,responder:async()=>null,fork:async()=>{forks++;throw Object.assign(Error('unsupported provider request'),{code:'SUPERLCM_PI_UNSUPPORTED_REQUEST'})}})
+ r.ctx.ui.notify=text=>notices.push(text)
+ try{
+  t.mock.timers.enable({apis:['setTimeout','Date']});captureRuntime(r)
+  await until(()=>forks===1&&!r.api.getState())
+  t.mock.timers.tick(120000);await turn(r);await tick()
+  assert.equal(forks,1);assert.ok(notices.some(text=>text.includes('unsupported provider request')))
+ }finally{r.handlers.get('session_shutdown')();t.mock.timers.reset()}
+})
 
 test('Pi bypasses a malformed ready response and prepares a fresh branch',async()=>{
  let forks=0,prepared
@@ -212,7 +441,7 @@ test('Pi 500K window prepares at 350K and only replaces at 400K with a 128K outp
   r.ctx.tokens=350000;await turn(r);await r.complete()
   r.ctx.tokens=399999;assert.equal(await turn(r),undefined)
   const payload={messages:[{role:'user',content:'small'}],max_tokens:128000}
-  const wire=r.handlers.get('before_provider_request')({payload},r.ctx)
+  const wire=await r.handlers.get('before_provider_request')({payload},r.ctx)
   assert.equal(wire.max_tokens,90000);assert.equal(payload.max_tokens,128000)
   assert.equal(r.ctx.model.maxTokens,128000);assert.equal(r.abortCalls,0)
   r.ctx.tokens=400000;assert.equal((await turn(r)).entries[0].type,'compaction')
@@ -254,6 +483,105 @@ test('Pi runtime keeps a progressing background branch past the idle limit',asyn
  }finally{r.handlers.get('session_shutdown')();for(const release of gates)release();t.mock.timers.reset()}
 })
 
+for(const streamingBehavior of ['steer','followUp'])test('Pi leaves '+streamingBehavior+' input in the native queue during replacement pressure',async()=>{
+ const r=runtime();await turn(r);await r.complete();r.ctx.tokens=95000
+ try{
+  const result=await r.handlers.get('input')({text:'Do not lose this queued instruction',streamingBehavior},r.ctx)
+  assert.notEqual(result?.action,'handled');assert.equal(r.deferredInputs.length,0);assert.equal(r.compactCalls,0)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+test('Pi native overflow waits for the existing draft using the recovery signal',async()=>{
+ const r=runtime();await turn(r)
+ const old=new AbortController();old.abort();r.ctx.signal=old.signal
+ const recovery=new AbortController();let finished=false
+ const work=r.handlers.get('session_before_compact')({reason:'overflow',preparation:{tokensBefore:99000},signal:recovery.signal},r.ctx).then(result=>{finished=true;return result})
+ await tick();assert.equal(finished,false)
+ await r.complete();const result=await work
+ assert.equal(result.compaction.summary,summary);assert.equal(result.compaction.tokensBefore,99000)
+ assert.equal(r.commands.filter(c=>c==='pi-prepare').length,1)
+ r.handlers.get('session_shutdown')()
+})
+
+test('Pi persists an already-applied request summary at an aborted turn boundary',async()=>{
+ let prepared
+ const r=runtime({tokens:70000,readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixed'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
+  fork:async(_ctx,_snap,_capture,{stage})=>{await stage();return {blocks:[],tree:[]}}})
+ const controller=new AbortController();r.ctx.signal=controller.signal
+ r.ctx.model.maxTokens=2048
+ r.ctx.modelRegistry={streamSimple(_m,_c,opts){return {result:async()=>{try{opts.onPayload({messages:[{role:'user',content:'small'}],max_tokens:2048})}catch{};return {stopReason:'aborted'}}}}}
+ try{
+  captureRuntime(r);await until(()=>r.api.getState()?.ready);r.ctx.tokens=95000
+  const replaced=await r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
+  assert.ok(replaced?.messages)
+  controller.abort(Error('user cancelled the foreground'))
+  const result=await turn(r)
+  assert.equal(result.entries[0].type,'compaction');assert.equal(result.entries[0].summary,summary)
+  assert.equal(r.rows.at(-1).sourceEntry.id,'a2','original tail stays untouched')
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+test('Pi archive retry reuses a completed fork instead of purchasing it again',async t=>{
+ let calls=0,saves=0,prepared
+ const r=runtime({readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>{
+   if(opts.command==='pi-ready')return prepared||null
+   if(opts.command==='pi-stage')return {revision:'fixed'}
+   if(opts.command==='pi-prepare'){if(++saves===1)throw Error('database is locked');return prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}}
+  },fork:async(_ctx,_snap,_capture,{stage})=>{await stage();calls++;return {blocks:[],tree:[]}}})
+ try{
+  t.mock.timers.enable({apis:['setTimeout','Date']});captureRuntime(r)
+  await until(()=>r.api.getState()?.retryAt)
+  t.mock.timers.tick(r.api.getState().retryAt-Date.now())
+  await until(()=>r.api.getState()?.ready)
+  assert.equal(saves,2);assert.equal(calls,1,'saving the already completed model output must not invoke the model again')
+ }finally{r.handlers.get('session_shutdown')();t.mock.timers.reset()}
+})
+
+test('Pi stops when the archive rejects a completed tree semantically',async t=>{
+ let calls=0,saves=0
+ const r=runtime({readPolicy:mainForkPolicy,
+  responder:async opts=>{if(opts.command==='pi-stage')return {revision:'fixed'};if(opts.command==='pi-prepare'){saves++;throw Error('summary language mismatch')}return null},
+  fork:async(_ctx,_snap,_capture,{stage})=>{await stage();calls++;return {blocks:[],tree:[]}}})
+ try{
+  t.mock.timers.enable({apis:['setTimeout','Date']});captureRuntime(r)
+  await until(()=>!r.api.getState()||r.api.getState()?.retryAt)
+  assert.equal(r.api.getState(),null)
+  t.mock.timers.tick(10000000);await turn(r)
+  assert.equal(calls,1);assert.equal(saves,1)
+ }finally{r.handlers.get('session_shutdown')();t.mock.timers.reset()}
+})
+
+for(const code of ['SUPERLCM_PI_REPLAY_REFUSED','SUPERLCM_PI_INVALID_SUMMARY'])test('Pi '+code+' ends the attempt instead of scheduling it forever',async t=>{
+ let calls=0
+ const r=runtime({readPolicy:mainForkPolicy,responder:async()=>null,fork:async()=>{calls++;throw Object.assign(Error('explicit terminal failure'),{code})}})
+ try{
+  t.mock.timers.enable({apis:['setTimeout','Date']});captureRuntime(r)
+  await until(()=>!r.api.getState()||r.api.getState()?.retryAt)
+  assert.equal(r.api.getState(),null,'an explicit non-replayable refusal is terminal')
+  t.mock.timers.tick(10000000);await turn(r);captureRuntime(r);await tick()
+  assert.equal(calls,1);assert.equal(r.api.getState(),null)
+ }finally{r.handlers.get('session_shutdown')();t.mock.timers.reset()}
+})
+
+test('Pi safe target crossing does not wait for unfinished preparation at the request hook',async()=>{
+ let release,prepared,started=false
+ const waiting=new Promise(resolve=>release=resolve)
+ const r=runtime({tokens:70000,readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixed'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
+  fork:async(_ctx,_snap,_capture,{stage})=>{started=true;await stage();await waiting;return {blocks:[],tree:[]}}})
+ r.ctx.model.maxTokens=2048
+ r.ctx.modelRegistry={streamSimple(_m,_c,opts){return {result:async()=>{try{opts.onPayload({messages:[{role:'user',content:'small'}],max_tokens:2048})}catch{};return {stopReason:'aborted'}}}}}
+ let work
+ try{
+  captureRuntime(r);await until(()=>started);r.ctx.tokens=81000
+  work=r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
+  const result=await Promise.race([work.then(()=> 'continued'),new Promise(resolve=>setTimeout(()=>resolve('blocked'),30))])
+  assert.equal(result,'continued');assert.equal(r.abortCalls,0)
+ }finally{release();r.handlers.get('session_shutdown')();await work}
+})
+
 test('Pi retries independently past fifty minutes and keeps pressure waiting until the eighth attempt succeeds',async t=>{
  let release,settled=false,prepared;const gate=new Promise(resolve=>release=resolve),captures=[],notices=[]
  const r=runtime({readPolicy:mainForkPolicy,guardTimeoutMs:20,
@@ -289,7 +617,8 @@ test('Pi retries independently past fifty minutes and keeps pressure waiting unt
   assert.equal(result.entries[0].type,'compaction')
   assert.equal(r.commands.filter(c=>c==='pi-prepare').length,1)
   assert.ok(captures.every(c=>c===captures[0]),'retry uses one frozen capture')
-  assert.equal(notices.filter(text=>text.includes('正在后台准备')).length,1,'retries do not repeat the preparation notice')
+  assert.equal(notices.filter(text=>text.includes('正在后台准备')).length,0,'preparation is silent, including retries')
+  assert.equal(notices.filter(text=>text.startsWith('后台摘要失败：')).length,7,'each genuine failed attempt is reported once')
   release();await tick()
   assert.equal(r.commands.filter(c=>c==='pi-prepare').length,1,'late attempts never publish')
  }finally{r.handlers.get('session_shutdown')();release();t.mock.timers.reset();await waiting}
@@ -525,9 +854,9 @@ test('a large but admissible input recovers by compacting old history before the
   assert.equal(r.deferredInputs.length, 1, 'input is preserved before the cancellable wait, including successful recovery')
   assert.equal(r.deferredInputs[0].data.text, '新'.repeat(30000))
 })
-test('final request gate includes prompt expansion and tool declarations in the actual messages', () => {
+test('final request gate includes prompt expansion and tool declarations in the actual messages', async () => {
   const r = runtime({ tokens: 1000 })
-  r.handlers.get('context_with_system')({ messages: [{ role: 'system', content: '固'.repeat(150000) }] }, r.ctx)
+  await r.handlers.get('before_provider_request')({payload:{ messages: [{ role: 'system', content: '固'.repeat(150000) }] }}, r.ctx)
   assert.equal(r.abortCalls, 1)
 })
 test('screenshots are budgeted as visual content rather than base64 text', async () => {
@@ -628,7 +957,32 @@ test('Pi cold resume may restore a ready draft without a captured provider reque
  }finally{r.handlers.get('session_shutdown')()}
 })
 
-test('Pi cold resume without a draft can capture recovery before blocking the provider',async()=>{
+test('Pi continues the foreground while a receipt-backed oversized estimate prepares in the background',async()=>{
+ let started=false,release
+ const blocked=new Promise(resolve=>release=resolve)
+ const r=runtime({tokens:340000,readPolicy:mainForkPolicy,
+  responder:async opts=>opts.command==='pi-stage'?{revision:'fixture'}:null,
+  fork:async(_ctx,_snapshot,_capture,{stage})=>{await stage();started=true;return blocked}})
+ Object.assign(r.ctx.model,{contextWindow:500000,maxTokens:128000,api:'openai-completions'})
+ const original={messages:[{role:'user',content:'证'.repeat(320000)}],max_tokens:128000}
+ const current={...original,messages:[...original.messages,{role:'assistant',content:'证'.repeat(9000)}]}
+ let work
+ try{
+  assert.ok(captureRuntime(r,original),'the prior request is accepted')
+  r.rows.push({sourceEntry:{id:'receipt',type:'message',parentId:'a2'},messages:[{role:'assistant',provider:'test',model:'chat',stopReason:'toolUse',usage:{input:76,output:4988,cacheRead:341248,cacheWrite:0},content:[{type:'text',text:'completed'}]}]},
+   {sourceEntry:{id:'result',type:'message',parentId:'receipt'},messages:[{role:'toolResult',toolCallId:'fixture',content:[{type:'text',text:'done'}]}]})
+  r.ctx.tokens=355000
+  r.ctx.modelRegistry={streamSimple(_m,_c,options){return {result:async()=>{try{options.onPayload(current)}catch{};return {stopReason:'aborted'}}}}}
+  work=r.handlers.get('context_with_system')({messages:[{role:'user',content:'证'.repeat(329000),timestamp:1}]},r.ctx)
+  const result=await Promise.race([work.then(()=> 'continued'),new Promise(resolve=>setTimeout(()=>resolve('blocked'),250))])
+  assert.equal(result,'continued','a matching recent receipt must prevent a false capacity wait')
+  const sent=r.handlers.get('before_provider_request')({payload:current},r.ctx)
+  assert.ok(sent);assert.equal(r.abortCalls,0)
+  await until(()=>started);assert.ok(r.api.getState()?.promise,'the background summary is still running')
+ }finally{r.handlers.get('session_shutdown')();release();await work}
+})
+
+test('Pi cold resume waits at the final boundary instead of aborting the foreground before recovery',async()=>{
  let calls=0
  const r=runtime({tokens:80000,readPolicy:mainForkPolicy,responder:async()=>null,fork:async()=>{calls++;return new Promise(()=>{})}})
  r.ctx.model.maxTokens=50000
@@ -637,8 +991,8 @@ test('Pi cold resume without a draft can capture recovery before blocking the pr
   assert.equal(await r.handlers.get('input')({text:'CONTINUE AFTER RESTART'},r.ctx),undefined)
   captureRuntime(r,{messages:[{role:'user',content:'中'.repeat(90000)}],max_tokens:50000})
   await until(()=>calls===1)
-  assert.equal(controller.signal.aborted,true)
-  assert.ok(r.api.getState(),'capacity abort retains the recovery job')
+  assert.equal(controller.signal.aborted,false)
+  assert.ok(r.api.getState()?.promise,'the foreground awaits the captured recovery job without sending')
  }finally{r.handlers.get('session_shutdown')()}
 })
 test('Pi cold recovery lets a final safe wire request continue while preparing in the background',async()=>{
@@ -648,13 +1002,13 @@ test('Pi cold recovery lets a final safe wire request continue while preparing i
  const controller=new AbortController();r.ctx.signal=controller.signal;r.ctx.abort=()=>controller.abort()
  try{
   assert.equal(await r.handlers.get('input')({text:'CONTINUE AFTER RESTART'},r.ctx),undefined)
-  const payload=captureRuntime(r)
+  const payload=await captureRuntime(r)
   await until(()=>calls===1)
   assert.equal(controller.signal.aborted,false,'an earlier estimate must not abort a verified safe wire request')
   assert.ok(payload?.messages);assert.ok(r.api.getState())
  }finally{r.handlers.get('session_shutdown')()}
 })
-test('Pi oversized final wire request still starts an earlier-prefix recovery branch before pausing the foreground',async()=>{
+test('Pi oversized final wire request starts earlier-prefix recovery and waits without sending',async()=>{
  let calls=0
  const r=runtime({tokens:99000,readPolicy:mainForkPolicy,responder:async()=>null,fork:async()=>{calls++;return new Promise(()=>{})}})
  r.rows[0].messages[0].content='Large compressible historical evidence. '.repeat(10000)
@@ -662,7 +1016,7 @@ test('Pi oversized final wire request still starts an earlier-prefix recovery br
  try{
   captureRuntime(r,{messages:[{role:'user',content:'中'.repeat(120000)}],max_tokens:50000})
   await until(()=>calls===1)
-  assert.equal(controller.signal.aborted,true);assert.ok(r.api.getState(),'foreground protection must retain the recovery branch')
+  assert.equal(controller.signal.aborted,false);assert.ok(r.api.getState()?.promise,'the final provider boundary owns the cancellable wait')
  }finally{r.handlers.get('session_shutdown')()}
 })
 
@@ -817,20 +1171,20 @@ test('Pi checks the final native tools payload before dispatching a provider req
   assert.equal(r.api.getState(), null)
 })
 
-test('Pi final payload reserves the actual requested output limit in API mode too', () => {
+test('Pi final payload reserves the actual requested output limit in API mode too', async () => {
   const r = runtime({ tokens: 1000, readPolicy: () => ({ enabled: true, summaryMode: 'api', ratio: .8 }) })
   const payload={ messages: [{ role: 'user', content: '中'.repeat(15000) }], max_tokens: 90000 }
-  const result=r.handlers.get('before_provider_request')({payload},r.ctx)
+  const result=await r.handlers.get('before_provider_request')({payload},r.ctx)
   assert.equal(result.max_tokens,18000);assert.equal(payload.max_tokens,90000)
   assert.equal(r.abortCalls, 0)
 })
-test('Pi does not treat the replacement target as the physical request limit',()=>{
+test('Pi does not treat the replacement target as the physical request limit',async()=>{
  const r=runtime({tokens:355646,readPolicy:mainForkPolicy})
  r.ctx.model.contextWindow=500000;r.ctx.model.maxTokens=128000
  r.rows[1].messages[0].usage={input:353120,output:676}
  try{
   const payload={input:[{role:'user',content:'x'.repeat(1604800)}],max_output_tokens:128000}
-  const wire=captureRuntime(r,payload)
+  const wire=await captureRuntime(r,payload)
   assert.equal(r.abortCalls,0,'a roughly 401K request can still fit the 500K window')
   assert.ok(wire.max_output_tokens<90000,'reduce the output reserve by the actual remaining capacity')
   assert.ok(wire.max_output_tokens>80000)
@@ -854,15 +1208,32 @@ test('Pi waits before dispatch when final wire pressure arrives below the measur
   fork:async(_ctx,_snap,capture,{stage})=>{started=true;assert.equal(capture.payload.max_output_tokens,128000);await stage();await gate;return {blocks:[],tree:[]}}})
  r.ctx.model.contextWindow=500000;r.ctx.model.maxTokens=128000
  r.rows[0].messages[0].content='巨'.repeat(600000)
- r.ctx.modelRegistry={streamSimple(_m,_c,opts){return {result:async()=>{try{opts.onPayload({input:[{role:'user',content:'x'.repeat(1957600)}],max_output_tokens:128000})}catch{return {stopReason:'aborted'}}}}}}
+ r.ctx.modelRegistry={streamSimple(_m,_c,opts){return {result:async()=>{try{opts.onPayload({input:JSON.stringify(_c.messages).includes('Current state')?_c.messages:[{role:'user',content:'x'.repeat(1957600)}],max_output_tokens:128000})}catch{return {stopReason:'aborted'}}}}}}
  let work
  try{
   work=r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx).then(v=>{finished=true;return v})
   await until(()=>started);assert.equal(finished,false);assert.equal(r.abortCalls,0)
   release();const result=await work
-  assert.ok(result.messages);assert.ok(JSON.stringify(result.messages).includes(JSON.stringify(summary).slice(1,-1)))
+  assert.ok(result.input);assert.ok(JSON.stringify(result.input).includes(JSON.stringify(summary).slice(1,-1)))
   assert.equal(r.abortCalls,0)
  }finally{release();r.handlers.get('session_shutdown')();await work}
+})
+
+test('Pi API mode can rebuild a pressured request from its verified source boundary',async()=>{
+ const r=runtime({tokens:99000}),notices=[]
+ r.rows[0].messages[0].content='证'.repeat(100000)
+ r.ctx.ui.notify=message=>notices.push(message)
+ r.ctx.modelRegistry={streamSimple(_m,context,options){return {result:async()=>{try{options.onPayload({messages:context.messages,max_tokens:1000})}catch{return {stopReason:'aborted'}}}}}}
+ let work
+ try{
+  work=r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
+  await until(()=>r.commands.includes('pi-prepare'))
+  await r.complete()
+  const result=await work
+  assert.ok(result,JSON.stringify(notices));assert.ok(JSON.stringify(result.messages).includes('Current state'));assert.equal(r.abortCalls,0)
+  const entry=await r.handlers.get('turn_end')({entries:[],context:{contextEntries:r.rows}},r.ctx)
+  assert.equal(entry.entries.at(-1).type,'compaction')
+ }finally{r.handlers.get('session_shutdown')();await work}
 })
 
 test('Pi background capture retains its original output budget when the foreground cap collapses',async()=>{
@@ -926,13 +1297,13 @@ test('Pi late replacement callback cannot clear a new session draft', async () =
   r.handlers.get('session_shutdown')()
 })
 
-test('Pi final payload rejects invalid output reservations and covers native Google settings', () => {
+test('Pi final payload rejects invalid output reservations and covers native Google settings', async () => {
   for (const fields of [{ max_tokens: NaN }, { max_output_tokens: -1 }, { maxTokens: '1000' }]) {
     const r = runtime()
     r.handlers.get('before_provider_request')({ payload: { messages: [{ role: 'user', content: '中'.repeat(3000) }], ...fields } }, r.ctx)
     assert.equal(r.abortCalls, 1)
   }
-  const r=runtime(),result=r.handlers.get('before_provider_request')({payload:{messages:[],generationConfig:{maxOutputTokens:99000}}},r.ctx)
+  const r=runtime(),result=await r.handlers.get('before_provider_request')({payload:{messages:[],generationConfig:{maxOutputTokens:99000}}},r.ctx)
   assert.equal(result.generationConfig.maxOutputTokens,18000);assert.equal(r.abortCalls,0)
 })
 
