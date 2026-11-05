@@ -9,16 +9,145 @@ export function clonePiPayload(payload) {
   return copy
 }
 
-// Count native and Pi image forms as visual input, not base64 text.
-export function estimatePiRequest(value) {
+// OpenAI Responses reasoning ciphertext is an encoding of model output, not
+// ordinary prompt text. Use a *matching* earlier response's measured reasoning/output
+// usage as a conservative allowance; never discount unverified or changed ciphertext.
+function reasoningReceipts(history,model) {
+  if(!Array.isArray(history)||!model?.provider||!model?.id||(model.api&&!['openai-responses','openai-completions'].includes(model.api)))return null
+  const ids=new Map(),blocks=new WeakMap()
+  for(const message of history){
+    const u=message?.usage
+    if(message?.role!=='assistant'||message.provider!==model.provider||message.model!==model.id||message.api!=='openai-responses'||
+       !['stop','toolUse','length'].includes(message.stopReason)||!Array.isArray(message.content)||
+       !Number.isSafeInteger(u?.output)||u.output<=0||!Number.isSafeInteger(u?.reasoning)||u.reasoning<0||u.reasoning>u.output||
+       !['input','cacheRead','cacheWrite'].every(k=>Number.isSafeInteger(u?.[k]??0)&&(u?.[k]??0)>=0)||
+       (u.input||0)+(u.cacheRead||0)+(u.cacheWrite||0)<=0)continue
+    const nonThinking=message.content.filter(b=>b?.type!=='thinking')
+    const nonThinkingTokens=nonThinking.length?estimateSummaryTokens(JSON.stringify(nonThinking)):0
+    const group={tokens:Math.max(u.reasoning,u.output-nonThinkingTokens)}
+    for(const block of message.content){
+      if(block?.type!=='thinking'||typeof block.thinkingSignature!=='string')continue
+      let item;try{item=JSON.parse(block.thinkingSignature)}catch{continue}
+      if(item?.type!=='reasoning'||typeof item.id!=='string'||!item.id||typeof item.encrypted_content!=='string'||!item.encrypted_content)continue
+      const spec={item,group,block};blocks.set(block,spec)
+      ids.set(item.id,ids.has(item.id)?null:spec) // Ambiguous IDs never receive a discount.
+    }
+  }
+  return {ids,blocks}
+}
+
+// Count native and Pi image forms as visual input, not base64 text. Recognized
+// reasoning records may use their actual source receipts; all unknown content,
+// missing receipts and other request formats retain the original conservative count.
+export function estimatePiRequest(value,{history,model}={}) {
+  const index=reasoningReceipts(history,model),used=new Set(),groups=new Set()
+  const matched=spec=>{
+    if(!spec||index.ids.get(spec.item.id)!==spec||used.has(spec.item.id))return false
+    used.add(spec.item.id);groups.add(spec.group);return true
+  }
+  let counted=value
+  if(Array.isArray(value)){
+    counted=value.map(message=>{
+      if(!message||typeof message!=='object')return message
+      let base=message
+      if(base.role==='toolResult'&&(base.details!==undefined||base.nestedCalls!==undefined))
+        base={...base,details:undefined,nestedCalls:undefined}
+      else if(base.role==='assistant'&&(base.usage!==undefined||base.codexHostedSearch!==undefined))
+        base={...base,usage:undefined,codexHostedSearch:undefined}
+      if(base.role!=='assistant'||!Array.isArray(base.content))return base
+      if(model?.provider&&model?.id&&base.provider&&base.model&&(base.provider!==model.provider||base.model!==model.id))
+        return {...base,content:base.content.filter(b=>b?.type!=='thinking')}
+      if(!index)return base
+      const content=base.content.map(block=>{
+        let spec=index.blocks.get(block)
+        if(!spec&&block?.type==='thinking'&&typeof block.thinkingSignature==='string'){
+          try{
+            const parsed=JSON.parse(block.thinkingSignature)
+            const candidate=parsed?.type==='reasoning'?index.ids.get(parsed.id):null
+            if(candidate&&isDeepStrictEqual(parsed,candidate.item))spec=candidate
+          }catch{}
+        }
+        return matched(spec)?{...block,thinking:'',thinkingSignature:JSON.stringify({...spec.item,encrypted_content:'',summary:[]})}:block
+      })
+      return {...base,content}
+    })
+  }else if(index&&Array.isArray(value?.input)){
+    counted={...value,input:value.input.map(item=>{
+      const spec=item?.type==='reasoning'?index.ids.get(item.id):null
+      return spec&&isDeepStrictEqual(item,spec.item)&&matched(spec)?{...item,encrypted_content:'',summary:[]}:item
+    })}
+  }
   let images = 0
-  const text = JSON.stringify(value, (_key, item) => {
+  const text = JSON.stringify(counted, (_key, item) => {
     if (['image', 'image_url', 'input_image'].includes(item?.type) || item?.inlineData?.mimeType?.startsWith('image/')) {
       images++; return { type: 'image', mimeType: item.mimeType }
     }
     return item
   })
-  return estimateSummaryTokens(text || '') + images * 8192
+  return estimateSummaryTokens(text || '') + images * 8192 + [...groups].reduce((sum,group)=>sum+group.tokens,0)
+}
+
+export function fixedPiRequestTokens(payload) {
+  if(!payload||typeof payload!=='object')return 0
+  const fixed={...payload}
+  for(const key of ['messages','input'])if(Array.isArray(fixed[key]))fixed[key]=fixed[key].filter(m=>['system','developer'].includes(m.role))
+  if(Array.isArray(fixed.contents))fixed.contents=[]
+  if(Array.isArray(fixed.context?.messages))fixed.context={...fixed.context,messages:fixed.context.messages.filter(m=>['system','developer'].includes(m.role))}
+  return estimatePiRequest(fixed)
+}
+
+function validReceiptMessage(message,model) {
+  const u=message?.usage
+  if(message?.role!=='assistant'||['error','aborted'].includes(message.stopReason)||!u)return null
+  if(model?.provider&&message.provider&&message.provider!==model.provider)return null
+  if(model?.id&&message.model&&message.model!==model.id)return null
+  const parts=['input','output','cacheRead','cacheWrite'].map(k=>u[k]??0)
+  if(parts.some(n=>!Number.isSafeInteger(n)||n<0)||parts[0]+parts[2]+parts[3]<=0||parts[1]<=0)return null
+  const paidInput=parts[0]+parts[2]+parts[3]
+  const total=Math.max(Number.isSafeInteger(u.totalTokens)?u.totalTokens:0,paidInput+parts[1])
+  return {paidInput,output:parts[1],total}
+}
+
+function invalidatedAfterAnchor(entries,anchor,branch) {
+  const prefixIds=new Set(entries.slice(0,anchor+1).map(e=>e?.sourceEntry?.id).filter(Boolean))
+  const anchorId=entries[anchor]?.sourceEntry?.id
+  const branchAnchor=Array.isArray(branch)&&anchorId?branch.findIndex(e=>e?.id===anchorId):-1
+  for(const entry of entries.slice(anchor+1)){
+    const src=entry?.sourceEntry
+    if(src?.type==='compaction')return true
+    if(src?.type==='context_edit'){
+      if(entry.messages?.length>0||prefixIds.has(src.targetId))return true
+      if(branchAnchor>=0){
+        const targetIdx=branch.findIndex(e=>e?.id===src.targetId)
+        if(targetIdx<0||targetIdx<=branchAnchor)return true
+      }else if(!src.targetId||src.targetId!==src.parentId||src.parentId===anchorId)return true
+    }
+  }
+  return false
+}
+
+// Recover the last valid assistant usage receipt even when a later failed turn
+// was removed by a context_edit. Edits to the prefix itself still invalidate it.
+export function measuredPiContextTokens(entries,model,hostTokens,branch) {
+  if(!Array.isArray(entries))return Number.isFinite(hostTokens)&&hostTokens>0?hostTokens:null
+  let anchor=-1,message=null,messageIndex=-1,receipt=null
+  for(let i=entries.length-1;i>=0;i--){
+    const msgs=entries[i]?.messages||[]
+    for(let j=msgs.length-1;j>=0;j--){
+      const r=validReceiptMessage(msgs[j],model)
+      if(r){anchor=i;message=msgs[j];messageIndex=j;receipt=r;break}
+    }
+    if(anchor>=0)break
+  }
+  if(anchor<0)return Number.isFinite(hostTokens)&&hostTokens>0?hostTokens:null
+  if(invalidatedAfterAnchor(entries,anchor,branch))return null
+  const allMessages=entries.flatMap(e=>e?.messages||[])
+  const trailing=[
+    ...(entries[anchor]?.messages||[]).slice(messageIndex+1),
+    ...entries.slice(anchor+1).flatMap(e=>e?.messages||[]),
+  ].filter(m=>m&&m.role!=='system')
+  const measured=receipt.total+(trailing.length?estimatePiRequest(trailing,{history:allMessages,model}):0)
+  return Number.isFinite(hostTokens)&&hostTokens>=measured?hostTokens:measured
 }
 
 // These SDK configuration items change request effort, not dialogue history.
@@ -34,10 +163,11 @@ export function estimatePiWireWithReceipt(payload,previous,entries,observed,mode
   const anchor=entries.findIndex(entry=>entry.sourceEntry?.id===previous.leafId)
   if(anchor<0)return null
   const later=entries.slice(anchor+1)
-  if(later.some(entry=>['compaction','context_edit'].includes(entry.sourceEntry?.type)))return null
   const assistants=later.flatMap(entry=>entry.messages.filter(message=>message.role==='assistant').map(message=>({entry:entry.sourceEntry,message})))
   if(assistants.length!==1)return null
   const {entry,message}=assistants[0],usage=message.usage
+  const replyIndex=entries.findIndex(e=>e.sourceEntry?.id===entry?.id)
+  if(replyIndex<=anchor||entries.slice(anchor+1,replyIndex+1).some(e=>['compaction','context_edit'].includes(e.sourceEntry?.type))||invalidatedAfterAnchor(entries,replyIndex))return null
   if(entry.parentId!==previous.leafId||message.provider!==model.provider||message.model!==model.id||['error','aborted'].includes(message.stopReason)||!usage)return null
   const values=['input','output','cacheRead','cacheWrite'].map(key=>usage[key]??0)
   if(values.some(value=>!Number.isFinite(value)||value<0)||values[0]+values[2]+values[3]<=0||observed<values.reduce((a,b)=>a+b,0))return null
@@ -56,7 +186,9 @@ export function estimatePiWireWithReceipt(payload,previous,entries,observed,mode
   // observed already includes the completed response and appended tool input.
   // Start the wire delta at its paid input, not at input+output a second time.
   const priorInput=values[0]+values[2]+values[3]
-  return Math.max(observed,priorInput+estimatePiRequest(after.slice(before.length)))+estimatePiRequest(changed)
+  const history=entries.flatMap(entry=>entry.messages)
+  const suffix=estimatePiRequest({input:after.slice(before.length)},{history,model})
+  return Math.max(observed,priorInput+suffix)+estimatePiRequest(changed)
 }
 
 const outputPaths = [['max_tokens'], ['max_completion_tokens'], ['max_output_tokens'], ['maxOutputTokens'], ['maxTokens'], ['generationConfig', 'maxOutputTokens'], ['config', 'maxOutputTokens'], ['inferenceConfig', 'maxTokens'], ['options', 'maxTokens']]

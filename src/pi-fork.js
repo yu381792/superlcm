@@ -128,10 +128,10 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
   const nativeReserve=Math.min(piOutputReserve(null,model),override?piOutputReserve(null,model):piOutputReserve(capture.payload,model))
   const planningOptions={fanout:snapshot.summaryTuning?.fanout||4,incremental:true,targetTokens:Math.max(256,Math.min(target,12000,Math.floor(nativeReserve*.65)))}
   const directive = forkDirective(plan, planningOptions.targetTokens,undefined,planningOptions)
-  let images = 0
-  const encoded = JSON.stringify(convertedMessages, (_key,value) => { if(value?.type === 'image'){images++;return {type:'image'}};return value })
   const limit = model.contextWindow - 1024 - Math.max(1024,model.contextWindow*.02)
-  const prefixOnly=forcePrefix||Number.isFinite(limit)&&Math.max(snapshot.tokensBefore,estimatePiRequest(capture.payload),estimateSummaryTokens(encoded)+images*8192)+estimateSummaryTokens(directive)>=limit
+  const originalEstimate=estimatePiRequest(capture.payload,{history:convertedMessages,model:capture.model})
+  const projectedEstimate=estimatePiRequest(convertedMessages,{history:convertedMessages,model})
+  const prefixOnly=forcePrefix||Number.isFinite(limit)&&Math.max(snapshot.tokensBefore,originalEstimate,projectedEstimate)+estimateSummaryTokens(directive)>=limit
   // A resumed near-full session may not fit the retained tail plus a directive.
   // Branch at the already selected history boundary instead. Every summarized
   // message stays intact; the unsummarized tail remains in the foreground.
@@ -141,7 +141,7 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
   // with in-place system messages keep their original chronological prefix.
   const inPlaceSystem=model.api==='pi-messages'||(['openai-completions','openai-responses','anthropic-messages'].includes(model.api)&&model.compat?.supportsMidConvoSystemMessages===true)
   const branchMessages=prefixOnly?[...convertedMessages.slice(0,boundary),...(!inPlaceSystem?convertedMessages.slice(boundary).filter(m=>m.role==='system'):[])]:convertedMessages
-  const fixed=prefixOnly?Math.max(0,snapshot.tokensBefore-estimatePiRequest(capture.payload)):0
+  const fixed=prefixOnly?Math.max(0,snapshot.tokensBefore-originalEstimate):0
   const requestField=value=>['messages','input','contents'].find(key=>Array.isArray(value?.[key]))||(Array.isArray(value?.context?.messages)?'context.messages':null)
   const requestMessages=(value,field)=>field==='context.messages'?value?.context?.messages:value?.[field]
   const withMessages=(value,field,messages)=>field==='context.messages'?{...value,context:{...value.context,messages}}:{...value,[field]:messages}
@@ -197,7 +197,8 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
       if(isCurrent&&!isCurrent()){invalidated=stale();throw invalidated}
       const transformedField=requestField(replay)
       if(transformedField!==targetField){unsupported=Object.assign(Error('Pi 请求处理链改变了摘要请求结构，原文保留'),{code:'SUPERLCM_PI_UNSUPPORTED_REQUEST'});throw unsupported}
-      const input=prefixOnly?estimatePiRequest(replay)+fixed:Math.max(snapshot.tokensBefore,estimatePiRequest(replay))
+      const estimated=estimatePiRequest(replay,{history:convertedMessages,model})
+      const input=prefixOnly?estimated+fixed:Math.max(snapshot.tokensBefore,estimated)
       const available=model.contextWindow-input-Math.max(1024,model.contextWindow*.02)-1
       if(available<1){capacityError=Object.assign(Error('Pi 后台分支最终请求没有足够输入空间，原文保留'),{code:'SUPERLCM_PI_PREFIX_CAPACITY'});throw capacityError}
       try{replay=limitPiOutput(replay,model,Math.min(available,nativeReserve))}catch(error){

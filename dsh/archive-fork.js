@@ -14,6 +14,7 @@ import {readSettings} from './settings.js'
 import {archivePairing} from './archive-planner.js'
 import {DSH_SUMMARY_TIMEOUT_MS} from './summary-timeout.js'
 import {semanticKind,semanticLevel} from './tree-semantics.js'
+import {selectionPricing} from './selection-pricing.js'
 const listeners=new Map()
 export function registerForkArchive(path,callback,revision=()=>null){
   const callbacks=listeners.get(path)||new Map();callbacks.set(callback,revision);listeners.set(path,callbacks)
@@ -46,7 +47,8 @@ async function runArchiveFork(service,id,doc,owner,signal,{force},progress){
   const window=info.context?.contextWindow,reserve=request.maxTokens??info.defaultMaxTokens??0
   if(!Number.isSafeInteger(window)||window<=reserve)throw Error('聊天模型缺少上下文容量，原文保留')
   const inputBudget=window-reserve,measurement=service.ctx.tokenMeter.measure(session)
-  if(!force&&measurement.totalTokens<window*(Math.round((doc.settings.compressionRatio-.1)*1e12)/1e12))return 'below-preparation-threshold'
+  const priced=measurement.nodes?selectionPricing(measurement,session.requestHeader?.(),session):{activeTokens:measurement.totalTokens,factor:1}
+  if(!force&&priced.activeTokens<window*(Math.round((doc.settings.compressionRatio-.1)*1e12)/1e12))return 'below-preparation-threshold'
   const byId=new Map(request.messages.map((message,index)=>[message.id,{message,index}]))
   const history=service.db.nodes(id),covered=new Set(history.filter(n=>n.level===0).flatMap(n=>n.sources))
   const selected=service.db.sourceRows(id).filter(row=>{
@@ -90,9 +92,12 @@ async function runArchiveFork(service,id,doc,owner,signal,{force},progress){
     route=await forkRoute(scoped?.ctx||service.ctx,request,{enabled:doc.settings.forkModelOverride,provider:doc.settings.summaryProvider,model:doc.settings.summaryModel},signal)
     const targetTokens=Math.max(256,Math.min(12000,Math.floor((route.request.maxTokens||reserve||16384)*.65),Math.floor(inputBudget*.1)))
     options={fanout:doc.settings.fanout,targetTokens,incremental:true};prompt=forkDirective(plan,targetTokens,language.name,options)
-    if(measurement.totalTokens+Math.ceil(prompt.length/2)>=Math.min(inputBudget,route.inputBudget??Infinity)-1024)throw Error('所选后台模型放不下完整对话，原文保留')
+    const remaining=Math.min(window,route.contextWindow??Infinity)-priced.activeTokens-Math.ceil(Math.ceil(prompt.length/2)*priced.factor)-1024
+    if(remaining<1024)throw Error('所选后台模型放不下完整对话，原文保留')
+    const maxTokens=Math.min(route.request.maxTokens??(reserve||16384),Math.floor(remaining))
+    options={...options,targetTokens:Math.max(targetTokens,Math.min(Math.floor(inputBudget*.15),maxTokens))}
     await forkScope.run(true,async()=>{
-    const stream=route.ctx.llm.stream({...route.request,signal,messages:[...request.messages,createUserMessage({content:[{type:'text',text:prompt}]})]})
+    const stream=route.ctx.llm.stream({...route.request,maxTokens,signal,messages:[...request.messages,createUserMessage({content:[{type:'text',text:prompt}]})]})
     for await(const chunk of completeSummaryStream(stream,signal)){
       signal.throwIfAborted()
       if(['text-delta','reasoning-delta'].includes(chunk.type)&&typeof chunk.text==='string'&&chunk.text.trim())progress()

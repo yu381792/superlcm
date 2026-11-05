@@ -199,3 +199,26 @@ test('DSH passive branch honors the native model override and 40% preparation wi
   assert.equal(store.db.prepare('SELECT model FROM fork_summary_receipts WHERE session=?').get(dshSessionKey(h.id)).model,'summary-alternate')
  }finally{await forks?.close();store.close();await close(h)}
 })
+
+test('DSH passive branch uses calibrated usage and limits branch output when reserve is large',async()=>{
+ const h=await lab({capacity:500000,maxTokens:135000,priceFactor:2,config:{auto:false,summaryMode:'main-fork'}}),store=new ClaudeStore(h.dir);let forks
+ try{
+  store.setGlobalSetting('main-fork')
+  forks=new MainArchiveFork(h.ctx,h.engine.superLcmStore,h.dir,error=>h.warnings.push(error.message))
+  const original=h.ctx.llm.stream.bind(h.ctx.llm),branches=[]
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches.push(options)
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join(''),plan=JSON.parse(prompt.split('\n').find(x=>x.startsWith('[{"index":')))
+   yield {type:'text-delta',text:JSON.stringify({blocks:plan.map(n=>({index:n.index,summary:'# Historical state\nKeep original constraints; inspection remains pending.'}))})}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  // 36.2% raw heuristic * 2x priceFactor = 72.4% calibrated usage (> 70% prepare threshold, and with directive > 365K inputBudget).
+  history(h,.362);assert.deepEqual(await send(h,'PASSIVE_CALIBRATED_BRANCH'),[])
+  captureDshPacket(store,{header:h.agent.session.header,records:h.agent.session.snapshotEvents().map(e=>projectDshEvent(h.id,e,JSON.stringify(e.data)))})
+  forks.afterCapture(h.id,true)
+  await Promise.all([...forks.jobs.values()].map(j=>j.promise))
+  assert.equal(branches.length,1,h.warnings.join('\n'))
+  assert.ok(branches[0].maxTokens<135000,'passive branch limits output to fit the remaining window')
+  assert.ok(store.roots(dshSessionKey(h.id)).length)
+ }finally{await forks?.close();store.close();await close(h)}
+})

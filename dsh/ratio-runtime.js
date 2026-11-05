@@ -32,7 +32,7 @@ export async function resolvePolicy(engine, agent, signal) {
   signal?.throwIfAborted()
   if (headerFingerprint !== hash(requestIdentity(agent)) || generation !== engine.runtimeGeneration) throw Error('聊天模型正在切换，请重试当前请求')
   const measurement = engine.ctx.tokenMeter.measure(agent.session)
-  const priced = selectionPricing(measurement, agent.session.requestHeader())
+  const priced = selectionPricing(measurement, agent.session.requestHeader(), agent.session)
   const fixedTokens = priced.nodes.filter(n => agent.session.eventAt(n.seq).type === 'system/message').reduce((sum,n) => sum+n.tokens,0)
     + Math.ceil((identity.tools.length ? JSON.stringify(identity.tools).length / 4 + 4 : 0) * priced.factor)
   const policy = deriveRatioPolicy(engine.rollingConfig, { contextWindow: info.context?.contextWindow,
@@ -64,7 +64,7 @@ export function latestUserIndex(session) {
 }
 export function activeInputTokens(engine,agent) {
   const measurement=engine.ctx.tokenMeter.measure(agent.session)
-  return engine.rollingConfig.budgetMode==='ratio'?selectionPricing(measurement,agent.session.requestHeader()).activeTokens:measurement.totalTokens
+  return engine.rollingConfig.budgetMode==='ratio'?selectionPricing(measurement,agent.session.requestHeader(),agent.session).activeTokens:measurement.totalTokens
 }
 export async function pressureStep(engine, agent, signal) {
   const policy = await resolvePolicy(engine, agent, signal)

@@ -30,7 +30,10 @@ export async function* completeSummaryStream(stream, signal) {
       if (chunk.reason?.kind !== 'stop') {
         const raw = chunk.reason?.failure?.code ?? chunk.reason?.code
         const code = summaryFailureCode(raw)
-        throw Object.assign(new Error('Summary generation was incomplete; original content retained'),code ? {code} : {})
+        throw Object.assign(new Error('Summary generation was incomplete; original content retained'), {
+          ...(code ? { code } : {}),
+          ...(chunk.reason?.kind === 'max-tokens' ? { summaryKind: 'length' } : {}),
+        })
       }
       finished = true
     }

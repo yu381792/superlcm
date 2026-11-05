@@ -7,9 +7,9 @@ import { createServer } from 'node:http'
 import { pathToFileURL } from 'node:url'
 import { findCli } from '../src/runtime.js'
 import { summarizePiFork,piForkPlan,capturePiContext,piCompactedContext } from '../src/pi-fork.js'
-import {makePiSnapshot} from '../src/pi-snapshot.js'
+import {makePiSnapshot,estimatePiMessages} from '../src/pi-snapshot.js'
 import { forkHash, parseForkSummary } from '../src/fork-summary.js'
-import { estimatePiRequest, estimatePiWireWithReceipt, limitPiOutput, piCompletionBudget, piOutputReserve, piWindowSafety } from '../src/pi-request.js'
+import { estimatePiRequest, estimatePiWireWithReceipt, measuredPiContextTokens, limitPiOutput, piCompletionBudget, piOutputReserve, piWindowSafety } from '../src/pi-request.js'
 import { estimateSummaryTokens } from '../src/summary-tokens.js'
 const first={role:'user',content:'Please inspect /tmp/fixture; never deploy.',timestamp:1}
 const second={role:'assistant',content:[{type:'text',text:'Inspection pending.'}],timestamp:2}
@@ -40,6 +40,90 @@ test('Pi malformed provider completions are terminal instead of retrying a broke
  }
 })
 
+test('Pi budgets source-verified encrypted reasoning using its original output receipt',()=>{
+ const model={provider:'opencodex',id:'fixture',api:'openai-responses',contextWindow:500000,maxTokens:128000}
+ const one={type:'reasoning',id:'rs_1',encrypted_content:'A'.repeat(160000),summary:[]}
+ const two={type:'reasoning',id:'rs_2',encrypted_content:'B'.repeat(160000),summary:[]}
+ const history=[{role:'assistant',provider:model.provider,model:model.id,api:model.api,stopReason:'stop',
+  usage:{input:50000,output:4000,cacheRead:100,cacheWrite:0,reasoning:3500},content:[one,two].map(item=>({type:'thinking',thinking:'',thinkingSignature:JSON.stringify(item)}))}]
+ const wire={input:[one,two,{role:'user',content:'Question'}],max_output_tokens:128000},original=structuredClone(wire)
+ const raw=estimatePiRequest(wire),budgeted=estimatePiRequest(wire,{history,model})
+ assert.ok(raw>80000);assert.ok(budgeted>=4000&&budgeted<8000,'one measured output budget covers all same-response reasoning blocks')
+ assert.ok(estimatePiMessages(history,model)>=4000&&estimatePiMessages(history,model)<8000)
+ assert.deepEqual(wire,original,'estimation must never change a replayed request')
+ const duplicate={...wire,input:[one,two,one]}
+ assert.ok(estimatePiRequest(duplicate,{history,model})>40000,'a duplicate wire block is not budgeted twice as the same receipt')
+ const changed={...wire,input:[{...one,encrypted_content:'C'.repeat(160000)},two]}
+ assert.ok(estimatePiRequest(changed,{history,model})>40000,'changed ciphertext must fall back to a conservative byte estimate')
+ for(const bad of [undefined,{...history[0].usage,reasoning:undefined},{...history[0].usage,output:0},{...history[0].usage,reasoning:5000}]){
+  const noReceipt=[{...history[0],usage:bad}]
+  assert.equal(estimatePiRequest(wire,{history:noReceipt,model}),raw,'missing or invalid usage must never reduce the guard')
+ }
+ assert.equal(estimatePiRequest(wire,{history,model:{...model,id:'other'}}),raw,'usage from another model cannot calibrate this request')
+ assert.equal(estimatePiRequest(wire,{history:[{...history[0],stopReason:'aborted'}],model}),raw,'aborted output is not a paid completion')
+ const sameId={...two,id:one.id},ambiguous=[{...history[0],content:[one,sameId].map(item=>({type:'thinking',thinking:'',thinkingSignature:JSON.stringify(item)}))}]
+ const collision={...wire,input:[one,sameId]}
+ assert.equal(estimatePiRequest(collision,{history:ambiguous,model}),estimatePiRequest(collision),'ambiguous source identities must not be discounted')
+ const nested={input:[{role:'user',content:[{type:'input_text',text:'A'.repeat(160000)}]}],tools:[{type:'function',description:'B'.repeat(160000)}]}
+ assert.equal(estimatePiRequest(nested,{history,model}),estimatePiRequest(nested),'ordinary content and tools must never be discounted')
+ // OpenCodex models configured as openai-completions still route tool turns through openai-responses.
+ const completionsModel={...model,api:'openai-completions'}
+ assert.equal(estimatePiRequest(wire,{history,model:completionsModel}),budgeted,'openai-completions wrapper model still honors matching openai-responses receipts')
+ assert.equal(estimatePiMessages(structuredClone(history),completionsModel),estimatePiMessages(history,model),'cloned message arrays still match receipts by signature')
+ // Non-thinking toolCall/text content is not counted a second time on top of output usage, and toolResult.details/nestedCalls are excluded.
+ const withToolCall=[{...history[0],usage:{input:50000,output:4500,cacheRead:100,cacheWrite:0,reasoning:500},
+  content:[...history[0].content,{type:'toolCall',id:'call_1',name:'bash',arguments:{command:'x'.repeat(15000)}}]},
+  {role:'toolResult',toolCallId:'call_1',content:[{type:'text',text:'ok'}],details:{diff:'D'.repeat(200000)},nestedCalls:[{output:'N'.repeat(200000)}]}]
+ assert.ok(estimatePiMessages(withToolCall,completionsModel)<8000,'toolCall output and Pi-only toolResult details/nestedCalls must not inflate context')
+})
+
+test('Pi recovers the last valid receipt after a failed-turn context_edit and calibrates cold wire estimates',()=>{
+ const model={provider:'opencodex',id:'gpt-6-astra--fast',api:'openai-completions',contextWindow:500000,maxTokens:128000}
+ const item={type:'reasoning',id:'rs_ok',encrypted_content:'A'.repeat(800000),summary:[{type:'summary_text',text:'S'.repeat(20000)}]}
+ const paid={role:'assistant',provider:model.provider,model:model.id,api:'openai-responses',stopReason:'toolUse',
+  usage:{input:689,output:410,cacheRead:290048,cacheWrite:0,reasoning:0,totalTokens:291147},
+  content:[{type:'thinking',thinking:'T'.repeat(4000),thinkingSignature:JSON.stringify(item)},{type:'toolCall',id:'c1',name:'bash',arguments:{cmd:'ls'}}]}
+ const entries=[
+  {sourceEntry:{id:'u1',type:'message',parentId:null},messages:[{role:'user',content:'请检查代码。'+'中文工具输出。'.repeat(60000)}]},
+  {sourceEntry:{id:'a1',type:'message',parentId:'u1'},messages:[paid]},
+  {sourceEntry:{id:'t1',type:'message',parentId:'a1'},messages:[{role:'toolResult',toolCallId:'c1',content:[{type:'text',text:'done'}]}]},
+  {sourceEntry:{id:'edit1',type:'context_edit',parentId:'err1',targetId:'err1',replacement:null},messages:[]},
+  {sourceEntry:{id:'u2',type:'message',parentId:'edit1'},messages:[{role:'user',content:'继续'}]},
+ ]
+ const branch=[
+  {id:'u1',type:'message',parentId:null},
+  {id:'a1',type:'message',parentId:'u1'},
+  {id:'t1',type:'message',parentId:'a1'},
+  {id:'err1',type:'message',parentId:'t1'},
+  {id:'edit1',type:'context_edit',parentId:'err1',targetId:'err1',replacement:null},
+  {id:'u2',type:'message',parentId:'edit1'},
+ ]
+ const measured=measuredPiContextTokens(entries,model,153549,branch)
+ assert.ok(measured>=291147&&measured<295000,'context_edit deleting a later failed turn must not collapse 291K to 153K')
+ const editedPrefix=[...entries.slice(0,3),{sourceEntry:{id:'edit0',type:'context_edit',parentId:'t1',targetId:'u1',replacement:null},messages:[]}]
+ assert.equal(measuredPiContextTokens(editedPrefix,model,153549),null,'editing an earlier prefix entry invalidates the old receipt')
+ const allMessages=entries.flatMap(e=>e.messages)
+ const wire={input:[{role:'user',content:'请检查代码。'},item,{role:'user',content:'继续'}],max_output_tokens:128000}
+ assert.ok(estimatePiRequest(wire,{history:allMessages,model})<5000,'openai-completions model calibrates openai-responses encrypted reasoning on wire')
+})
+
+test('Pi applies measured reasoning budgets to the installed Responses SDK without sending a request',async()=>{
+ const model={...googleModel,id:'fixture',provider:'opencodex',api:'openai-responses'}
+ const reasoning={type:'reasoning',id:'rs_sdk',encrypted_content:'A'.repeat(200000),summary:[]}
+ const history=[{role:'user',content:'Inspect.',timestamp:1},{role:'assistant',api:model.api,model:model.id,provider:model.provider,
+  content:[{type:'thinking',thinking:'',thinkingSignature:JSON.stringify(reasoning)},{type:'text',text:'Done.'}],
+  usage:{input:3000,output:2000,reasoning:1500,cacheRead:0,cacheWrite:0,totalTokens:5000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'stop',timestamp:2},
+  {role:'user',content:'Continue.',timestamp:3}]
+ let sent,networkCalls=0
+ const stream=openaiResponsesSDK.streamSimple(model,{messages:history},{apiKey:'offline',fetch(){networkCalls++;throw Error('network must not be used')},
+  onPayload(value){sent=value;throw Error('captured locally')}})
+ await stream.result();assert.ok(sent);assert.equal(networkCalls,0)
+ assert.ok(estimatePiRequest(sent)>50000)
+ const result=estimatePiRequest(sent,{history,model})
+ assert.ok(result>=2000&&result<6000)
+ assert.equal(sent.input.find(i=>i.type==='reasoning').encrypted_content,reasoning.encrypted_content)
+})
+
 test('Pi receipt calibration requires the exact sent prefix and conservatively counts additions',()=>{
  const model={provider:'fixture',id:'fixture',api:'openai-responses',contextWindow:500000,maxTokens:128000}
  const before={input:[{role:'user',content:'证'.repeat(320000)}],tools:[{name:'read'}]},previous={model,leafId:'before',payload:before}
@@ -56,6 +140,20 @@ test('Pi receipt calibration requires the exact sent prefix and conservatively c
  assert.ok(estimatePiWireWithReceipt(changed,previous,rows,346335,model)>488976,'new tool schemas are counted without subtracting old fields')
  const huge={...current,input:[...current.input,{role:'user',content:'证'.repeat(100000)}]}
  assert.ok(estimatePiWireWithReceipt(huge,previous,rows,346335,model)>488976,'new oversized dialogue is counted')
+})
+
+test('Pi receipt-calibrated wire suffix uses the matching output receipt for encrypted reasoning',()=>{
+ const model={provider:'opencodex',id:'fixture',api:'openai-responses',contextWindow:500000,maxTokens:128000}
+ const item={type:'reasoning',id:'rs_suffix',encrypted_content:'A'.repeat(2000000),summary:[]}
+ const previous={model,leafId:'before',payload:{input:[{role:'user',content:'Original source'}]}}
+ const reply={role:'assistant',provider:model.provider,model:model.id,api:model.api,stopReason:'toolUse',
+  usage:{input:200000,output:4000,reasoning:3500,cacheRead:96000,cacheWrite:0},content:[{type:'thinking',thinking:'',thinkingSignature:JSON.stringify(item)}]}
+ const rows=[{sourceEntry:{id:'before',type:'message'},messages:[]},{sourceEntry:{id:'reply',parentId:'before',type:'message'},messages:[reply]}]
+ const current={input:[...previous.payload.input,item]}
+ const estimated=estimatePiWireWithReceipt(current,previous,rows,300000,model)
+ assert.ok(estimated>=300000&&estimated<400000,'the new paid response is not charged as two million characters')
+ const changed={input:[...previous.payload.input,{...item,encrypted_content:'B'.repeat(2000000)}]}
+ assert.ok(estimatePiWireWithReceipt(changed,previous,rows,300000,model)>500000,'modified ciphertext remains fully counted')
 })
 
 test('Pi receipt calibration counts the new response only once',()=>{

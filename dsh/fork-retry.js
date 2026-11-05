@@ -16,6 +16,7 @@ export function waitForRetry(ms,signal) {
 export function failureKind(error) {
   if(error?.summaryKind==='timeout'||error?.name==='TimeoutError')return 'timeout'
   if(error?.code==='SUPERLCM_FORK_CAPACITY')return 'capacity'
+  if(error?.summaryKind==='length')return 'length'
   if(['stream_cutoff','stream_empty'].includes(error?.summaryKind))return error.summaryKind
   const code=summaryFailureCode(error?.code)
   if(code)return code.toLowerCase()

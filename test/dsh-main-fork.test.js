@@ -443,3 +443,70 @@ test('24 main-model compression rounds reuse immutable blocks and merge across r
   assert.ok(h.warnings.every(w=>!w.includes('祖先')&&!w.includes('分支摘要树不完整')&&!w.includes('changed')))
  }finally{await archive.close();shared.close();await close(h)}
 })
+
+test('DSH selection pricing scales post-compaction deltas and recovers usage across interrupted assistant turns',async()=>{
+ const {createAssistantMessage}=await import('@deepseek-ai/dsh-llm')
+ const h=await lab({capacity:500000,priceFactor:2.5,config:{summaryMode:'main-fork'}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm)
+ try{
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks:plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve decisions, constraints and pending work.'}))})}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  history(h,.28,{pieces:6})
+  assert.deepEqual(await send(h,'Calibrate dense text baseline'),[])
+  assert.deepEqual(await send(h,'Start background preparation'),[])
+  await h.engine.settleBackgroundFold(h.agent)
+  const beforeInterrupt=activeInputTokens(h.engine,h.agent)
+  assert.ok(beforeInterrupt>350000,'calibrated baseline must reflect the 2.5x provider usage')
+  // Append an interrupted assistant turn without usage; calibration must not collapse to 1x.
+  const session=h.agent.session,turn=3,step=1
+  session.append('turn/start',{turn})
+  session.append('step/start',{turn,step})
+  session.append('assistant/message',{turn,step,interrupted:true,message:createAssistantMessage({content:[{type:'text',text:'Partial interrupted output.'}],source:{provider:'lab-main',model:h.model}}),stream:[]},{surfaceOp:'append'})
+  session.append('step/end',{turn,step})
+  session.append('turn/end',{turn,reason:{kind:'aborted',reason:{kind:'user'}}})
+  h.agent.phase.lastTurn=turn
+  const afterInterrupt=activeInputTokens(h.engine,h.agent)
+  assert.ok(afterInterrupt>=beforeInterrupt,'an interrupted assistant turn without usage must preserve prior usage calibration')
+  // Trigger replacement at 80%; post-compaction activeInputTokens must scale the negative delta by 2.5x.
+  let postCompactionActive=0
+  h.ctx.on('session/event',(s,ev)=>{if(s===session&&ev.type==='compaction/end')postCompactionActive=activeInputTokens(h.engine,h.agent)})
+  assert.deepEqual(await send(h,'Cross 80% replacement '+'x'.repeat(80000)),[])
+  assert.equal(count(h,'compaction/summary'),1)
+  assert.ok(postCompactionActive>0&&postCompactionActive<200000,`post-compaction activeInputTokens (${postCompactionActive}) must not retain unscaled phantom tokens`)
+ }finally{await close(h)}
+})
+
+test('DSH main-fork slices to the selected prefix and shrinks when a cold session or truncation exceeds capacity',async t=>{
+ const h=await lab({capacity:64000,config:{summaryMode:'main-fork',summaryRetryCooldownMs:1000}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm),branches=[]
+ try{
+  history(h,.98,{pieces:10})
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches.push(options)
+   if(branches.length===1){
+    yield {type:'text-delta',index:0,text:'{"blocks":[{"index":0,"summary":"# Truncated"}'}
+    yield {type:'finish',reason:{kind:'max-tokens'}}
+    return
+   }
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks:plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve constraints and pending work.'}))})}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  t.mock.timers.enable({apis:['setTimeout','Date']})
+  const pending=send(h,'PROTECTED CURRENT TURN '+'y'.repeat(12000),{timeout:1000000})
+  await until(()=>h.engine.backgroundFolds.get(h.agent)?.status==='retrying')
+  const state=h.engine.backgroundFolds.get(h.agent)
+  assert.equal(state.errorKind,'length')
+  t.mock.timers.tick(state.retryAt-Date.now())
+  assert.deepEqual(await pending,[])
+  assert.equal(branches.length,2)
+  assert.ok(branches[1].messages.length<branches[0].messages.length,'length retry shrinks the selected prefix')
+  assert.equal(count(h,'compaction/summary'),1)
+  assert.ok(h.main.at(-1).content.includes('PROTECTED CURRENT TURN'))
+ }finally{t.mock.timers.reset();await close(h)}
+})

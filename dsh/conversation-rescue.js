@@ -25,7 +25,7 @@ export async function rescueWithConversation(engine,agent,parent) {
   engine.backgroundControllers.add(controller)
   const task=(async()=>{
     const session=agent.session,measurement=engine.ctx.tokenMeter.measure(session)
-    const priced=selectionPricing(measurement,session.requestHeader())
+    const priced=selectionPricing(measurement,session.requestHeader(),session)
     const selection=selectRollingRange(priced.nodes,session.surface.nodes,{...policy,foldBatchTokens:Number.MAX_SAFE_INTEGER,
       tailCount:1,retainTokenBudget:true,activeTokens:priced.activeTokens,forceHard:true,
       firstFoldableIndex:systemPrefixEndIndex(session),protectedFromIndex:latestUserIndex(session),

@@ -320,6 +320,11 @@ try {
   assert.ok(!notifications.some(text=>/正在后台准备|正在后台生成归档|摘要准备完成后/.test(text)),'normal background preparation must not notify')
   const completed=notifications.filter(text=>text.startsWith('上下文已压缩'))
   assert.equal(completed.length,swapEntry?1:0,'notify exactly once, and only after the native checkpoint is installed')
+  if(completed.length){
+    assert.ok(Number.isFinite(swapEntry.details?.superlcmTokensBefore),'retain the pre-replacement value alongside Pi metadata')
+    if(!cold&&!nativeOverflow)assert.match(completed[0],/压缩后待模型回执/,'do not label a pre-response estimate as actual usage')
+    if(cold&&mainFork&&!abortAfterReplacement)assert.match(completed[0],/→ \d+K/,'request-time replacement has a paid main-model response')
+  }
 } finally {
   clearTimeout(faultTimer)
   if (session) { await session.extensionRunner?.emit?.({ type: 'session_shutdown' }); session.dispose() }

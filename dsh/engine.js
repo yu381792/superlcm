@@ -302,7 +302,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const state = pending?.status === 'ready' ? pending : emergency ? pending?.recoveryReady : pending
     if (state && state.cutoffEnd === undefined && (activeTokens >= policy.softActiveTokens || options.force === true)) {
       const measurement = this.ctx.tokenMeter.measure(agent.session)
-      const priced = selectionPricing(measurement, agent.session.requestHeader())
+      const priced = selectionPricing(measurement, agent.session.requestHeader(), agent.session)
       const eligible = selectRollingRange(priced.nodes, agent.session.surface.nodes, { ...policy,
         tailCount: policy.minRetainTokens > 0 ? 1 : policy.tailCount,
         retainTokenBudget: true, activeTokens, forceHard: options.force === true,
@@ -326,7 +326,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const endIndex = agent.session.surface.nodes.indexOf(state.summarized.end)
     if (endIndex < 0 || endIndex >= protectedIndex) return null
     const checkpointTokens = draftTokens(this, agent, state.frontier)
-    const unfinished = pending !== state || this.planRolling(agent) !== null || checkpointTokens > summaryBudget(policy)
+    const unfinished = pending !== state || this.planRolling(agent) !== null || (this.rollingConfig.summaryMode !== 'main-fork' && checkpointTokens > summaryBudget(policy))
     if (unfinished) {
       // A failed leaf/merge must not strand a usable completed prefix forever.
       // Keep the unfinished range verbatim; only publish the ready prefix when
@@ -339,6 +339,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       saveDraft(this,agent,state)
       const result = this.commitBackgroundSelection(agent, state.summarized)
       if (result === null) return null
+      const captured = this.mainRequests?.get(agent)
+      if (captured && typeof agent.session.deriveMessages === 'function') {
+        captured.request = { ...captured.request, messages: structuredClone(agent.session.deriveMessages()) }
+      }
       if (pending !== state) pending?.controller?.abort(Error('已提交完成的摘要前缀，未完成原文保留'))
       this.backgroundFolds.delete(agent)
       finishDraft(this, agent)
@@ -429,7 +433,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       return { ...staged.selection, treeOnly: true }
     }
     const measurement = this.ctx.tokenMeter.measure(session)
-    const priced = selectionPricing(measurement, session.requestHeader())
+    const priced = selectionPricing(measurement, session.requestHeader(), session)
     const options = {
       tailCount: policy.minRetainTokens > 0 ? 1 : policy.tailCount,
       minRetainTokens: policy.minRetainTokens,

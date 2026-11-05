@@ -1,7 +1,7 @@
 import {cappedRecentKeep} from './recent-retention.js'
 import { createHash } from 'node:crypto'
 import { estimateSummaryTokens } from './summary-tokens.js'
-import { estimatePiRequest } from './pi-request.js'
+import { estimatePiRequest, measuredPiContextTokens } from './pi-request.js'
 
 export const piDigest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const dialogueRoles = new Set(['user', 'assistant', 'toolResult', 'bashExecution', 'custom', 'branchSummary', 'compactionSummary'])
@@ -21,7 +21,7 @@ export function serializePiMessages(messages) {
   }).join('\n\n')
 }
 const view = entries => entries.map(e => ({ id: e.sourceEntry.id, messages: e.messages }))
-export const estimatePiMessages=messages=>Math.max(estimateSummaryTokens(serializePiMessages(messages)),estimatePiRequest(messages))
+export const estimatePiMessages=(messages,model)=>Math.max(estimateSummaryTokens(serializePiMessages(messages)),estimatePiRequest(messages,{history:messages,model}))
 // Pi 1.5 persists system prompts and tool declarations inside the projection.
 // Pi retains that state across compaction; it is fixed overhead, not dialogue
 // that the background branch may replace with a historical summary.
@@ -38,7 +38,7 @@ export function snapshotMatches(snapshot, entries, signature) {
 // also supports a long autonomous turn without splitting an invocation/result pair.
 export function makePiSnapshot(ctx, policy, settings = {}, {keepLimit=Infinity,sourceLimit=Infinity,firstKeptEntryId,beforeFirstKeptEntryId}={}) {
   const entries = ctx.sessionManager.buildSessionProjection().entries
-  const sizes = entries.map(e => estimatePiMessages(piDialogueMessages([e])))
+  const sizes = entries.map(e => estimatePiMessages(piDialogueMessages([e]),ctx.model))
   const requestedKeep = policy.keep === undefined ? Math.max(512, settings.compaction?.keepRecentTokens ?? 20000) : cappedRecentKeep(policy.keep, sizes.reduce((a,b)=>a+b,0))
   const keep=Math.min(requestedKeep,keepLimit)
   let retain = 0, desired = entries.length
@@ -93,11 +93,12 @@ export function makePiSnapshot(ctx, policy, settings = {}, {keepLimit=Infinity,s
   // A split autonomous turn keeps its latest complete human request verbatim.
   const latestUser = entries.findLastIndex(e => e.messages.some(m => m.role === 'user'))
   const protectedRequest = latestUser >= 0 && latestUser < cut ? serializePiMessages(entries[latestUser].messages.filter(m => m.role === 'user')) : ''
+  const measured = measuredPiContextTokens(entries, ctx.model, ctx.getContextUsage?.()?.tokens, ctx.sessionManager.getBranch?.())
   const snapshot = {
     session_id: ctx.sessionManager.getSessionId(), session_file: ctx.sessionManager.getSessionFile(),
     leafId: ctx.sessionManager.getLeafId(), firstKeptEntryId: entries[cut].sourceEntry.id,
-    tokensBefore: ctx.getContextUsage()?.tokens || sizes.reduce((a, b) => a + b, 0), source, protectedRequest,
-    sourceTokens:estimatePiMessages(messages),
+    tokensBefore: measured || sizes.reduce((a, b) => a + b, 0), source, protectedRequest,
+    sourceTokens:estimatePiMessages(messages,ctx.model),
     ...(policy.summaryMode === "main-fork" ? {summaryModel:policy.summaryModel||null,sourceMessages: messages,sourceEntryIds:entries.slice(0,cut).flatMap(e=>piDialogueMessages([e]).map(()=>e.sourceEntry.id)),summaryTuning:{targetTokens:policy.targetTokens||20000,fanout:policy.fanout||4}} : {}),
     prefixDigest: snapshotPrefix(entries, cut), signature: piSignature(ctx, policy, settings),
   }

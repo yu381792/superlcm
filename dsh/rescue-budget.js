@@ -8,7 +8,7 @@ export function rescueOutputBudget(engine,agent,input,directive,target,configure
   const policy=currentPolicy(engine,agent)
   if(!policy)throw Error('当前对话模型容量尚未核实，最终压缩未提交')
   const measurement=engine.ctx.tokenMeter.measure(agent.session)
-  const factor=selectionPricing(measurement,agent.session.requestHeader()).factor
+  const factor=selectionPricing(measurement,agent.session.requestHeader(),agent.session).factor
   const instruction=createUserMessage({content:[{type:'text',text:directive}]})
   const tools=input.tools?.length?Math.ceil(JSON.stringify(input.tools).length/4)+4:0
   const blocks=input.messages.flatMap(message=>message.content)

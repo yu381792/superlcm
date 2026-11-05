@@ -5,7 +5,7 @@ import { nodeLevel } from './core.js'
 import { selectionPricing } from './selection-pricing.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { plainSummaryBlocks } from './assembly-blocks.js'
-import { currentPolicy } from './ratio-runtime.js'
+import { currentPolicy, activeInputTokens } from './ratio-runtime.js'
 import { saveDraft } from './draft-persistence.js'
 import { semanticFrontier } from './tree-semantics.js'
 
@@ -17,7 +17,7 @@ export function summaryBudget(config) {
 export function draftBudget(engine, agent) {
   const config=currentPolicy(engine,agent)
   const final=summaryBudget(config)
-  return config.budgetMode==='ratio' && engine.ctx.tokenMeter.measure(agent.session).totalTokens < config.prepareActiveTokens
+  return config.budgetMode==='ratio' && activeInputTokens(engine, agent) < config.prepareActiveTokens
     ? Math.max(final,Math.floor(config.inputBudget*0.15)) : final
 }
 
@@ -51,7 +51,7 @@ export function draftNode(part) {
 
 export function draftTokens(engine, agent, frontier) {
   if (!frontier.length) return 0
-  const factor = selectionPricing(engine.ctx.tokenMeter.measure(agent.session), agent.session.requestHeader()).factor
+  const factor = selectionPricing(engine.ctx.tokenMeter.measure(agent.session), agent.session.requestHeader(), agent.session).factor
   return Math.ceil(engine.ctx.tokenMeter.estimateMessage(assembledCheckpointMessage(frontier).checkpointMessage) * factor)
 }
 

@@ -5,7 +5,7 @@ import { readPiPolicy } from './pi-compaction-policy.js'
 import { makePiSnapshot, snapshotMatches, piSignature,piDigest, serializePiMessages,estimatePiMessages,piDialogueMessages } from './pi-snapshot.js'
 import { estimateSummaryTokens } from './summary-tokens.js'
 import { abortable, summaryAttempt } from './summary-attempt.js'
-import { estimatePiRequest,estimatePiWireWithReceipt, piOutputReserve,piWindowSafety,piCompletionBudget,limitPiOutput } from './pi-request.js'
+import { estimatePiRequest,estimatePiWireWithReceipt,measuredPiContextTokens,fixedPiRequestTokens, piOutputReserve,piWindowSafety,piCompletionBudget,limitPiOutput } from './pi-request.js'
 import { checkedSummary } from './summary-policy.js'
 import { piProviderBoundary, isPiAuxiliaryRequest } from './pi-provider-boundary.js'
 export { serializePiMessages } from './pi-snapshot.js'
@@ -49,11 +49,12 @@ export function registerPiCompaction(pi, options, {
   request = piCompactRequest, policy = () => readPiPolicy(options.home), makeSnapshot = makePiSnapshot, guardTimeoutMs = 180000,attemptTimeoutMs=600000,fork=summarizePiFork, createBoundary=piProviderBoundary,
 } = {}) {
   let state = null, swapping = null, retryAfter = 0, failures = 0, retrySignature = null, capture = null, foregroundCapture = null, epoch = 0, sessionController = new AbortController()
-  let activitySignal,activityCleanup,protectionAbort=false
+  let activitySignal,activityCleanup,protectionAbort=false,activeModel=null
   let captureRecovery=false, pendingReplacement=null,pendingContextCompaction=null,blockedPayload=null
   const capacityWaiters=new Set(),rejectedPrepared=new Set()
   const boundary=createBoundary(finalRequest)
   const settings = () => ({...(pi.getSettings?.() || {}), thinkingLevel:pi.getThinkingLevel?.()})
+  const modelIdentity = ctx => piDigest([ctx.model?.provider, ctx.model?.id, ctx.model?.contextWindow, ctx.model?.maxTokens, ctx.model?.api, ctx.model?.baseUrl])
   const entries = ctx => ctx.sessionManager.buildSessionProjection().entries
   const takeoverEnabled=ctx=>{
     const p=policy()
@@ -68,6 +69,22 @@ export function registerPiCompaction(pi, options, {
   const status = (ctx, text) => ctx.ui?.setStatus?.('superlcm-compaction', text)
   const notice = (ctx, text) => ctx.ui?.notify?.(text, 'warning')
   const info = (ctx, text) => {try{ctx.ui?.notify?.(text,'info')}catch{}}
+  // Only a completed response to the current model can prove actual usage.
+  const measuredUsage=(message,ctx)=>{
+    const u=message?.usage,parts=['input','output','cacheRead','cacheWrite'].map(k=>u?.[k]??0)
+    if(message?.role!=='assistant'||message.provider!==ctx.model?.provider||message.model!==ctx.model?.id||
+       ['aborted','error'].includes(message.stopReason)||parts.some(n=>!Number.isSafeInteger(n)||n<0)||parts[0]+parts[2]+parts[3]<=0)return null
+    const current=ctx.getContextUsage?.()?.tokens
+    return Number.isFinite(current)&&current>=parts.reduce((a,b)=>a+b,0)?current:null
+  }
+  const afterCheckpoint=(ctx,checkpoint)=>{
+    const branch=ctx.sessionManager.getBranch?.()
+    if(!Array.isArray(branch))return null
+    const index=branch.findIndex(e=>e.id===checkpoint.id&&e.type==='compaction')
+    if(index<0)return null
+    const last=branch.slice(index+1).findLast(e=>e.type==='message'&&e.message?.role==='assistant'&&!['aborted','error'].includes(e.message.stopReason))
+    return last?measuredUsage(last.message,ctx):null
+  }
   // Boundary drafts are only proposals until Pi has appended the checkpoint.
   // Report at the next public lifecycle hook, after checking the persisted view.
   const reportReplacement = ctx => {
@@ -75,8 +92,11 @@ export function registerPiCompaction(pi, options, {
     try{
       const current=entries(ctx),checkpoint=current.find(e=>e.sourceEntry.type==='compaction')?.sourceEntry
       if(!checkpoint||checkpoint.summary!==pendingReplacement.summary||checkpoint.firstKeptEntryId!==pendingReplacement.firstKeptEntryId)return
-      const before=pendingReplacement.tokensBefore||checkpoint.tokensBefore,after=estimatePiMessages(current.flatMap(e=>e.messages))
-      const size=Number.isFinite(before)&&before>0?`（约 ${Math.round(before/1000)}K → ${Math.round(after/1000)}K）`:`（当前约 ${Math.round(after/1000)}K）`
+      const before=pendingReplacement.tokensBefore||checkpoint.details?.superlcmTokensBefore||checkpoint.tokensBefore
+      const after=pendingReplacement.confirmedAfterTokens??afterCheckpoint(ctx,checkpoint)
+      const prior=Number.isFinite(before)&&before>0?Math.round(before/1000):null
+      const size=after!==null?prior!==null?`（约 ${prior}K → ${Math.round(after/1000)}K）`:`（当前约 ${Math.round(after/1000)}K）`
+        :prior!==null?`（压缩前约 ${prior}K，压缩后待模型回执）`:'（压缩后待模型回执）'
       pendingReplacement=null
       status(ctx,'SuperLCM：上下文已压缩')
       info(ctx,`上下文已压缩${size}`)
@@ -93,7 +113,7 @@ export function registerPiCompaction(pi, options, {
     retryAfter = Date.now() + 60000 * 2 ** Math.min(4, failures - 1)
   }
   const clearSnapshot = () => { stop(); clearRetries(); rejectedPrepared.clear();capture = null; foregroundCapture = null;captureRecovery=false;pendingContextCompaction=null }
-  const reset = () => { epoch++;boundary.disarm();pendingReplacement=null;capacityWaiters.clear(); activityCleanup?.();activitySignal=undefined;protectionAbort=false;sessionController.abort(Error('Pi 会话已切换或结束')); sessionController = new AbortController(); clearSnapshot(); swapping = null }
+  const reset = () => { epoch++;activeModel=null;boundary.disarm();pendingReplacement=null;capacityWaiters.clear(); activityCleanup?.();activitySignal=undefined;protectionAbort=false;sessionController.abort(Error('Pi 会话已切换或结束')); sessionController = new AbortController(); clearSnapshot(); swapping = null }
   const bindActivity=ctx=>{
     const signal=ctx.signal
     if(!signal||signal===activitySignal)return
@@ -104,41 +124,36 @@ export function registerPiCompaction(pi, options, {
   }
   const valid = (ctx, current = entries(ctx)) => state && snapshotMatches(state.snapshot, current, signature(ctx))
   const usage = ctx => ({ tokens: ctx.getContextUsage()?.tokens, window: ctx.model?.contextWindow })
-  const fixedRequestTokens=payload=>{
-    const fixed={...payload}
-    for(const key of ['messages','input'])if(Array.isArray(fixed[key]))fixed[key]=fixed[key].filter(m=>['system','developer'].includes(m.role))
-    // Google keeps the fixed system instruction in config, outside contents.
-    if(Array.isArray(fixed.contents))fixed.contents=[]
-    if(Array.isArray(fixed.context?.messages))fixed.context={...fixed.context,messages:fixed.context.messages.filter(m=>['system','developer'].includes(m.role))}
-    return estimatePiRequest(fixed)
-  }
+  const fixedRequestTokens=payload=>fixedPiRequestTokens(payload)
   const reached = (ctx, ratio) => { const u = usage(ctx),tokens=capacity(ctx)?.observed||0; return Number.isFinite(u.window) && u.window > 0 && tokens >= u.window * ratio }
   function capacity(ctx, current = entries(ctx)) {
+    activeModel ??= modelIdentity(ctx)
     const u = usage(ctx)
     if (!Number.isFinite(u.window) || u.window <= 0) return null
     const reserve = Number.isFinite(ctx.model?.maxTokens) ? Math.max(0, ctx.model.maxTokens) : Math.min(16384, u.window * .1)
     const inputLimit = Math.max(0, u.window - piCompletionBudget(ctx.model,policy().ratio,reserve) - piWindowSafety(ctx.model,policy().ratio))
-    const whole = estimatePiMessages(piDialogueMessages(current))
+    const whole = estimatePiMessages(piDialogueMessages(current),ctx.model)
     const active = pi.getActiveTools?.(), tools = (pi.getAllTools?.() || []).filter(t => !active || active.includes(t.name))
     const declared = Math.max(estimateSummaryTokens(ctx.getSystemPrompt?.() || '') + estimateSummaryTokens(JSON.stringify(tools)),estimatePiMessages(current.flatMap(e=>e.messages.filter(m=>m.role==='system'))))
+    const measured = measuredPiContextTokens(current, ctx.model, u.tokens, ctx.sessionManager.getBranch?.())
     // Fixed prompts/tools are not compressible. Never subtract them from the
     // summary budget or pretend that replacing old dialogue removes them.
-    const fixed = Math.max(declared, (u.tokens || 0) - whole, 0)
+    const fixed = Math.max(declared, (measured ?? u.tokens ?? 0) - whole, 0)
     const estimated=fixed+whole
     // Pi's public usage combines provider receipts with newly appended input.
     // JSON previews/details can substantially exceed the actual wire tokens;
     // reserve them for cold starts, rather than aborting a measured safe turn.
     const hasReceipt=current.some(e=>e.messages.some(m=>m.role==='assistant'&&!['error','aborted'].includes(m.stopReason)&&['input','output','cacheRead','cacheWrite'].some(k=>m.usage?.[k]>0)))
-    const observed=hasReceipt&&Number.isFinite(u.tokens)&&u.tokens>0?Math.max(u.tokens,declared):estimated
+    const observed=hasReceipt&&Number.isFinite(measured)&&measured>0?Math.max(measured,declared):estimated
     return { inputLimit, guard: Math.min(u.window * Math.max(.9,policy().ratio), inputLimit), fixed, estimated,observed }
   }
   const danger = (ctx, current = entries(ctx)) => {
     const c = capacity(ctx, current)
     return c && (usage(ctx).tokens >= c.guard || c.observed >= c.inputLimit)
   }
-  const wireInput = (ctx,payload,c=capacity(ctx)) => {
+  const wireInput = (ctx,payload,c=capacity(ctx),history=capture?.messages) => {
     const calibrated=foregroundCapture?.signature===signature(ctx)?estimatePiWireWithReceipt(payload,foregroundCapture,entries(ctx),c?.observed,ctx.model):null
-    return calibrated??estimatePiRequest(payload)
+    return calibrated??estimatePiRequest(payload,{history,model:ctx.model})
   }
   const pause = (ctx,reason='capacity') => {
     try{const c=capacity(ctx);pi.appendEntry?.('superlcm-compaction-pause',{reason,tokens:usage(ctx).tokens,observed:c?.observed,projection:c?.estimated,inputLimit:c?.inputLimit,capturedWire:capture?estimatePiRequest(capture.payload):null,attempt:state?.attempt||0,lastFailure:state?.lastFailure?.message||null})}catch{}
@@ -297,11 +312,12 @@ export function registerPiCompaction(pi, options, {
       rejectedPrepared.add(selected.snapshot.draftKey);stop(); failed(ctx); return null
     }
     const c = capacity(ctx, current), cut = current.findIndex(e => e.sourceEntry.id === selected.snapshot.firstKeptEntryId)
-    const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)))
+    const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)),ctx.model)
     if (!c || c.fixed + tail + estimateSummaryTokens(compaction.summary) + extra >= c.inputLimit) {
       rejectedPrepared.add(selected.snapshot.draftKey);stop(); status(ctx, 'SuperLCM：旧摘要覆盖不足，后台重新准备'); return null
     }
-    return { ...compaction, tokensBefore: ctx.getContextUsage()?.tokens || compaction.tokensBefore,
+    const measuredBefore = measuredPiContextTokens(current, ctx.model, ctx.getContextUsage()?.tokens, ctx.sessionManager.getBranch?.())
+    return { ...compaction, tokensBefore: measuredBefore || ctx.getContextUsage()?.tokens || compaction.tokensBefore,
       details: { ...compaction.details, backgroundPrepared: true, replacementModelCalls: 0 } }
   }
   async function guardedReady(ctx, current = entries(ctx), extra = 0,force=false) {
@@ -370,14 +386,19 @@ export function registerPiCompaction(pi, options, {
         compaction=await guardedReady(recovery,entries(ctx),0,true)
       }
       if (epoch !== selectedEpoch) return { cancel: true }
-      if (compaction) {pendingReplacement=compaction;return { compaction: { ...compaction, tokensBefore: event.preparation.tokensBefore } }}
+      if (compaction) {
+        const before=event.preparation.tokensBefore
+        pendingReplacement={...compaction,tokensBefore:before}
+        return {compaction:{...compaction,tokensBefore:before,details:{...compaction.details,superlcmTokensBefore:before}}}
+      }
       return { cancel: true }
     } catch (error) { if(epoch===selectedEpoch)notice(ctx, error.message);return { cancel: true } }
   })
-  const boundaryDraft=(event,ctx,compaction)=>{
-    pendingReplacement=compaction
+  const boundaryDraft=(event,ctx,compaction,usedInRequest=false)=>{
+    pendingReplacement={...compaction,confirmedAfterTokens:usedInRequest?measuredUsage(event.message,ctx):null}
     status(ctx,undefined)
-    return {entries:[...(event.entries||[]),{type:'compaction',summary:compaction.summary,firstKeptEntryId:compaction.firstKeptEntryId,details:compaction.details,usage:compaction.usage}]}
+    return {entries:[...(event.entries||[]),{type:'compaction',summary:compaction.summary,firstKeptEntryId:compaction.firstKeptEntryId,
+      details:{...compaction.details,superlcmTokensBefore:compaction.tokensBefore},usage:compaction.usage}]}
   }
   pi.on('turn_end', async (event, ctx) => {
     const selectedEpoch = epoch
@@ -387,7 +408,7 @@ export function registerPiCompaction(pi, options, {
       if(pendingContextCompaction){
         const selected=pendingContextCompaction;pendingContextCompaction=null
         if(snapshotMatches(selected.snapshot,event.context?.contextEntries||entries(ctx),signature(ctx)))
-          return boundaryDraft(event,ctx,selected.compaction)
+          return boundaryDraft(event,ctx,selected.compaction,true)
       }
       if(ctx.signal?.aborted)return
       const current=event.context?.contextEntries,pressure=current&&danger(ctx,current)
@@ -403,7 +424,9 @@ export function registerPiCompaction(pi, options, {
     } catch (error) { if (epoch !== selectedEpoch) return; notice(ctx, error.message); if (danger(ctx)) pause(ctx) }
   })
   for (const name of ['agent_settled', 'model_select', 'session_start']) pi.on(name, (_event, ctx) => {
-    if(name==='model_select'||name==='session_start')reset()
+    const nextModel = modelIdentity(ctx)
+    if (name === 'session_start' || (name === 'model_select' && activeModel !== null && activeModel !== nextModel)) reset()
+    activeModel = nextModel
     reportReplacement(ctx)
     if(_event?.aborted){if(protectionAbort){protectionAbort=false;return};stop();clearRetries();return}
     prepare(ctx); if (state?.ready) void swapIdle(ctx)
@@ -468,7 +491,8 @@ export function registerPiCompaction(pi, options, {
       }
       const enabled=takeoverEnabled(ctx),c=capacity(ctx),safety=piWindowSafety(ctx.model,p.ratio)
       if(enabled)piOutputReserve(payload,ctx.model) // Reject invalid settings before purchasing background work.
-      const input=Math.max(c?.observed||0,wireInput(ctx,payload,c)),hardInput=ctx.model.contextWindow-safety-1024
+      const input=Math.max(c?.observed||0,wireInput(ctx,payload,c,messages)),hardInput=ctx.model.contextWindow-safety-1024
+      let finalMessages=messages
       if(enabled&&!p.summaryModel&&fixedRequestTokens(payload)>=hardInput)throw Object.assign(Error('Pi 固定请求内容超出窗口'),{pauseReason:'fixed-overhead'})
       const pressure=enabled&&input>=hardInput
       prepare(ctx,pressure||captureRecovery)
@@ -481,6 +505,7 @@ export function registerPiCompaction(pi, options, {
           const snapshot=state.snapshot
           const source=snapshot.sourceMessages?snapshot:{...snapshot,sourceMessages:piDialogueMessages(entries(ctx).slice(0,entries(ctx).findIndex(e=>e.sourceEntry.id===snapshot.firstKeptEntryId)))}
           const compacted=await piCompactedContext(source,compaction,messages,{converted:true,blockImages:!!settings().images?.blockImages})
+          finalMessages=compacted
           const converted=await capturePiContext(ctx,compacted,settings().thinkingLevel,signal,{blockImages:!!settings().images?.blockImages})
           const field=value=>['messages','input','contents'].find(key=>Array.isArray(value?.[key]))||(Array.isArray(value?.context?.messages)?'context.messages':null)
           const name=field(raw)
@@ -494,7 +519,7 @@ export function registerPiCompaction(pi, options, {
       }
       if(enabled){
         const requested=piOutputReserve(payload,ctx.model)
-        const inputTokens=pendingContextCompaction?estimatePiRequest(payload):Math.max(c?.observed||0,wireInput(ctx,payload,c))
+        const inputTokens=pendingContextCompaction?estimatePiRequest(payload,{history:finalMessages,model:ctx.model}):Math.max(c?.observed||0,wireInput(ctx,payload,c,finalMessages))
         const available=ctx.model.contextWindow-inputTokens-safety-1
         if(available<Math.min(1024,requested))throw Error('Pi 最终请求超出窗口，原文保留')
         payload=limitPiOutput(payload,ctx.model,Math.min(piCompletionBudget(ctx.model,p.ratio,requested),available))

@@ -12,6 +12,7 @@ import { summaryAttempt } from './summary-attempt.js'
 import {forkRoute} from './fork-route.js'
 import {abortable} from './summary-attempt.js'
 import { currentPolicy } from './ratio-runtime.js'
+import { selectionPricing } from './selection-pricing.js'
 import { draftNode, assembleTree } from './draft-tree.js'
 import { forkDirective, forkAnchors, forkHash, parseForkTree } from './fork-summary.js'
 import { reindexSession, nodeLevel } from './core.js'
@@ -42,41 +43,93 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
     return forkRoute(engine.rollingConfig.forkModelOverride?(engine.summaryContext||engine.ctx):engine.ctx,capture.request,{enabled:engine.rollingConfig.forkModelOverride,provider:engine.config.summarizationProvider,model:engine.config.summarizationModel},abort)
   },signal,15000)
   const request = route.request, byId = new Map(request.messages.map((message,index)=>[message.id,{message,index}]))
-  const parts = []; let from = 0, tokens = 0
-  const addPart=(start,end,carried=null,snapshot=false)=>{
-    const part=prepareAsyncRegion(engine,agent,{start:prepared.shadowedSeqs[start],end:prepared.shadowedSeqs[end]})
-    const originals=part.shadowedSeqs.map(seq=>agent.session.deriveEventMessage(agent.session.eventAt(seq))).filter(Boolean)
-    const positions=originals.map(message=>{const found=byId.get(message.id);if(!found||!isDeepStrictEqual(found.message,message))throw Error('DSH 原始请求与归档选区不同，无法原样分支');return found.index})
-    if(!positions.length||positions.some((n,index)=>index&&n!==positions[index-1]+1))throw Error('DSH 后台分块缺少连续原文')
-    parts.push({...part,carried,snapshot,...(carried?{treeSourceSeqs:originalNodeSources(engine.superLcmStore,agent.session.id,carried.nodeId,seq=>agent.session.eventAt(seq))}:{}),range:{index:parts.length,firstMessage:positions[0],lastMessage:positions.at(-1),...forkAnchors(originals),...(carried?{frozenSummary:carried.summaryText,frozenLevel:snapshot?0:nodeLevel(engine.superLcmStore,agent.session.id,carried.nodeId)-1}:{})}})
-  }
-  for(let i=0;i<prepared.shadowedSeqs.length;i++){
-    const event=agent.session.eventAt(prepared.shadowedSeqs[i]),marker=event.data?.source?.kind==='compact-checkpoint'&&markerFromSummary(event.data.content)
-    if(marker){
-      if(i>from)addPart(from,i-1)
-      const old=engine.superLcmStore.getNode(agent.session.id,marker.id)
-      if(!old)throw Error('DSH 已有摘要祖先缺失，保留原文')
-      for(const member of reusableGranularFrontier(engine.superLcmStore,agent.session.id,old.nodeId,seq=>agent.session.eventAt(seq)))addPart(i,i,engine.superLcmStore.getNode(agent.session.id,member.id),member.snapshot)
-      from=i+1;tokens=0;continue
-    }
-    tokens+=prepared.selectedNodes[i].tokens
-    if((tokens<policy.foldBatchTokens||!toolPairingBalancedAfter(agent.session,prepared.shadowedSeqs[i]))&&i<prepared.shadowedSeqs.length-1)continue
-    addPart(from,i);from=i+1;tokens=0
-  }
-  const plan = parts.map(part=>part.range), target = Math.max(256,Math.min(Math.floor(policy.summaryPrefixTargetTokens*.7),Math.floor((request.maxTokens||16384)*.65)))
+  const measurement = engine.ctx.tokenMeter.measure(agent.session)
+  const priced = selectionPricing(measurement, agent.session.requestHeader(), agent.session)
+  const windowLimit = Math.min(policy.contextWindow, route.contextWindow ?? Infinity)
+  const target = Math.max(256,Math.min(Math.floor(policy.summaryPrefixTargetTokens*.7),Math.floor((request.maxTokens||16384)*.65)))
   const treeOptions={fanout:policy.condensedMinFanout||4,targetTokens:target,incremental:true}
   const language=dshSummaryLanguage(agent.session)
   const correction=['invalid_json','invalid_summary'].includes(retry.previousFailure)
     ? '\nThe previous attempt failed output validation. Return only the required JSON object, include every planned leaf and parent exactly once in index order, start each summary with a heading in the requested language, and respect the single shared output budget. Do not call tools or continue the task.' : ''
-  const directive = forkDirective(plan,target,language.name,treeOptions)+correction
-  const directiveTokens = engine.ctx.tokenMeter.estimateMessage(createUserMessage({content:[{type:'text',text:directive}]}))
-  const remaining=Math.min(policy.contextWindow,route.contextWindow??Infinity)-prepared.activeTokens-directiveTokens-1024
+  const buildPlan = () => {
+    const builtParts = []; let from = 0, tokens = 0
+    const addPart=(start,end,carried=null,snapshot=false)=>{
+      const part=prepareAsyncRegion(engine,agent,{start:prepared.shadowedSeqs[start],end:prepared.shadowedSeqs[end]})
+      const originals=part.shadowedSeqs.map(seq=>agent.session.deriveEventMessage(agent.session.eventAt(seq))).filter(Boolean)
+      const positions=originals.map(message=>{const found=byId.get(message.id);if(!found||!isDeepStrictEqual(found.message,message))throw Error('DSH 原始请求与归档选区不同，无法原样分支');return found.index})
+      if(!positions.length||positions.some((n,index)=>index&&n!==positions[index-1]+1))throw Error('DSH 后台分块缺少连续原文')
+      builtParts.push({...part,carried,snapshot,...(carried?{treeSourceSeqs:originalNodeSources(engine.superLcmStore,agent.session.id,carried.nodeId,seq=>agent.session.eventAt(seq))}:{}),range:{index:builtParts.length,firstMessage:positions[0],lastMessage:positions.at(-1),...forkAnchors(originals),...(carried?{frozenSummary:carried.summaryText,frozenLevel:snapshot?0:nodeLevel(engine.superLcmStore,agent.session.id,carried.nodeId)-1}:{})}})
+    }
+    for(let i=0;i<prepared.shadowedSeqs.length;i++){
+      const event=agent.session.eventAt(prepared.shadowedSeqs[i]),marker=event.data?.source?.kind==='compact-checkpoint'&&markerFromSummary(event.data.content)
+      if(marker){
+        if(i>from)addPart(from,i-1)
+        const old=engine.superLcmStore.getNode(agent.session.id,marker.id)
+        if(!old)throw Error('DSH 已有摘要祖先缺失，保留原文')
+        for(const member of reusableGranularFrontier(engine.superLcmStore,agent.session.id,old.nodeId,seq=>agent.session.eventAt(seq)))addPart(i,i,engine.superLcmStore.getNode(agent.session.id,member.id),member.snapshot)
+        from=i+1;tokens=0;continue
+      }
+      tokens+=Math.ceil(prepared.selectedNodes[i].tokens*priced.factor)
+      if((tokens<policy.foldBatchTokens||!toolPairingBalancedAfter(agent.session,prepared.shadowedSeqs[i]))&&i<prepared.shadowedSeqs.length-1)continue
+      addPart(from,i);from=i+1;tokens=0
+    }
+    const builtPlan = builtParts.map(part=>part.range)
+    const builtDirective = forkDirective(builtPlan,target,language.name,treeOptions)+correction
+    const builtDirectiveTokens = engine.ctx.tokenMeter.estimateMessage(createUserMessage({content:[{type:'text',text:builtDirective}]}))
+    return { parts: builtParts, plan: builtPlan, directive: builtDirective, directiveTokens: builtDirectiveTokens }
+  }
+  const shrinkPrepared = (ratio = 1, directiveOverhead = 2048) => {
+    const surfaceNodes = agent.session.surface.nodes
+    const currentShadowed = priced.nodes.slice(prepared.startIdx, prepared.endIdx + 1).reduce((sum, node) => sum + node.tokens, 0)
+    const maxShadowed = ratio < 1 ? Math.floor(currentShadowed * ratio) : Infinity
+    const minOutputReserve = Math.max(1024, Math.min(4096, policy.summaryPrefixTargetTokens))
+    let chosenIdx = -1, fallbackIdx = -1
+    for (let idx = prepared.endIdx - 1; idx >= prepared.startIdx; idx--) {
+      if (!toolPairingBalancedAfter(agent.session, surfaceNodes[idx])) continue
+      const dropped = priced.nodes.slice(idx + 1).reduce((sum, node) => sum + node.tokens, 0)
+      const candidateActive = Math.max(0, prepared.activeTokens - dropped)
+      if (windowLimit - candidateActive - directiveOverhead - 1024 < minOutputReserve) continue
+      if (fallbackIdx < 0) fallbackIdx = idx
+      const candidateShadowed = priced.nodes.slice(prepared.startIdx, idx + 1).reduce((sum, node) => sum + node.tokens, 0)
+      if (candidateShadowed <= maxShadowed) { chosenIdx = idx; break }
+    }
+    const targetIdx = chosenIdx >= 0 ? chosenIdx : fallbackIdx
+    if (targetIdx < 0) return false
+    const shrunk = prepareAsyncRegion(engine, agent, { ...prepared, end: surfaceNodes[targetIdx] })
+    Object.assign(prepared, shrunk)
+    const fold = engine.backgroundFolds?.get(agent)
+    if (fold) {
+      if (fold.cutoffEnd === undefined || surfaceNodes.indexOf(fold.cutoffEnd) > targetIdx) fold.cutoffEnd = prepared.end
+      if (fold.selection) fold.selection = { ...fold.selection, end: prepared.end }
+    }
+    return true
+  }
+  let prefixOnly = false
+  if (['length', 'context_window_exceeded'].includes(retry.previousFailure)) {
+    if (shrinkPrepared(0.8)) prefixOnly = true
+  }
+  let { parts, plan, directive, directiveTokens } = buildPlan()
+  let remaining = windowLimit - prepared.activeTokens - directiveTokens - 1024
+  if (remaining < 1024 || prefixOnly) {
+    if (engine.rollingConfig.forkModelOverride && (route.contextWindow ?? Infinity) < policy.contextWindow && remaining < 1024) {
+      throw Object.assign(Error('DSH 后台分支没有足够输入空间，原文保留'), { code: 'SUPERLCM_FORK_CAPACITY' })
+    }
+    prefixOnly = true
+    const currentTailTokens = priced.nodes.slice(prepared.endIdx + 1).reduce((sum, node) => sum + node.tokens, 0)
+    remaining = windowLimit - Math.max(0, prepared.activeTokens - currentTailTokens) - directiveTokens - 1024
+    if (remaining < 1024 && shrinkPrepared(1, directiveTokens)) {
+      ;({ parts, plan, directive, directiveTokens } = buildPlan())
+      const shrunkTailTokens = priced.nodes.slice(prepared.endIdx + 1).reduce((sum, node) => sum + node.tokens, 0)
+      remaining = windowLimit - Math.max(0, prepared.activeTokens - shrunkTailTokens) - directiveTokens - 1024
+    }
+  }
   if(remaining<1024)throw Object.assign(Error('DSH 后台分支没有足够输入空间，原文保留'),{code:'SUPERLCM_FORK_CAPACITY'})
   // A late start/restart can already be past the normal preparation point.
   // Keep the entire frozen prefix; only limit auxiliary output to make room
   // for the appended directive instead of retrying an impossible reservation.
   const maxTokens=Math.min(request.maxTokens??16384,Math.floor(remaining))
-  const options = {...request,maxTokens,messages:[...request.messages,createUserMessage({content:[{type:'text',text:directive}]})]}
+  const branchMessages = prefixOnly ? request.messages.slice(0, plan.at(-1).lastMessage + 1) : request.messages
+  const options = {...request,maxTokens,messages:[...branchMessages,createUserMessage({content:[{type:'text',text:directive}]})]}
   const archiveSnapshot=forkArchiveSnapshot(engine.superLcmStore.path)
   const raw = [], usage = {}; let text = ''
   await withForkLease(engine.superLcmStore.path,agent.session.id,policy.signature||'main-fork',signal,leasedSignal=>forkScope.run(true,async()=>{
@@ -90,7 +143,10 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
   signal?.throwIfAborted()
   // The prompt target is a planning goal, not an exact tokenizer result.
   // Keep a separate hard tree limit and still check the installed root below.
-  const hardTreeBudget=Math.min(policy.summaryPrefixTargetTokens,maxTokens)
+  const usageTotal = (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) + (usage.outputTokens ?? 0)
+  const receiptFits = maxTokens < (request.maxTokens ?? 16384) && Number.isSafeInteger(usage.outputTokens) && usage.outputTokens > 0
+    && usage.outputTokens <= (request.maxTokens ?? 16384) && usageTotal > usage.outputTokens && usageTotal + 1024 < windowLimit
+  const hardTreeBudget=receiptFits ? policy.summaryPrefixTargetTokens : Math.min(policy.summaryPrefixTargetTokens,maxTokens)
   const blocks = parseForkTree(text,plan,language,{...treeOptions,targetTokens:hardTreeBudget}),built=[]
   for(const block of blocks){
     const children=block.children.map(i=>built[i])

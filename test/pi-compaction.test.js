@@ -231,6 +231,7 @@ test('Pi announces replacement only after its checkpoint exists, once across lif
  assert.equal(successes().length,0,'a prepared draft is not an installed replacement')
  r.ctx.tokens=80000
  const draft=(await turn(r)).entries[0]
+ assert.equal(draft.details.superlcmTokensBefore,80000,'preserve the pre-request value even if Pi later recalculates its own metadata')
  assert.equal(successes().length,0,'returning a boundary draft does not prove persistence')
  r.handlers.get('agent_settled')({},r.ctx)
  assert.equal(successes().length,0,'a cancelled or failed boundary write must not report success')
@@ -238,10 +239,40 @@ test('Pi announces replacement only after its checkpoint exists, once across lif
  r.ctx.tokens=2000
  r.handlers.get('session_compact')({},r.ctx)
  assert.equal(successes().length,1);assert.equal(successes()[0].type,'info')
- assert.match(successes()[0].text,/^上下文已压缩（约 80K → \d+K）$/)
+ assert.equal(successes()[0].text,'上下文已压缩（压缩前约 80K，压缩后待模型回执）')
  r.handlers.get('agent_settled')({},r.ctx)
  assert.equal(successes().length,1,'subsequent settled hooks must not duplicate the notice')
 })
+test('Pi reports measured post-compaction context only when a matching new receipt exists',async()=>{
+ const r=runtime(),notices=[];r.ctx.ui.notify=text=>notices.push(text)
+ await turn(r);await r.complete();r.ctx.tokens=80000
+ const draft=(await turn(r)).entries[0]
+ const checkpoint={...draft,id:'installed-checkpoint',tokensBefore:80000}
+ r.rows.splice(0,3,{sourceEntry:checkpoint,messages:[{role:'compactionSummary',summary:draft.summary}]})
+ const reply={type:'message',id:'paid-reply',message:{role:'assistant',provider:'test',model:'chat',stopReason:'stop',usage:{input:39000,output:3000,cacheRead:0,cacheWrite:0}}}
+ r.ctx.sessionManager.getBranch=()=>[checkpoint,reply];r.ctx.tokens=42000
+ r.handlers.get('agent_settled')({},r.ctx)
+ assert.deepEqual(notices,['上下文已压缩（约 80K → 42K）'])
+})
+
+test('Pi never reports another model or an aborted response as post-compaction usage',async()=>{
+ for(const reply of [
+  {provider:'other',model:'chat',stopReason:'stop'},
+  {provider:'test',model:'other',stopReason:'stop'},
+  {provider:'test',model:'chat',stopReason:'aborted'},
+ ]){
+  const r=runtime(),notices=[];r.ctx.ui.notify=text=>notices.push(text)
+  try{
+   await turn(r);await r.complete();r.ctx.tokens=80000
+   const draft=(await turn(r)).entries[0],checkpoint={...draft,id:'installed-checkpoint',tokensBefore:80000}
+   r.rows.splice(0,3,{sourceEntry:checkpoint,messages:[{role:'compactionSummary',summary:draft.summary}]})
+   r.ctx.sessionManager.getBranch=()=>[checkpoint,{type:'message',message:{role:'assistant',...reply,usage:{input:39000,output:3000,cacheRead:0,cacheWrite:0}}}]
+   r.ctx.tokens=42000;r.handlers.get('agent_settled')({},r.ctx)
+   assert.deepEqual(notices,['上下文已压缩（压缩前约 80K，压缩后待模型回执）'])
+  }finally{r.handlers.get('session_shutdown')()}
+ }
+})
+
 test('Pi archive-only background preparation and completion stay silent',async()=>{
  const r=runtime({readPolicy:()=>({enabled:false,summaryEnabled:true,summaryMode:'api',ratio:.8})}),notices=[],statuses=[]
  r.ctx.ui.notify=text=>notices.push(text)
@@ -1233,6 +1264,41 @@ test('Pi API mode can rebuild a pressured request from its verified source bound
   assert.ok(result,JSON.stringify(notices));assert.ok(JSON.stringify(result.messages).includes('Current state'));assert.equal(r.abortCalls,0)
   const entry=await r.handlers.get('turn_end')({entries:[],context:{contextEntries:r.rows}},r.ctx)
   assert.equal(entry.entries.at(-1).type,'compaction')
+ }finally{r.handlers.get('session_shutdown')();await work}
+})
+
+test('Pi does not falsely force compaction for a receipt-backed encrypted reasoning prefix',async()=>{
+ const item={type:'reasoning',id:'rs_large',encrypted_content:'A'.repeat(2000000),summary:[]}
+ const r=runtime({tokens:153549,readPolicy:mainForkPolicy,fork:async()=>{throw Object.assign(Error('must not summarize'),{code:'SUPERLCM_PI_INVALID_SUMMARY'})}})
+ Object.assign(r.ctx.model,{api:'openai-completions',contextWindow:500000,maxTokens:128000})
+ Object.assign(r.rows[1].messages[0],{provider:'test',model:'chat',api:'openai-responses',stopReason:'stop',
+  usage:{input:10000,output:4000,reasoning:3500,cacheRead:277147,cacheWrite:0,totalTokens:291147},content:[{type:'thinking',thinking:'',thinkingSignature:JSON.stringify(item)}]})
+ r.rows.push({sourceEntry:{id:'edit-failed',type:'context_edit',parentId:'failed-turn',targetId:'failed-turn',replacement:null},messages:[]})
+ try{
+  r.handlers.get('model_select')({},r.ctx) // Same-model re-selection on resume must not reset state or trigger false pressure.
+  const wire=await captureRuntime(r,{input:[item,{role:'user',content:'Continue.'}],max_output_tokens:128000})
+  assert.ok(wire,'a safe, receipt-backed 291K request should reach its provider without triggering compaction')
+  assert.equal(wire.input[0].encrypted_content,item.encrypted_content)
+  assert.equal(r.abortCalls,0);assert.equal(r.api.getState(),null)
+ }finally{r.handlers.get('session_shutdown')()}
+})
+
+test('Pi reports the actual response when request-time replacement was used before its checkpoint',async()=>{
+ const r=runtime({tokens:99000}),notices=[]
+ r.rows[0].messages[0].content='证'.repeat(100000)
+ r.ctx.ui.notify=text=>notices.push(text)
+ r.ctx.modelRegistry={streamSimple(_m,context,options){return {result:async()=>{try{options.onPayload({messages:context.messages,max_tokens:1000})}catch{return {stopReason:'aborted'}}}}}}
+ let work
+ try{
+  work=r.handlers.get('context_with_system')({messages:r.rows.flatMap(e=>e.messages)},r.ctx)
+  await until(()=>r.commands.includes('pi-prepare'));await r.complete();assert.ok(await work)
+  r.ctx.tokens=42000
+  const message={role:'assistant',provider:'test',model:'chat',stopReason:'toolUse',usage:{input:39000,output:3000,cacheRead:0,cacheWrite:0}}
+  const draft=(await r.handlers.get('turn_end')({message,entries:[],context:{contextEntries:r.rows}},r.ctx)).entries.at(-1)
+  assert.equal(draft.details.superlcmTokensBefore,99000)
+  r.rows.splice(0,3,{sourceEntry:{...draft,id:'saved',tokensBefore:42000},messages:[{role:'compactionSummary',summary:draft.summary}]})
+  r.handlers.get('agent_settled')({},r.ctx)
+  assert.ok(notices.includes('上下文已压缩（约 99K → 42K）'))
  }finally{r.handlers.get('session_shutdown')();await work}
 })
 
