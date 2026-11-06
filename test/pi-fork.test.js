@@ -927,3 +927,32 @@ test('Pi output limits cover native field aliases without mutating the captured 
  assert.throws(()=>limitPiOutput({max_tokens:1000,max_completion_tokens:NaN},model,90000),/无效/)
  assert.ok(estimatePiRequest({image:{type:'input_image',data:'a'.repeat(100)}})>=8192)
 })
+
+test('Pi invalidates pre-compaction receipts inside kept entries when projection places compaction at index 0',()=>{
+ const model={provider:'opencodex',id:'gpt-6.1-terra--fast',api:'openai-responses',contextWindow:500000,maxTokens:128000}
+ const prePaid={role:'assistant',provider:model.provider,model:model.id,stopReason:'toolUse',
+  usage:{input:1000,output:500,cacheRead:384715,cacheWrite:0,totalTokens:386215},content:[{type:'text',text:'pre-compaction'}]}
+ const compactionEntry={id:'c1',type:'compaction',parentId:'t1',firstKeptEntryId:'u1',summary:'# Summary'}
+ const projected=[
+  {sourceEntry:compactionEntry,messages:[{role:'compactionSummary',summary:'# Summary'}]},
+  {sourceEntry:{id:'u1',type:'message',parentId:'old'},messages:[{role:'user',content:'kept user'}]},
+  {sourceEntry:{id:'a1',type:'message',parentId:'u1'},messages:[prePaid]},
+  {sourceEntry:{id:'t1',type:'message',parentId:'a1'},messages:[{role:'toolResult',toolCallId:'c',content:[{type:'text',text:'kept tool'}]}]},
+ ]
+ const branch=[
+  {id:'u1',type:'message',parentId:'old'},
+  {id:'a1',type:'message',parentId:'u1'},
+  {id:'t1',type:'message',parentId:'a1'},
+  compactionEntry,
+ ]
+ assert.equal(measuredPiContextTokens(projected,model,null,branch),null,'pre-compaction receipt in kept tail must be invalidated with branch')
+ assert.equal(measuredPiContextTokens(projected,model,null),null,'pre-compaction receipt in kept tail must be invalidated without branch')
+ const withPostUser=[...projected,{sourceEntry:{id:'u2',type:'message',parentId:'c1'},messages:[{role:'user',content:'after compaction'}]}]
+ assert.equal(measuredPiContextTokens(withPostUser,model,null,[...branch,{id:'u2',type:'message',parentId:'c1'}]),null,'new user turn before post-compaction reply still invalidates pre-compaction receipt')
+ assert.equal(measuredPiContextTokens(withPostUser,model,null),null)
+ const postPaid={role:'assistant',provider:model.provider,model:model.id,stopReason:'stop',
+  usage:{input:5575,output:500,cacheRead:119500,cacheWrite:0,totalTokens:125575},content:[{type:'text',text:'post-compaction'}]}
+ const withPostReply=[...withPostUser,{sourceEntry:{id:'a2',type:'message',parentId:'u2'},messages:[postPaid]}]
+ assert.equal(measuredPiContextTokens(withPostReply,model,null,[...branch,{id:'u2',type:'message',parentId:'c1'},{id:'a2',type:'message',parentId:'u2'}]),125575)
+ assert.equal(measuredPiContextTokens(withPostReply,model,null),125575)
+})

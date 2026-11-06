@@ -210,6 +210,7 @@ export function readPreparedPi(store,input,{env=process.env}={}) {
   const captured=capturePi(store,{session_id:input.session_id,session_file:snapshot.session_file},{env,automatic:true})
   if(captured.skipped)return null
   const branch=activeBranch(store,session,snapshot.leafId,snapshot.firstKeptEntryId).branch
+  if(branch.at(-1)?.type==='compaction')return discard()
   if(readPiPolicy(store.dir).summaryMode==='api'&&branch.slice(0,branch.findIndex(e=>e.id===snapshot.firstKeptEntryId)).some(e=>hasUnrepresentedContent(JSON.stringify(e))))return null
   return {draftKey:saved.draft_key,compaction,...(saved.draft_key!==input.draftKey?{snapshot}:{})}
 }

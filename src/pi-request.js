@@ -112,6 +112,15 @@ function invalidatedAfterAnchor(entries,anchor,branch) {
   const prefixIds=new Set(entries.slice(0,anchor+1).map(e=>e?.sourceEntry?.id).filter(Boolean))
   const anchorId=entries[anchor]?.sourceEntry?.id
   const branchAnchor=Array.isArray(branch)&&anchorId?branch.findIndex(e=>e?.id===anchorId):-1
+  if(branchAnchor>=0&&branch.slice(branchAnchor+1).some(e=>e?.type==='compaction'))return true
+  for(let i=0;i<=anchor;i++){
+    const src=entries[i]?.sourceEntry
+    if(src?.type!=='compaction')continue
+    const postIdx=src.id?entries.findIndex((e,idx)=>idx>i&&e?.sourceEntry?.parentId===src.id):-1
+    if(postIdx>i){if(anchor<postIdx)return true;continue}
+    const preEnd=src.parentId?entries.findIndex((e,idx)=>idx>i&&e?.sourceEntry?.id===src.parentId):-1
+    if(preEnd>=anchor||preEnd<0)return true
+  }
   for(const entry of entries.slice(anchor+1)){
     const src=entry?.sourceEntry
     if(src?.type==='compaction')return true

@@ -1466,3 +1466,55 @@ test('an unsuitable standalone API result does not trap the same source in its c
  const result=await preparePi(f.store,input,options);assert.ok(result.compaction);assert.equal(calls,2)
  assert.deepEqual(await readPreparedPi(f.store,input,{env:f.env}),result)
 })
+
+test('Pi does not trigger a premature background fork right after compaction or accept a stale 60K draft at 403K',async t=>{
+ const f=fixture(t)
+ const compactionLeaf={type:'compaction',id:'comp-leaf',parentId:'c',firstKeptEntryId:'b',summary}
+ writeFileSync(f.input.session_file,[...f.entries,compactionLeaf].map(JSON.stringify).join('\n')+'\n')
+ const prematureInput={...f.input,leafId:'comp-leaf',firstKeptEntryId:'c',draftKey:'b'.repeat(64)}
+ await preparePi(f.store,prematureInput,{env:f.env,summarize:async()=>summary})
+ assert.equal(readPreparedPi(f.store,prematureInput,{env:f.env}),null,'draft prepared at a compaction leaf must be discarded')
+ assert.equal(f.store.db.prepare('SELECT count(*) n FROM pi_prepared_compactions').get().n,0)
+
+ let forks=0,prepared=null
+ const r=runtime({tokens:null,readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixture'}:opts.command==='pi-prepare'?(prepared={draftKey:snap.draftKey,compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared,
+  fork:async(_ctx,_snap,_capture,{stage})=>{forks++;await stage();return {blocks:[],tree:[]}}})
+ r.ctx.model.contextWindow=500000;r.ctx.model.maxTokens=128000
+ const prePaid={role:'assistant',provider:'test',model:'chat',stopReason:'toolUse',
+  usage:{input:1000,output:500,cacheRead:384715,cacheWrite:0,totalTokens:386215},content:[{type:'text',text:'kept pre-compaction reply '+'evidence '.repeat(2500)}]}
+ r.rows.splice(0,r.rows.length,
+  {sourceEntry:{id:'c1',type:'compaction',parentId:'t1',firstKeptEntryId:'u1',summary},messages:[{role:'compactionSummary',summary}]},
+  {sourceEntry:{id:'u1',type:'message',parentId:'old'},messages:[{role:'user',content:'Kept user turn. '+'detail '.repeat(4000)}]},
+  {sourceEntry:{id:'a1',type:'message',parentId:'u1'},messages:[prePaid]},
+  {sourceEntry:{id:'t1',type:'message',parentId:'a1'},messages:[{role:'toolResult',toolCallId:'call1',content:[{type:'text',text:'Kept tool result. '+'output '.repeat(4000)}]}]},
+ )
+ try{
+  r.handlers.get('agent_settled')({},r.ctx)
+  await tick()
+  assert.equal(r.api.getState(),null,'post-compaction kept tail (~100K) must not inherit the 386K pre-compaction receipt and fork at 125K')
+  assert.equal(forks,0)
+
+  // Now simulate an early draft covering only u1..a1 (~60K) while 300K of new dialogue accumulates in the tail.
+  r.rows.push(
+   {sourceEntry:{id:'u2',type:'message',parentId:'c1'},messages:[{role:'user',content:'New post-compaction work. '+'step '.repeat(4000)}]},
+   {sourceEntry:{id:'a2',type:'message',parentId:'u2'},messages:[{role:'assistant',provider:'test',model:'chat',stopReason:'stop',usage:{input:350000,output:1000,cacheRead:0,cacheWrite:0,totalTokens:351000},content:[{type:'text',text:'Post-compaction reply.'}]}]},
+  )
+  r.ctx.tokens=360000
+  captureRuntime(r);await until(()=>r.api.getState()?.ready)
+  assert.equal(forks,1)
+  const earlyCut=r.api.getState().snapshot.firstKeptEntryId
+  for(let i=0;i<10;i++){
+   r.rows.push({sourceEntry:{id:'late-u-'+i,type:'message',parentId:i===0?'a2':'late-a-'+(i-1)},messages:[{role:'user',content:'Massive later turn '+i+' '+'数据 '.repeat(12000)}]})
+   r.rows.push({sourceEntry:{id:'late-a-'+i,type:'message',parentId:'late-u-'+i},messages:[{role:'assistant',content:[{type:'text',text:'Massive later output '+i+' '+'结果 '.repeat(12000)}]}]})
+  }
+  r.ctx.tokens=403000
+  assert.equal(await r.api.ready(r.ctx),null,'stale early draft leaving >300K uncompacted tail must be rejected at 403K')
+  await turn(r);await until(()=>r.api.getState()?.ready)
+  assert.equal(forks,2,'a fresh snapshot covering the newly accumulated turns must be prepared')
+  assert.notEqual(r.api.getState().snapshot.firstKeptEntryId,earlyCut)
+  const replaced=await turn(r)
+  assert.equal(replaced.entries[0].type,'compaction')
+  assert.equal(replaced.entries[0].firstKeptEntryId,r.api.getState().snapshot.firstKeptEntryId)
+ }finally{r.handlers.get('session_shutdown')()}
+})

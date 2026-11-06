@@ -138,7 +138,7 @@ export function registerPiCompaction(pi, options, {
     const measured = measuredPiContextTokens(current, ctx.model, u.tokens, ctx.sessionManager.getBranch?.())
     // Fixed prompts/tools are not compressible. Never subtract them from the
     // summary budget or pretend that replacing old dialogue removes them.
-    const fixed = Math.max(declared, (measured ?? u.tokens ?? 0) - whole, 0)
+    const fixed = Math.max(declared, (measured ?? 0) - whole, 0)
     const estimated=fixed+whole
     // Pi's public usage combines provider receipts with newly appended input.
     // JSON previews/details can substantially exceed the actual wire tokens;
@@ -162,6 +162,16 @@ export function registerPiCompaction(pi, options, {
     notice(ctx,reason==='fixed-overhead'?'系统提示或工具定义已超出模型窗口，请减少工具或更换大窗口模型。原文完整保留。':'上下文保护已暂停模型请求。'+preparation+'原文和当前请求已保留。')
     protectionAbort=!!ctx.signal;ctx.abort?.()
   }
+  const staleSnapshot = (ctx, current, snap, summaryTokens = 0, forcePrefix = false) => {
+    const u = usage(ctx), p = policy()
+    if (!snap || !Number.isFinite(u.window) || u.window <= 0 || (forcePrefix && snap.leafId === ctx.sessionManager.getLeafId())) return false
+    const cut = current.findIndex(e => e.sourceEntry.id === snap.firstKeptEntryId)
+    if (cut <= 0) return true
+    const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)), ctx.model)
+    if (tail + summaryTokens < u.window * Math.max(.4, Math.round((p.ratio - .3) * 1e12) / 1e12)) return false
+    const next = makeSnapshot(ctx, p, settings())
+    return !!next && next.firstKeptEntryId !== snap.firstKeptEntryId && (next.sourceTokens ?? 0) - (snap.sourceTokens ?? 0) >= u.window * .2
+  }
   function prepare(ctx, force = false) {
     try {
       reportReplacement(ctx)
@@ -169,7 +179,10 @@ export function registerPiCompaction(pi, options, {
       if(ctx.signal?.aborted)return
       const p = policy()
       if (!p.enabled&&!p.summaryEnabled) { stop(); status(ctx, undefined); return }
-      if (state && !valid(ctx)) stop()
+      if (state && (!valid(ctx) || (state.ready && staleSnapshot(ctx, entries(ctx), state.snapshot, estimateSummaryTokens(state.ready.compaction?.summary || ''), state.forcePrefix)))) {
+        if (state.ready && state.snapshot?.draftKey) rejectedPrepared.add(state.snapshot.draftKey)
+        stop()
+      }
       if (retrySignature && retrySignature !== signature(ctx)) clearRetries()
       if(retryAfter===Infinity&&blockedPayload&&capture?.payload&&blockedPayload!==piDigest(capture.payload))clearRetries()
       if (state || Date.now() < retryAfter || (!force && !reached(ctx, Math.round((p.ratio-.1)*1e12)/1e12))) return
@@ -192,7 +205,7 @@ export function registerPiCompaction(pi, options, {
             // the stored prefix and current model/settings must still agree.
             const saved=restored.snapshot
             const aligned=restored.compaction?.firstKeptEntryId===saved.firstKeptEntryId&&snapshotMatches(saved,entries(ctx),signature(ctx))?makeSnapshot(ctx,p,settings(),{keepLimit,firstKeptEntryId:saved.firstKeptEntryId}):null
-            if(aligned?.draftKey===restored.draftKey){snapshot=aligned;current.snapshot=aligned}
+            if(aligned?.draftKey===restored.draftKey&&!staleSnapshot(ctx,entries(ctx),aligned,estimateSummaryTokens(restored.compaction?.summary||''),saved.leafId===snapshot.leafId)){snapshot=aligned;current.snapshot=aligned}
             else restored=null
           }
         }
@@ -312,8 +325,8 @@ export function registerPiCompaction(pi, options, {
       rejectedPrepared.add(selected.snapshot.draftKey);stop(); failed(ctx); return null
     }
     const c = capacity(ctx, current), cut = current.findIndex(e => e.sourceEntry.id === selected.snapshot.firstKeptEntryId)
-    const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)),ctx.model)
-    if (!c || c.fixed + tail + estimateSummaryTokens(compaction.summary) + extra >= c.inputLimit) {
+    const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)),ctx.model), summaryTokens = estimateSummaryTokens(compaction.summary)
+    if (!c || c.fixed + tail + summaryTokens + extra >= c.inputLimit || staleSnapshot(ctx, current, selected.snapshot, summaryTokens, selected.forcePrefix)) {
       rejectedPrepared.add(selected.snapshot.draftKey);stop(); status(ctx, 'SuperLCM：旧摘要覆盖不足，后台重新准备'); return null
     }
     const measuredBefore = measuredPiContextTokens(current, ctx.model, ctx.getContextUsage()?.tokens, ctx.sessionManager.getBranch?.())
