@@ -322,8 +322,7 @@ try {
   assert.equal(completed.length,swapEntry?1:0,'notify exactly once, and only after the native checkpoint is installed')
   if(completed.length){
     assert.ok(Number.isFinite(swapEntry.details?.superlcmTokensBefore),'retain the pre-replacement value alongside Pi metadata')
-    if(!cold&&!nativeOverflow)assert.match(completed[0],/压缩后待模型回执/,'do not label a pre-response estimate as actual usage')
-    if(cold&&mainFork&&!abortAfterReplacement)assert.match(completed[0],/→ \d+K/,'request-time replacement has a paid main-model response')
+    assert.match(completed[0],/^上下文已压缩（\d+K-\d+K）$/)
   }
 } finally {
   clearTimeout(faultTimer)

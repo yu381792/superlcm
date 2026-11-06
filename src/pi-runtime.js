@@ -85,6 +85,11 @@ export function registerPiCompaction(pi, options, {
     const last=branch.slice(index+1).findLast(e=>e.type==='message'&&e.message?.role==='assistant'&&!['aborted','error'].includes(e.message.stopReason))
     return last?measuredUsage(last.message,ctx):null
   }
+  const estimatedAfter = (ctx, current) => {
+    const active = pi.getActiveTools?.(), tools = (pi.getAllTools?.() || []).filter(t => !active || active.includes(t.name))
+    const declared = Math.max(estimateSummaryTokens(ctx.getSystemPrompt?.() || '') + estimateSummaryTokens(JSON.stringify(tools)), estimatePiMessages(current.flatMap(e => e.messages.filter(m => m.role === 'system'))))
+    return declared + estimatePiMessages(piDialogueMessages(current), ctx.model)
+  }
   // Boundary drafts are only proposals until Pi has appended the checkpoint.
   // Report at the next public lifecycle hook, after checking the persisted view.
   const reportReplacement = ctx => {
@@ -93,10 +98,10 @@ export function registerPiCompaction(pi, options, {
       const current=entries(ctx),checkpoint=current.find(e=>e.sourceEntry.type==='compaction')?.sourceEntry
       if(!checkpoint||checkpoint.summary!==pendingReplacement.summary||checkpoint.firstKeptEntryId!==pendingReplacement.firstKeptEntryId)return
       const before=pendingReplacement.tokensBefore||checkpoint.details?.superlcmTokensBefore||checkpoint.tokensBefore
-      const after=pendingReplacement.confirmedAfterTokens??afterCheckpoint(ctx,checkpoint)
+      const after=pendingReplacement.confirmedAfterTokens??afterCheckpoint(ctx,checkpoint)??estimatedAfter(ctx,current)
       const prior=Number.isFinite(before)&&before>0?Math.round(before/1000):null
-      const size=after!==null?prior!==null?`（约 ${prior}K → ${Math.round(after/1000)}K）`:`（当前约 ${Math.round(after/1000)}K）`
-        :prior!==null?`（压缩前约 ${prior}K，压缩后待模型回执）`:'（压缩后待模型回执）'
+      const next=Math.max(1,Math.round(after/1000))
+      const size=prior!==null?`（${prior}K-${next}K）`:`（${next}K）`
       pendingReplacement=null
       status(ctx,'SuperLCM：上下文已压缩')
       info(ctx,`上下文已压缩${size}`)

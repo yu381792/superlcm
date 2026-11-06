@@ -239,7 +239,7 @@ test('Pi announces replacement only after its checkpoint exists, once across lif
  r.ctx.tokens=2000
  r.handlers.get('session_compact')({},r.ctx)
  assert.equal(successes().length,1);assert.equal(successes()[0].type,'info')
- assert.equal(successes()[0].text,'上下文已压缩（压缩前约 80K，压缩后待模型回执）')
+ assert.equal(successes()[0].text,'上下文已压缩（80K-1K）')
  r.handlers.get('agent_settled')({},r.ctx)
  assert.equal(successes().length,1,'subsequent settled hooks must not duplicate the notice')
 })
@@ -252,7 +252,7 @@ test('Pi reports measured post-compaction context only when a matching new recei
  const reply={type:'message',id:'paid-reply',message:{role:'assistant',provider:'test',model:'chat',stopReason:'stop',usage:{input:39000,output:3000,cacheRead:0,cacheWrite:0}}}
  r.ctx.sessionManager.getBranch=()=>[checkpoint,reply];r.ctx.tokens=42000
  r.handlers.get('agent_settled')({},r.ctx)
- assert.deepEqual(notices,['上下文已压缩（约 80K → 42K）'])
+ assert.deepEqual(notices,['上下文已压缩（80K-42K）'])
 })
 
 test('Pi never reports another model or an aborted response as post-compaction usage',async()=>{
@@ -268,7 +268,7 @@ test('Pi never reports another model or an aborted response as post-compaction u
    r.rows.splice(0,3,{sourceEntry:checkpoint,messages:[{role:'compactionSummary',summary:draft.summary}]})
    r.ctx.sessionManager.getBranch=()=>[checkpoint,{type:'message',message:{role:'assistant',...reply,usage:{input:39000,output:3000,cacheRead:0,cacheWrite:0}}}]
    r.ctx.tokens=42000;r.handlers.get('agent_settled')({},r.ctx)
-   assert.deepEqual(notices,['上下文已压缩（压缩前约 80K，压缩后待模型回执）'])
+   assert.deepEqual(notices,['上下文已压缩（80K-1K）'])
   }finally{r.handlers.get('session_shutdown')()}
  }
 })
@@ -1298,7 +1298,7 @@ test('Pi reports the actual response when request-time replacement was used befo
   assert.equal(draft.details.superlcmTokensBefore,99000)
   r.rows.splice(0,3,{sourceEntry:{...draft,id:'saved',tokensBefore:42000},messages:[{role:'compactionSummary',summary:draft.summary}]})
   r.handlers.get('agent_settled')({},r.ctx)
-  assert.ok(notices.includes('上下文已压缩（约 99K → 42K）'))
+  assert.ok(notices.includes('上下文已压缩（99K-42K）'))
  }finally{r.handlers.get('session_shutdown')();await work}
 })
 
