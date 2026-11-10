@@ -1,5 +1,5 @@
 import { summarizeMainFork } from './main-fork.js'
-import {retryFork} from './fork-retry.js'
+import {retryFork,terminalForkFailure} from './fork-retry.js'
 import {registerOutputBudget} from './output-budget.js'
 import {SUMMARY_POLICY_VERSION} from '../src/summary-policy.js'
 import { randomUUID } from 'node:crypto'
@@ -208,6 +208,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     return result === null ? null : { ...result, rollingPolicy: summarized }
   }
   summaryRouteFingerprint() { return JSON.stringify([SUMMARY_POLICY_VERSION,this.rollingConfig?.summaryMode,this.config.summarizationProvider, this.config.summarizationModel, this.fallbackSummarizationRoute]) }
+  summarySessionSignature(agent) { return JSON.stringify([currentPolicy(this,agent)?.signature,agent.session.surface.replaceGeneration]) }
 
   bindBackgroundCancellation(agent, signal) { bindBackgroundCancellation(this,agent,signal) }
   rescueWithConversation(agent,signal) { if (this.rollingConfig.summaryMode === 'main-fork') return null; return rescueWithConversation(this,agent,signal) }
@@ -215,7 +216,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     if(this.controlFile&&!this.config.auto)return false
     if(compactionBusy(agent.session))return false
     const state = this.backgroundFolds.get(agent)
-    return (!state || state.status === 'ready') && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint())
+    return (!state || state.status === 'ready') && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint(), this.summarySessionSignature(agent))
   }
   startBackgroundFold(agent, selection) {
     const policy = currentPolicy(this, agent)
@@ -227,7 +228,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       const prefix = carryPrefix(this, agent, systemPrefixEndIndex(agent.session), agent.session.surface.nodes.indexOf(selection.start))
       if (prefix.length) previous = { status: 'ready', parts: [], frontier: prefix, tree: [] }
     }
-    const parts = previous?.parts ?? []
+    const parts = this.rollingConfig.summaryMode === 'main-fork' ? [] : previous?.parts ?? []
     if (parts.length && !selection.treeOnly) {
       const nodes = agent.session.surface.nodes
       if (nodes.indexOf(selection.start) !== nodes.indexOf(previous.summarized.end) + 1) return false
@@ -244,7 +245,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
 
     const controller = new AbortController()
     const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null, parts,
-      recoveryReady: previous?.status === 'ready' && previous.summarized ? previous : undefined,
+      recoveryReady: this.rollingConfig.summaryMode !== 'main-fork' && previous?.status === 'ready' && previous.summarized ? previous : undefined,
       signature: policy.signature, cutoffEnd: this.rollingConfig.summaryMode === 'main-fork' ? selection.end : previous?.cutoffEnd ?? (selection.activeTokens >= policy.softActiveTokens ? selection.eligibleEnd : undefined), revision:this.controlRevision, generation: this.runtimeGeneration }
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)
@@ -275,16 +276,19 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         // A completed recovery prefix may already have been committed under
         // emergency pressure. Its cancelled/late successor must not restore it.
         if (this.backgroundFolds.get(agent) !== state) return
-        this.compressionReporter.report(agent.session.id, controller.signal.aborted ? 'cancelled' : 'failed', selection)
+        const terminal = terminalForkFailure(error)
+        this.compressionReporter.report(agent.session.id, controller.signal.aborted ? 'cancelled' : 'failed',
+          terminal ? {...selection,attempt:state.attempt,failures:state.failures,errorKind:state.errorKind} : selection)
         if (this.backgroundFolds.get(agent) === state) {
-          const prior = state.recoveryReady ?? previous
+          const prior = this.rollingConfig.summaryMode === 'main-fork' ? null : (state.recoveryReady ?? previous)
           const recovered = retainUncompressibleTail(this,agent,state,prior,error,policy) ?? prior
           if (recovered?.status === 'ready' && recovered.summarized && recovered.generation === this.runtimeGeneration && currentPolicy(this,agent)?.signature === recovered.signature) this.backgroundFolds.set(agent, recovered)
           else this.backgroundFolds.delete(agent)
         }
-        if(!controller.signal.aborted)this.summaryGuards.failedSession(agent, fingerprint, policy.summaryRetryCooldownMs)
         const message = error instanceof Error ? error.message : String(error)
-        this.ctx.logger?.warn?.(`rolling compaction background summary failed: ${message}; continuing`)
+        if(!controller.signal.aborted)this.summaryGuards.failedSession(agent, fingerprint, policy.summaryRetryCooldownMs,
+          terminal ? {signature:this.summarySessionSignature(agent),message:message+' 后台已停止重复重试。'} : null)
+        this.ctx.logger?.warn?.(terminal ? `后台摘要无法继续：${message}；已停止重复重试` : `rolling compaction background summary failed: ${message}; continuing`)
       })
       .finally(() => { this.backgroundControllers.delete(controller) })
     return true
@@ -422,27 +426,46 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const policy = currentPolicy(this, agent)
     if (!policy) return null
     const session = agent.session
-    const staged = this.backgroundFolds.get(agent)
-    if (this.rollingConfig.summaryMode === 'main-fork' && staged) return null
+    let staged = this.backgroundFolds.get(agent)
     if (staged && staged.status !== 'ready') return null
     if (staged && staged.generation !== this.runtimeGeneration) {
       this.backgroundFolds.delete(agent)
       return this.planRolling(agent, forceHard)
     }
+    const measurement = this.ctx.tokenMeter.measure(session)
+    const priced = selectionPricing(measurement, session.requestHeader(), session)
+    const activeTokens = policy.budgetMode === 'ratio' ? priced.activeTokens : measurement.totalTokens
+    if (this.rollingConfig.summaryMode === 'main-fork' && staged) {
+      if (staged.forcePrefix) return null
+      const endIndex = session.surface.nodes.indexOf(staged.summarized?.end)
+      if (endIndex < 0) {
+        this.backgroundFolds.delete(agent)
+        staged = undefined
+      } else {
+        const tailTokens = priced.nodes.slice(endIndex + 1).reduce((sum, n) => sum + n.tokens, 0)
+        const summaryTokens = draftTokens(this, agent, staged.frontier)
+        const maxTail = Math.min(policy.contextWindow * Math.max(0.2, Math.round((policy.switchRatio - 0.55) * 1e12) / 1e12), Math.max(90000, policy.minRetainTokens + policy.contextWindow * 0.12))
+        if (tailTokens + summaryTokens < maxTail) return null
+        staged = undefined
+      }
+    }
     if (staged?.frontier && draftTokens(this, agent, staged.frontier) > draftBudget(this,agent)) {
       return { ...staged.selection, treeOnly: true }
     }
-    const measurement = this.ctx.tokenMeter.measure(session)
-    const priced = selectionPricing(measurement, session.requestHeader(), session)
+    const naturalGrowthBuffer = this.rollingConfig.summaryMode === 'main-fork' && policy.budgetMode === 'ratio' && activeTokens < policy.softActiveTokens
+      ? Math.max(0, policy.softActiveTokens - activeTokens) : 0
+    const effectiveRetainTokens = naturalGrowthBuffer > 0
+      ? Math.max(Math.min(policy.minRetainTokens, 10000), policy.minRetainTokens - naturalGrowthBuffer)
+      : policy.minRetainTokens
     const options = {
-      tailCount: policy.minRetainTokens > 0 ? 1 : policy.tailCount,
-      minRetainTokens: policy.minRetainTokens,
+      tailCount: effectiveRetainTokens > 0 ? 1 : policy.tailCount,
+      minRetainTokens: effectiveRetainTokens,
       retainTokenBudget: true,
       pressureFoldTokens: policy.pressureFoldTokens,
       foldBatchTokens: policy.foldBatchTokens,
       softActiveTokens: policy.softActiveTokens,
       hardActiveTokens: policy.hardActiveTokens,
-      activeTokens:policy.budgetMode==='ratio'?priced.activeTokens:measurement.totalTokens,
+      activeTokens,
       firstFoldableIndex: firstFoldableSurfaceIndex(session),
       protectedFromIndex: policy.protectLatestUser ? latestUserIndex(session) : undefined,
       isBalancedBefore: (seq) => toolPairingBalancedBefore(session, seq),
@@ -486,8 +509,16 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       if (options.activeTokens < (policy.prepareActiveTokens ?? policy.softActiveTokens)) return null
       options.foldBatchTokens = Number.MAX_SAFE_INTEGER
       options.prepareMinimumTokens = 1
+      delete options.lastFoldableIndex
     }
     const selection = selectRollingRange(priced.nodes, session.surface.nodes, options)
+    const existing = this.backgroundFolds.get(agent)
+    if (this.rollingConfig.summaryMode === 'main-fork' && existing?.summarized && selection) {
+      const oldEnd = session.surface.nodes.indexOf(existing.summarized.end)
+      const newEnd = session.surface.nodes.indexOf(selection.end)
+      const deltaTokens = newEnd > oldEnd ? priced.nodes.slice(oldEnd + 1, newEnd + 1).reduce((sum, n) => sum + n.tokens, 0) : 0
+      if (newEnd <= oldEnd || deltaTokens < Math.min(policy.contextWindow * 0.1, 40000)) return null
+    }
     if (selection) {
       const prepared = prepareAsyncRegion(this, agent, selection)
       // A few verbatim tokens cannot fit even an empty framed checkpoint.

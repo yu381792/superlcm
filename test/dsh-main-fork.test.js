@@ -2,14 +2,29 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {Context} from '@deepseek-ai/cordis'
+import {createUserMessage} from '@deepseek-ai/dsh-llm'
 import {SessionStore} from '@deepseek-ai/dsh-session'
 import {assertReleasedV4Relationships} from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import {lab,history,send,close,count,checkpoint,until} from './reliability/lab.mjs'
-import {forkScope} from '../dsh/main-fork.js'
+import {forkScope,captureMainRequest} from '../dsh/main-fork.js'
 import {ROLLING_DEFAULTS} from '../dsh/engine-config.js'
 import {controlsConfig} from '../dsh/controls-config.js'
 import {currentPolicy,activeInputTokens} from '../dsh/ratio-runtime.js'
 import {estimateSummaryTokens} from '../src/summary-tokens.js'
+
+test('a background branch uses only a matching original output allowance',()=>{
+ const row={active:1,provider:'p',model:'m',requested:128000,effective:98976,option_max:null}
+ const engine={outputBudgetState:{read:()=>row},runtimeGeneration:1},agent={session:{id:'s'},options:{}}
+ const request={provider:'p',model:'m',maxTokens:98976,messages:[]}
+ captureMainRequest(engine,agent,request)
+ assert.equal(engine.mainRequests.get(agent).originalMaxTokens,128000)
+ agent.options.maxTokens=98976
+ captureMainRequest(engine,agent,request)
+ assert.equal(engine.mainRequests.get(agent).originalMaxTokens,98976,'a changed user limit cannot reuse an old receipt')
+ agent.options={};row.model='another-model'
+ captureMainRequest(engine,agent,request)
+ assert.equal(engine.mainRequests.get(agent).originalMaxTokens,98976,'another model cannot reuse the receipt')
+})
 
 test('an idle host closes without corrupting the native persisted event relationships',async()=>{
  const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork'}})
@@ -24,7 +39,7 @@ test('an idle host closes without corrupting the native persisted event relation
  }finally{if(!closed)await close(h)}
 })
 
-for(const fits of [true,false])test('native summary tree '+(fits?'may exceed its planning goal within the hard limit':'must not exceed the independent hard limit'),async()=>{
+for(const fits of [true,false])test('native summary tree '+(fits?'may exceed its planning goal within the root limit':'must not exceed an unverified branch output limit'),async()=>{
  const h=await lab({capacity:64000,config:{summaryMode:'main-fork',summaryTimeoutMs:300,summaryRetryCooldownMs:1000}})
  let branches=0,budget
  try{
@@ -35,7 +50,7 @@ for(const fits of [true,false])test('native summary tree '+(fits?'may exceed its
    const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
    const plan=JSON.parse(prompt.split('\n').find(s=>s.startsWith('[{"index":')))
    const target=Number(prompt.match(/together must fit (\d+) tokens/)[1])
-   const hard=Math.min(currentPolicy(h.engine,h.agent).summaryPrefixTargetTokens,options.maxTokens)
+   const hard=fits?currentPolicy(h.engine,h.agent).summaryPrefixTargetTokens:options.maxTokens
    const blocks=plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve constraints and pending work.'}))
    const total=()=>blocks.reduce((n,b)=>n+estimateSummaryTokens(b.summary),0)
    const wanted=fits?Math.ceil(target*1.07):hard+32
@@ -61,6 +76,174 @@ for(const fits of [true,false])test('native summary tree '+(fits?'may exceed its
   }else assert.equal(count(h,'compaction/summary'),0)
   assert.equal(branches,1)
   assert.ok(h.agent.session.snapshotEvents().some(e=>JSON.stringify(e).includes(input)))
+ }finally{await close(h)}
+})
+
+test('a complete archival tree may exceed the smaller installed root budget',async()=>{
+ const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork'}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm);let budget,branches=0
+ try{
+  history(h,.72)
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches++
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   assert.ok(plan.length>1)
+   const rootLimit=currentPolicy(h.engine,h.agent).summaryPrefixTargetTokens
+   const blocks=plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve decisions and pending work.'}))
+   const total=()=>blocks.reduce((sum,b)=>sum+estimateSummaryTokens(b.summary),0)
+   blocks[0].summary+=' '+'x'.repeat(Math.max(0,rootLimit+64-total())*4)
+   budget={rootLimit,tree:total(),root:estimateSummaryTokens(blocks.at(-1).summary),output:options.maxTokens}
+   assert.equal(h.agent.session.requestHeader().config.maxTokens,98976)
+   assert.equal(options.maxTokens,128000,'background branch uses the original ceiling, not the foreground cap')
+   assert.ok(budget.tree>rootLimit&&budget.tree<budget.output&&budget.root<rootLimit)
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks})}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  assert.deepEqual(await send(h,'START BACKGROUND TREE'),[])
+  await h.engine.settleBackgroundFold(h.agent)
+  assert.equal(h.engine.backgroundFolds.get(h.agent)?.status,'ready',h.warnings.join('\n'))
+  assert.equal(count(h,'compaction/summary'),0)
+  assert.deepEqual(await send(h,'KEEP CURRENT INPUT '+ 'x'.repeat(180000)),[])
+  assert.equal(count(h,'compaction/summary'),1)
+  assert.equal(branches,1)
+  assert.ok(h.main.at(-1).content.includes('KEEP CURRENT INPUT'))
+ }finally{await close(h)}
+})
+
+test('a valid provider output count avoids rejecting an overestimated archival tree',async()=>{
+ const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork'}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm);let branches=0
+ try{
+  history(h,.72)
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches++
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   assert.ok(plan.length>1)
+   const blocks=plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve decisions and pending work.'}))
+   blocks[0].summary+=' '+'x'.repeat((options.maxTokens+64)*4)
+   const text=JSON.stringify({blocks})
+   assert.ok(estimateSummaryTokens(text)>options.maxTokens)
+   yield {type:'text-delta',index:0,text}
+   yield {type:'usage',usage:{inputTokens:360000,outputTokens:1000}}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  assert.deepEqual(await send(h,'KEEP PROVIDER-COUNTED TREE'),[])
+  await h.engine.settleBackgroundFold(h.agent)
+  assert.equal(h.engine.backgroundFolds.get(h.agent)?.status,'ready',h.warnings.join('\n'))
+  assert.deepEqual(await send(h,'CROSS REPLACEMENT '+ 'x'.repeat(180000)),[])
+  assert.equal(branches,1);assert.equal(count(h,'compaction/summary'),1)
+ }finally{await close(h)}
+})
+
+test('an oversized root shrinks the complete source prefix before retrying',async()=>{
+ const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork',summaryRetryCooldownMs:10}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm),branches=[]
+ try{
+  history(h,.85,{pieces:12})
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches.push(options)
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   const blocks=plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve decisions and pending work.'}))
+   if(branches.length===1){
+    const limit=currentPolicy(h.engine,h.agent).summaryPrefixTargetTokens
+    blocks.at(-1).summary+=' '+'x'.repeat((limit+64)*4)
+    assert.ok(blocks.reduce((sum,b)=>sum+estimateSummaryTokens(b.summary),0)<options.maxTokens)
+   }
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks})}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  const input='KEEP INPUT WHILE ROOT BUDGET RECOVERS'
+  assert.deepEqual(await send(h,input),[])
+  assert.equal(branches.length,2)
+  assert.ok(branches[1].messages.length<branches[0].messages.length)
+  assert.equal(count(h,'compaction/summary'),1)
+  assert.ok(h.main.at(-1).content.includes(input))
+ }finally{await close(h)}
+})
+
+test('a complete over-cap reply is accepted when the full provider receipt fits',async()=>{
+ const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork'}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm);let reported,branches=0
+ try{
+  history(h,.85)
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches++
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   reported=100000
+   assert.ok(reported>options.maxTokens&&reported>98976&&reported<128000&&380000+reported+1024<500000)
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks:plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve decisions and pending work.'}))})}
+   yield {type:'usage',usage:{inputTokens:380000,outputTokens:reported}}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  assert.deepEqual(await send(h,'KEEP INPUT WITH VERIFIED PROVIDER RECEIPT'),[])
+  assert.equal(branches,1);assert.equal(count(h,'compaction/summary'),1)
+  assert.ok(h.main.at(-1).content.includes('KEEP INPUT WITH VERIFIED PROVIDER RECEIPT'))
+ }finally{await close(h)}
+})
+
+test('an unsafe over-cap receipt retries with a shorter complete prefix',async()=>{
+ const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork',summaryRetryCooldownMs:10}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm),branches=[]
+ try{
+  history(h,.85,{pieces:12})
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches.push(options)
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks:plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve decisions and pending work.'}))})}
+   if(branches.length===1)yield {type:'usage',usage:{inputTokens:490000,outputTokens:options.maxTokens+256}}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  assert.deepEqual(await send(h,'KEEP INPUT WITH UNSAFE RECEIPT'),[])
+  assert.equal(branches.length,2)
+  assert.ok(branches[1].messages.length<branches[0].messages.length)
+  assert.equal(count(h,'compaction/summary'),1)
+  assert.ok(h.main.at(-1).content.includes('KEEP INPUT WITH UNSAFE RECEIPT'))
+ }finally{await close(h)}
+})
+
+test('a provider output above the original limit stops repeated attempts',async()=>{
+ const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork'}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm);let branches=0
+ try{
+  history(h,.72)
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches++
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks:plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve decisions and pending work.'}))})}
+   yield {type:'usage',usage:{inputTokens:360000,outputTokens:128001}}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  assert.deepEqual(await send(h,'KEEP INPUT WITH INVALID PROVIDER RECEIPT'),[])
+  const blocked=()=>h.engine.summaryGuards.terminalSessionFailure(h.agent,h.engine.summaryRouteFingerprint(),h.engine.summarySessionSignature(h.agent))
+  await until(()=>blocked())
+  assert.match(blocked(),/输出超过原始请求上限/)
+  assert.equal(branches,1);assert.equal(count(h,'compaction/summary'),0)
+  assert.equal(h.engine.canPrepareBackground(h.agent),false)
+ }finally{await close(h)}
+})
+
+test('a truncated indivisible source stops retrying and preserves the pending input',async()=>{
+ const h=await lab({capacity:64000,config:{summaryMode:'main-fork',summaryRetryCooldownMs:10}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm);let branches=0
+ try{
+  history(h,.91,{pieces:1})
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches++
+   yield {type:'text-delta',index:0,text:'incomplete'}
+   yield {type:'finish',reason:{kind:'max-tokens'}}
+  })()
+  const input='KEEP INPUT WHEN A COMPLETE SOURCE GROUP CANNOT SHRINK'
+  const errors=await send(h,input)
+  assert.ok(errors.some(error=>/无法继续缩小/.test(String(error.message||error))))
+  assert.equal(branches,1);assert.equal(count(h,'compaction/summary'),0)
+  assert.equal(h.engine.canPrepareBackground(h.agent),false)
+  assert.ok(h.agent.session.snapshotEvents().some(event=>JSON.stringify(event).includes(input)))
  }finally{await close(h)}
 })
 
@@ -310,7 +493,7 @@ test('DSH 50% policy prepares at 40% and uses an optional native model only on i
  }finally{await close(h)}
 })
 
-test('DSH rejects an auxiliary model that cannot hold the complete branch and preserves originals',async()=>{
+test('DSH stops an impossible branch without repeated retries and reports the preserved input',async()=>{
  const {automaticRatios}=await import('../dsh/ratio-policy.js')
  const h=await lab({capacity:64000,config:{summaryMode:'main-fork',forkModelOverride:true,...automaticRatios(.5),summarizationProvider:'lab-main',summarizationModel:'main-8000'}})
  try{
@@ -318,11 +501,20 @@ test('DSH rejects an auxiliary model that cannot hold the complete branch and pr
   h.ctx.llm.stream=options=>{if(forkScope.getStore())branches++;return original(options)}
   history(h,.42);const originals=h.agent.session.surface.nodes.slice()
   await send(h,'KEEP_INPUT_WHEN_SUMMARY_MODEL_IS_TOO_SMALL')
-  await until(()=>h.engine.backgroundFolds.get(h.agent)?.status==='retrying')
+  const blocked=()=>h.engine.summaryGuards.terminalSessionFailure(h.agent,h.engine.summaryRouteFingerprint(),h.engine.summarySessionSignature(h.agent))
+  await until(()=>blocked())
   assert.equal(branches,0);assert.equal(count(h,'compaction/summary'),0)
   assert.ok(originals.every(seq=>h.agent.session.surface.nodes.includes(seq)))
   assert.equal(h.agent.options.model,'main-64000')
-  assert.equal(h.engine.backgroundFolds.get(h.agent).errorKind,'capacity')
+  assert.match(blocked(),/停止重复重试/)
+  h.engine.summaryGuards.clock=()=>Date.now()+86400000
+  assert.deepEqual(await send(h,'A LATER INPUT'),[])
+  assert.equal(h.engine.canPrepareBackground(h.agent),false)
+  const input='PROTECTED INPUT '+ 'x'.repeat(60000)
+  const errors=await send(h,input)
+  assert.ok(errors.some(error=>/停止重复重试/.test(String(error.message||error))))
+  assert.equal(branches,0);assert.equal(count(h,'compaction/summary'),0)
+  assert.ok(h.agent.session.snapshotEvents().some(event=>JSON.stringify(event).includes(input)))
  }finally{await close(h)}
 })
 
@@ -509,4 +701,31 @@ test('DSH main-fork slices to the selected prefix and shrinks when a cold sessio
   assert.equal(count(h,'compaction/summary'),1)
   assert.ok(h.main.at(-1).content.includes('PROTECTED CURRENT TURN'))
  }finally{t.mock.timers.reset();await close(h)}
+})
+
+test('DSH main-fork dynamic preparation retention offsets 70%-80% growth and refreshes a stale draft',async()=>{
+ const h=await lab({capacity:500000,maxTokens:128000,config:{summaryMode:'main-fork',keepRecentTokens:40000}})
+ const original=h.ctx.llm.stream.bind(h.ctx.llm),branches=[]
+ try{
+  history(h,.704,{pieces:20})
+  h.ctx.llm.stream=options=>!forkScope.getStore()?original(options):(async function*(){
+   branches.push(options)
+   const prompt=options.messages.at(-1).content.map(b=>b.text||'').join('')
+   const plan=JSON.parse(prompt.split('\n').find(line=>line.startsWith('[{"index":')))
+   yield {type:'text-delta',index:0,text:JSON.stringify({blocks:plan.map(p=>({index:p.index,summary:'# Historical state\nPreserve constraints and pending work.'}))})}
+   yield {type:'finish',reason:{kind:'stop'}}
+  })()
+  await send(h,'START PREPARATION AT 70%')
+  await h.engine.settleBackgroundFold(h.agent)
+  assert.equal(branches.length,1)
+  const firstState=h.engine.backgroundFolds.get(h.agent),firstEnd=firstState.summarized.end
+  assert.ok(firstState.selection.tailTokens<=30000,`at 70% preparation, natural 50K growth buffer cuts closer to the end (tail=${firstState.selection.tailTokens})`)
+  assert.equal(h.engine.planRolling(h.agent),null,'fresh draft with small tail does not re-prepare')
+  history(h,.26,{pieces:6})
+  h.agent.session.append('turn/start',{})
+  h.agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'Latest user request'}]}),{surfaceOp:'append'})
+  const refreshed=h.engine.planRolling(h.agent)
+  assert.ok(refreshed,'stale draft with >110K accumulated tail refreshes its cut point')
+  assert.ok(refreshed.end>firstEnd)
+ }finally{await close(h)}
 })

@@ -15,6 +15,7 @@ import { currentPolicy } from './ratio-runtime.js'
 import { selectionPricing } from './selection-pricing.js'
 import { draftNode, assembleTree } from './draft-tree.js'
 import { forkDirective, forkAnchors, forkHash, parseForkTree } from './fork-summary.js'
+import { estimateSummaryTokens } from '../src/summary-tokens.js'
 import { reindexSession, nodeLevel } from './core.js'
 import {publishForkArchive,withForkLease,forkArchiveSnapshot} from './archive-fork.js'
 import {assembleRegions} from './assembled-region.js'
@@ -26,7 +27,13 @@ import {reusableGranularFrontier,originalNodeSources} from './tree-semantics.js'
 export function captureMainRequest(engine, agent, options) {
   engine.mainRequests ??= new WeakMap()
   const {signal, ...request} = options
-  engine.mainRequests.set(agent, {request: structuredClone(request), generation: engine.runtimeGeneration})
+  let originalMaxTokens=request.maxTokens
+  try {
+    const row=engine.outputBudgetState?.read(agent.session.id)
+    if(row?.active===1&&row.provider===request.provider&&row.model===request.model&&row.effective===request.maxTokens
+      &&row.option_max===(agent.options?.maxTokens??null)&&Number.isSafeInteger(row.requested)&&row.requested>=row.effective)originalMaxTokens=row.requested
+  } catch { engine.ctx?.logger?.warn?.('无法读取原始输出额度，后台摘要使用当前请求上限') }
+  engine.mainRequests.set(agent, {request: structuredClone(request), originalMaxTokens, generation: engine.runtimeGeneration})
 }
 export async function summarizeMainFork(engine, agent, prepared, signal, capture=engine.mainRequests?.get(agent), retry={}) {
   const policy=currentPolicy(engine,agent)
@@ -43,10 +50,12 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
     return forkRoute(engine.rollingConfig.forkModelOverride?(engine.summaryContext||engine.ctx):engine.ctx,capture.request,{enabled:engine.rollingConfig.forkModelOverride,provider:engine.config.summarizationProvider,model:engine.config.summarizationModel},abort)
   },signal,15000)
   const request = route.request, byId = new Map(request.messages.map((message,index)=>[message.id,{message,index}]))
+  const requested = !engine.rollingConfig.forkModelOverride && Number.isSafeInteger(capture.originalMaxTokens)
+    ? capture.originalMaxTokens : request.maxTokens ?? 16384
   const measurement = engine.ctx.tokenMeter.measure(agent.session)
   const priced = selectionPricing(measurement, agent.session.requestHeader(), agent.session)
   const windowLimit = Math.min(policy.contextWindow, route.contextWindow ?? Infinity)
-  const target = Math.max(256,Math.min(Math.floor(policy.summaryPrefixTargetTokens*.7),Math.floor((request.maxTokens||16384)*.65)))
+  const target = Math.max(256,Math.min(Math.floor(policy.summaryPrefixTargetTokens*.7),Math.floor(requested*.65)))
   const treeOptions={fanout:policy.condensedMinFanout||4,targetTokens:target,incremental:true}
   const language=dshSummaryLanguage(agent.session)
   const correction=['invalid_json','invalid_summary'].includes(retry.previousFailure)
@@ -99,6 +108,7 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
     Object.assign(prepared, shrunk)
     const fold = engine.backgroundFolds?.get(agent)
     if (fold) {
+      fold.forcePrefix = true
       if (fold.cutoffEnd === undefined || surfaceNodes.indexOf(fold.cutoffEnd) > targetIdx) fold.cutoffEnd = prepared.end
       if (fold.selection) fold.selection = { ...fold.selection, end: prepared.end }
     }
@@ -106,7 +116,8 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
   }
   let prefixOnly = false
   if (['length', 'context_window_exceeded'].includes(retry.previousFailure)) {
-    if (shrinkPrepared(0.8)) prefixOnly = true
+    if (!shrinkPrepared(0.8)) throw Object.assign(Error('后台摘要的完整消息组无法继续缩小，原文和当前请求已保留。'), { code: 'SUPERLCM_FORK_CAPACITY' })
+    prefixOnly = true
   }
   let { parts, plan, directive, directiveTokens } = buildPlan()
   let remaining = windowLimit - prepared.activeTokens - directiveTokens - 1024
@@ -127,7 +138,7 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
   // A late start/restart can already be past the normal preparation point.
   // Keep the entire frozen prefix; only limit auxiliary output to make room
   // for the appended directive instead of retrying an impossible reservation.
-  const maxTokens=Math.min(request.maxTokens??16384,Math.floor(remaining))
+  const maxTokens=Math.min(requested,Math.floor(remaining))
   const branchMessages = prefixOnly ? request.messages.slice(0, plan.at(-1).lastMessage + 1) : request.messages
   const options = {...request,maxTokens,messages:[...branchMessages,createUserMessage({content:[{type:'text',text:directive}]})]}
   const archiveSnapshot=forkArchiveSnapshot(engine.superLcmStore.path)
@@ -141,13 +152,21 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
     }
   }))
   signal?.throwIfAborted()
-  // The prompt target is a planning goal, not an exact tokenizer result.
-  // Keep a separate hard tree limit and still check the installed root below.
-  const usageTotal = (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) + (usage.outputTokens ?? 0)
-  const receiptFits = maxTokens < (request.maxTokens ?? 16384) && Number.isSafeInteger(usage.outputTokens) && usage.outputTokens > 0
-    && usage.outputTokens <= (request.maxTokens ?? 16384) && usageTotal > usage.outputTokens && usageTotal + 1024 < windowLimit
-  const hardTreeBudget=receiptFits ? policy.summaryPrefixTargetTokens : Math.min(policy.summaryPrefixTargetTokens,maxTokens)
-  const blocks = parseForkTree(text,plan,language,{...treeOptions,targetTokens:hardTreeBudget}),built=[]
+  // The whole archival tree uses the branch's output allowance. Only the root
+  // installed in the foreground must fit summaryPrefixTargetTokens below.
+  const inputUsage = ['inputTokens','cacheReadTokens','cacheWriteTokens'].map(key => usage[key] ?? 0)
+  const output = usage.outputTokens
+  const reported = Number.isSafeInteger(output) && output > 0
+  const receiptFits = reported && output <= requested && inputUsage.every(n => Number.isSafeInteger(n) && n >= 0)
+    && inputUsage.some(n => n > 0) && inputUsage.reduce((sum,n) => sum+n,0) + output + 1024 < windowLimit
+  if (reported && output > requested) throw Object.assign(Error('后台摘要输出超过原始请求上限，原文和当前请求已保留。'), { code:'SUPERLCM_FORK_INVALID_OUTPUT' })
+  if (reported && output > maxTokens && !receiptFits) throw Object.assign(Error('后台摘要的输出回执无法确认窗口安全，原文已保留。'), { code:'SUPERLCM_FORK_SUMMARY_BUDGET' })
+  const verified = reported && (output <= maxTokens || receiptFits)
+  const hardTreeBudget = verified ? Math.max(maxTokens, estimateSummaryTokens(text)) : maxTokens
+  let blocks
+  try { blocks = parseForkTree(text,plan,language,{...treeOptions,targetTokens:hardTreeBudget}) }
+  catch (error) { if (error.message === '后台分支摘要超过总输出预算') error.code = 'SUPERLCM_FORK_SUMMARY_BUDGET'; throw error }
+  const built=[]
   for(const block of blocks){
     const children=block.children.map(i=>built[i])
     if(block.level===0&&parts[block.index].carried&&!parts[block.index].snapshot){
@@ -176,7 +195,7 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
   const summarized=assembleTree(engine,frontier,tree,parts.length)
   const archiveTree=blocks.map((block,index)=>({id:'native:'+allTree[index].nodeId,nativeId:allTree[index].nodeId,kind:built[index].treeKind,level:built[index].depth-1,summary:stripRecallMetadata(contentBlocksToText(built[index].summary)),modelSummary:block.modelSummary,
     sources:built[index].treeSourceSeqs??built[index].shadowedSeqs,children:built[index].trustedChildNodeIds.map(id=>'native:'+id)}))
-  if (engine.ctx.tokenMeter.estimateMessage(summarized.checkpointMessage)>policy.summaryPrefixTargetTokens) throw Error('DSH 后台分支摘要超过预算，保留原文')
+  if (engine.ctx.tokenMeter.estimateMessage(summarized.checkpointMessage)>policy.summaryPrefixTargetTokens) throw Object.assign(Error('DSH 后台分支最终摘要超过预算，原文保留。'), { code:'SUPERLCM_FORK_SUMMARY_BUDGET' })
   try{await publishForkArchive(engine.superLcmStore.path,agent.session.id,archiveTree,{provider:request.provider,model:request.model,usage},archiveSnapshot)}catch(error){engine.ctx.logger?.warn?.('后台摘要归档待重试：'+error.message)}
   return {...summarized,summaryTreeFormat:'incremental-v1',forkParts:frontier,forkLeafCount:parts.length,rawOutput:raw,usage,prefixHash:forkHash(request.messages),mainFork:true}
 }

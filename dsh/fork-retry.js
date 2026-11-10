@@ -13,10 +13,13 @@ export function waitForRetry(ms,signal) {
   })
 }
 
+export const terminalForkFailure = error => ['SUPERLCM_FORK_CAPACITY','SUPERLCM_FORK_INVALID_OUTPUT'].includes(error?.code)
+
 export function failureKind(error) {
   if(error?.summaryKind==='timeout'||error?.name==='TimeoutError')return 'timeout'
   if(error?.code==='SUPERLCM_FORK_CAPACITY')return 'capacity'
-  if(error?.summaryKind==='length')return 'length'
+  if(error?.code==='SUPERLCM_FORK_INVALID_OUTPUT')return 'invalid_output'
+  if(error?.summaryKind==='length'||error?.code==='SUPERLCM_FORK_SUMMARY_BUDGET')return 'length'
   if(['stream_cutoff','stream_empty'].includes(error?.summaryKind))return error.summaryKind
   const code=summaryFailureCode(error?.code)
   if(code)return code.toLowerCase()
@@ -24,8 +27,8 @@ export function failureKind(error) {
   return 'invalid_summary'
 }
 
-// Each invocation has its own deadline. The job itself has neither a deadline
-// nor an attempt limit: one frozen request, one owner, and cancellable backoff.
+// Recoverable failures keep one frozen request and use cancellable backoff.
+// A capacity failure after all safe cuts are exhausted cannot improve by retrying.
 export async function retryFork(engine,agent,state,policy,run) {
   const signal=state.controller.signal
   const assertCurrent=()=>{
@@ -46,8 +49,9 @@ export async function retryFork(engine,agent,state,policy,run) {
     try{return await run({attempt:state.attempt,previousFailure:state.lastErrorKind})}
     catch(error){
       assertCurrent()
-      state.failures++;state.status='retrying';state.errorKind=failureKind(error)
-      state.lastErrorKind=state.errorKind
+      state.failures++;state.errorKind=failureKind(error);state.lastErrorKind=state.errorKind
+      if (terminalForkFailure(error)) { state.status='failed'; throw error }
+      state.status='retrying'
       const delay=Math.min(300000,policy.summaryRetryCooldownMs*2**Math.min(4,state.failures-1))
       state.retryAt=Date.now()+delay
       engine.compressionReporter.report(agent.session.id,'retrying',{...state.selection,attempt:state.attempt,failures:state.failures,retryAt:state.retryAt,errorKind:state.errorKind})

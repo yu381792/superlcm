@@ -40,14 +40,19 @@ export class SummaryGuards {
     this.routes.set(key, { failures, permanent, retryAt: this.clock() + delay })
   }
   succeededRoute(route) { this.routes.delete(this.routeKey(route)) }
-  canStart(agent, fingerprint) {
+  canStart(agent, fingerprint, signature) {
     const state = this.sessions.get(agent)
-    return !state || state.fingerprint !== fingerprint || state.retryAt <= this.clock()
+    if (!state || state.fingerprint !== fingerprint) return true
+    return state.terminal ? state.terminal.signature !== signature : state.retryAt <= this.clock()
   }
-  failedSession(agent, fingerprint, baseMs) {
+  failedSession(agent, fingerprint, baseMs, terminal = null) {
     const previous = this.sessions.get(agent)
     const failures = previous?.fingerprint === fingerprint ? previous.failures + 1 : 1
-    this.sessions.set(agent, { fingerprint, failures, retryAt: this.clock() + Math.min(baseMs * 16, baseMs * 2 ** Math.min(4, failures - 1)) })
+    this.sessions.set(agent, { fingerprint, failures, terminal, retryAt: this.clock() + Math.min(baseMs * 16, baseMs * 2 ** Math.min(4, failures - 1)) })
+  }
+  terminalSessionFailure(agent, fingerprint, signature) {
+    const state = this.sessions.get(agent)
+    return state?.fingerprint === fingerprint && state.terminal && state.terminal.signature === signature ? state.terminal.message : null
   }
   succeededSession(agent) { this.sessions.delete(agent) }
   clear() { this.routes.clear(); this.sessions = new SessionFoldRegistry() }

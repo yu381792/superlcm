@@ -82,3 +82,14 @@ test('transient/no-progress retry waits increase, share session ownership, and r
   now += 30000; assert.equal(guards.canStart(a, 'route1'), false)
   guards.clear(); assert.equal(guards.canStart(a, 'route1'), true)
 })
+test('terminal capacity failure stays blocked until the request or source changes', () => {
+  let now=1000
+  const guards=new SummaryGuards(()=>now),agent={session:{}}
+  guards.failedSession(agent,'route',30000,{signature:'old',message:'原文保留，停止重试'})
+  now+=86400000
+  assert.equal(guards.canStart(agent,'route','old'),false)
+  assert.equal(guards.terminalSessionFailure(agent,'route','old'),'原文保留，停止重试')
+  assert.equal(guards.canStart(agent,'route','new'),true)
+  assert.equal(guards.terminalSessionFailure(agent,'route','new'),null)
+  assert.equal(guards.canStart(agent,'changed-route','old'),true)
+})

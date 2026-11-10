@@ -96,6 +96,10 @@ export async function pressureStep(engine, agent, signal) {
     }
   } finally { clearTimeout(timer) }
   engine.tryCommitBackgroundFold(agent, {allowPressure:true})
-  if(activeInputTokens(engine,agent)>=policy.hardActiveTokens)await engine.rescueWithConversation?.(agent,signal)
+  if (activeInputTokens(engine,agent) >= policy.hardActiveTokens) {
+    const terminal = engine.summaryGuards?.terminalSessionFailure?.(agent,engine.summaryRouteFingerprint(),engine.summarySessionSignature(agent))
+    if (terminal) throw Error(terminal)
+    await engine.rescueWithConversation?.(agent,signal)
+  }
   if (activeInputTokens(engine,agent) >= policy.hardActiveTokens) throw Error('当前轮原文或后台摘要仍占用过多空间，请等待摘要就绪或缩短本轮输入。当前请求已保留。')
 }

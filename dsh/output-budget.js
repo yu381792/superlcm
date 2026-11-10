@@ -19,6 +19,7 @@ export function createOutputBudgetState(db) {
 }
 export function registerOutputBudget(engine,store,{restoreOnly=false,context=engine.ctx}={}) {
   const state=store.outputBudgetState(),ctx=context,life=new AbortController()
+  engine.outputBudgetState=state
   const read=state.read
   const own=(row,config)=>row?.active===1&&row.provider===config.provider&&row.model===config.model&&row.effective===config.maxTokens
   const original=(config,row)=>{
@@ -52,6 +53,7 @@ export function registerOutputBudget(engine,store,{restoreOnly=false,context=eng
   })
   ctx.effect(()=>()=>{
     life.abort(Error('输出容量保护已关闭'))
+    if (engine.outputBudgetState===state) delete engine.outputBudgetState
     // Restoring belongs to the next native request, inside its open turn.
     // Teardown may already be after turn/end and must never append headers.
   })
