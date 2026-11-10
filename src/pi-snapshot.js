@@ -39,8 +39,17 @@ export function snapshotMatches(snapshot, entries, signature) {
 export function makePiSnapshot(ctx, policy, settings = {}, {keepLimit=Infinity,sourceLimit=Infinity,firstKeptEntryId,beforeFirstKeptEntryId}={}) {
   const entries = ctx.sessionManager.buildSessionProjection().entries
   const sizes = entries.map(e => estimatePiMessages(piDialogueMessages([e]),ctx.model))
-  const requestedKeep = policy.keep === undefined ? Math.max(512, settings.compaction?.keepRecentTokens ?? 20000) : cappedRecentKeep(policy.keep, sizes.reduce((a,b)=>a+b,0))
-  const keep=Math.min(requestedKeep,keepLimit)
+  const totalDialogue = sizes.reduce((a,b)=>a+b,0)
+  const requestedKeep = policy.keep === undefined ? Math.max(512, settings.compaction?.keepRecentTokens ?? 20000) : cappedRecentKeep(policy.keep, totalDialogue)
+  // In main-fork mode, preparation starts at ratio - 10% and runs in the background
+  // while the foreground continues to accumulate up to 10% of the window before
+  // replacement. Reserve only a small floor at the cut point when still below the
+  // replacement threshold so the post-compaction tail does not double-retain.
+  const uTokens = ctx.getContextUsage?.()?.tokens, uWindow = ctx.model?.contextWindow
+  const naturalGrowthBuffer = policy.summaryMode === 'main-fork' && Number.isFinite(uWindow) && uWindow > 0 && Number.isFinite(uTokens) && uTokens < uWindow * (policy.ratio ?? .8)
+    ? Math.max(0, Math.floor(uWindow * (policy.ratio ?? .8) - uTokens)) : 0
+  const effectiveKeep = naturalGrowthBuffer > 0 ? Math.max(Math.min(requestedKeep, 10000), requestedKeep - naturalGrowthBuffer) : requestedKeep
+  const keep=Math.min(effectiveKeep,keepLimit)
   let retain = 0, desired = entries.length
   for (let i = entries.length - 1; i >= 0; i--) {
     const newer=retain;retain+=sizes[i]

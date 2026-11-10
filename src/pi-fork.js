@@ -106,10 +106,10 @@ async function piForkPlanConverted(snapshot, visible, {checkpoints=[],blockImage
   if(first!==selected.length)throw Error('Pi 选区存在未闭合工具组，保留原文')
   return plan
 }
-export async function summarizePiFork(ctx,snapshot,capture,{signal,stage,timeoutMs=600000,progress,isCurrent,forcePrefix=false}={}) {
-  return piAuxiliaryRequest(()=>summaryAttempt((abort,renew)=>runPiFork(ctx,snapshot,capture,{signal:abort,stage,timeoutMs,isCurrent,forcePrefix,progress:()=>{renew();progress?.()}}),signal,timeoutMs))
+export async function summarizePiFork(ctx,snapshot,capture,{signal,stage,timeoutMs=600000,progress,isCurrent,forcePrefix=false,previousFailure=null}={}) {
+  return piAuxiliaryRequest(()=>summaryAttempt((abort,renew)=>runPiFork(ctx,snapshot,capture,{signal:abort,stage,timeoutMs,isCurrent,forcePrefix,previousFailure,progress:()=>{renew();progress?.()}}),signal,timeoutMs))
 }
-async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, progress, isCurrent,forcePrefix } = {}) {
+async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, progress, isCurrent,forcePrefix,previousFailure } = {}) {
   if (!capture?.payload || capture.model.provider !== ctx.model?.provider || capture.model.id !== ctx.model?.id) throw Object.assign(Error('Pi 尚未捕获当前模型的原始请求'),{code:'SUPERLCM_PI_CAPTURE_INVALID'})
   let model=capture.model
   if(snapshot.summaryModel){
@@ -127,7 +127,9 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
   const target = Math.min(20000, Math.max(2048, snapshot.tokensBefore * .15))
   const nativeReserve=Math.min(piOutputReserve(null,model),override?piOutputReserve(null,model):piOutputReserve(capture.payload,model))
   const planningOptions={fanout:snapshot.summaryTuning?.fanout||4,incremental:true,targetTokens:Math.max(256,Math.min(target,12000,Math.floor(nativeReserve*.65)))}
-  const directive = forkDirective(plan, planningOptions.targetTokens,undefined,planningOptions)
+  const correction=['invalid_json','invalid_summary'].includes(previousFailure)
+    ?'\nThe previous attempt failed output validation. Return only the required JSON object, include every planned leaf and parent exactly once in index order, start each summary with a heading in the requested language, and respect the single shared output budget. Do not call tools or continue the task.':''
+  const directive = forkDirective(plan, planningOptions.targetTokens,undefined,planningOptions)+correction
   const limit = model.contextWindow - 1024 - Math.max(1024,model.contextWindow*.02)
   const originalEstimate=estimatePiRequest(capture.payload,{history:convertedMessages,model:capture.model})
   const projectedEstimate=estimatePiRequest(convertedMessages,{history:convertedMessages,model})
@@ -255,7 +257,10 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
   const treeOptions={fanout:planningOptions.fanout,incremental:true,targetTokens:verified?Math.max(sentLimit,estimateSummaryTokens(text)):sentLimit}
   let tree
   try{tree=parseForkTree(text,plan,undefined,treeOptions)}
-  catch(error){throw Object.assign(error,{code:'SUPERLCM_PI_INVALID_SUMMARY'})}
+  catch(error){
+    if(error.message==='后台分支摘要超过总输出预算')throw Object.assign(error,{code:'SUPERLCM_PI_PREFIX_CAPACITY'})
+    throw Object.assign(error,{code:'SUPERLCM_PI_INVALID_SUMMARY'})
+  }
   const blocks=tree.filter(n=>n.level===0)
   return { blocks, tree, treeOptions, model: model.id, provider: model.provider, usage: result.usage,
     sourceDigest: forkHash(snapshot.source), prefixHash: forkHash(wirePrefix), requestSettingsHash: forkHash(wireSettings) }

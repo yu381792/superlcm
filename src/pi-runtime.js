@@ -173,9 +173,10 @@ export function registerPiCompaction(pi, options, {
     const cut = current.findIndex(e => e.sourceEntry.id === snap.firstKeptEntryId)
     if (cut <= 0) return true
     const tail = estimatePiMessages(piDialogueMessages(current.slice(cut)), ctx.model)
-    if (tail + summaryTokens < u.window * Math.max(.4, Math.round((p.ratio - .3) * 1e12) / 1e12)) return false
+    const maxTail = Math.min(u.window * Math.max(.2, Math.round((p.ratio - .55) * 1e12) / 1e12), Math.max(90000, (p.keep || 20000) + u.window * .12))
+    if (tail + summaryTokens < maxTail) return false
     const next = makeSnapshot(ctx, p, settings())
-    return !!next && next.firstKeptEntryId !== snap.firstKeptEntryId && (next.sourceTokens ?? 0) - (snap.sourceTokens ?? 0) >= u.window * .2
+    return !!next && next.firstKeptEntryId !== snap.firstKeptEntryId && (next.sourceTokens ?? 0) - (snap.sourceTokens ?? 0) >= Math.min(u.window * .1, 40000)
   }
   function prepare(ctx, force = false) {
     try {
@@ -222,7 +223,7 @@ export function registerPiCompaction(pi, options, {
         // save failure retries the same completed output, never the model.
         if(!current.generated){
           let staged
-          const forkSummary=await fork(ctx,snapshot,selectedCapture,{signal,progress,forcePrefix:!!current.forcePrefix,isCurrent:()=>state===current&&valid(ctx),
+          const forkSummary=await fork(ctx,snapshot,selectedCapture,{signal,progress,forcePrefix:!!current.forcePrefix,previousFailure:current.lastErrorKind||null,isCurrent:()=>state===current&&valid(ctx),
             stage:async()=>{
               staged=await request({...options,command:'pi-stage'},snapshot,signal)
               if(state!==current||!valid(ctx))throw Object.assign(Error('Pi 后台分支来源或设置已变化，原文保留'),{code:'SUPERLCM_PI_CAPTURE_INVALID'})
@@ -235,9 +236,13 @@ export function registerPiCompaction(pi, options, {
         let prepared
         try{prepared=await request({ ...options, command: 'pi-prepare' }, { ...snapshot, sourceMessages: undefined, ...current.generated }, signal)}
         catch(error){
-          // A rejected tree/source will not become valid by resubmitting it.
-          // Only a transient archive I/O failure can retry this saved output.
-          if(!signal.aborted&&!/database is locked|SQLITE_BUSY|SQLITE_LOCKED|EAGAIN|EBUSY|超时|timed? ?out/i.test(String(error.message||error)))error.code='SUPERLCM_PI_INVALID_SUMMARY'
+          // A root summary that exceeded the foreground budget shrinks the prefix;
+          // a rejected tree/source will not become valid by resubmitting it.
+          if(!signal.aborted){
+            const msg=String(error.message||error)
+            if(/摘要仍超出预算|没有缩短原文|未能缩短/.test(msg))error.code='SUPERLCM_PI_PREFIX_CAPACITY'
+            else if(!/database is locked|SQLITE_BUSY|SQLITE_LOCKED|EAGAIN|EBUSY|超时|timed? ?out/i.test(msg))error.code='SUPERLCM_PI_INVALID_SUMMARY'
+          }
           throw error
         }
         rejectedPrepared.delete(snapshot.draftKey)
@@ -279,6 +284,7 @@ export function registerPiCompaction(pi, options, {
             if(terminalFailure(error))throw error
             if(p.summaryMode!=='main-fork'||current.controller.signal.aborted||state!==current||!valid(ctx))throw error
             if(result?.compaction){current.ignorePrepared=true;current.generated=null}
+            current.lastErrorKind=error instanceof SyntaxError?'invalid_json':error.code==='SUPERLCM_PI_INVALID_SUMMARY'?'invalid_summary':null
             current.lastFailure={attempt:current.attempt,message:String(error.message||error),at:Date.now()}
             failed(ctx)
             const delay=Math.min(300000,Math.max(0,retryAfter-Date.now()))

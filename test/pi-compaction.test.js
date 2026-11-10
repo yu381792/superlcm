@@ -1518,3 +1518,32 @@ test('Pi does not trigger a premature background fork right after compaction or 
   assert.equal(replaced.entries[0].firstKeptEntryId,r.api.getState().snapshot.firstKeptEntryId)
  }finally{r.handlers.get('session_shutdown')()}
 })
+
+test('Pi main-fork dynamic retention offsets natural 70%-80% growth and shrinks prefix on oversized root',async()=>{
+ const rows=Array.from({length:20},(_,i)=>({sourceEntry:{id:'m'+i,type:'message'},messages:[{role:i%2?'assistant':'user',content:i%2?[{type:'text',text:'step output '.repeat(1200)}]:'user task '.repeat(1200)}]}))
+ const ctx={model:{contextWindow:500000},sessionManager:{buildSessionProjection:()=>({entries:rows}),getSessionId:()=> 'dyn',getSessionFile:()=>'/dyn',getLeafId:()=> 'm19'},getContextUsage:()=>({tokens:350000})}
+ const snapAt70=makePiSnapshot(ctx,{enabled:true,ratio:.8,keep:40000,summaryMode:'main-fork'},{})
+ const snapAt80=makePiSnapshot({...ctx,getContextUsage:()=>({tokens:400000})},{enabled:true,ratio:.8,keep:40000,summaryMode:'main-fork'},{})
+ assert.ok(Number(snapAt70.firstKeptEntryId.slice(1))>Number(snapAt80.firstKeptEntryId.slice(1)),'at 70% preparation, natural 50K growth buffer cuts closer to the end to avoid double-retaining')
+
+ const cuts=[],prompts=[];let prepared
+ const r=runtime({tokens:75000,readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>{
+   if(opts.command==='pi-stage')return {revision:'fixture'}
+   if(opts.command==='pi-prepare'){
+    if(cuts.length===1)throw Error('Pi 摘要仍超出预算，保留原上下文')
+    return prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}
+   }
+   return prepared||null
+  },
+  fork:async(_ctx,snap,_capture,{stage,previousFailure})=>{
+   await stage();cuts.push(snap.firstKeptEntryId);prompts.push(previousFailure)
+   return {blocks:[],tree:[]}
+  }})
+ r.rows.splice(0,r.rows.length,...Array.from({length:12},(_,i)=>({sourceEntry:{id:'s-'+i,type:'message'},messages:[{role:i%2?'assistant':'user',content:i%2?[{type:'text',text:'Inspection evidence. '.repeat(250)}]:'Original request. '.repeat(250)}]})))
+ try{
+  captureRuntime(r);await until(()=>r.api.getState()?.ready)
+  assert.equal(cuts.length,2,'oversized root shrinks prefix and immediately retries without timed backoff')
+  assert.notEqual(cuts[0],cuts[1])
+ }finally{r.handlers.get('session_shutdown')()}
+})
