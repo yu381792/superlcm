@@ -1547,3 +1547,31 @@ test('Pi main-fork dynamic retention offsets natural 70%-80% growth and shrinks 
   assert.notEqual(cuts[0],cuts[1])
  }finally{r.handlers.get('session_shutdown')()}
 })
+
+test('Pi calibrates session_compact post-compaction notice from pre-compaction receipts instead of overestimating Chinese tail',async()=>{
+ const r=runtime({tokens:350000}),notices=[]
+ r.ctx.model.contextWindow=500000
+ r.ctx.getSystemPrompt=()=>'中文系统规则与工具定义'.repeat(3000)
+ r.ctx.ui.notify=text=>notices.push(text)
+ try{
+  await turn(r);await r.complete();r.ctx.tokens=400768
+  const draft=(await turn(r)).entries[0]
+  const checkpoint={...draft,id:'installed-checkpoint',tokensBefore:400399,details:{...draft.details,superlcmTokensBefore:400768}}
+  const keptChinese='保留的近期中文代码与命令输出'.repeat(6500)
+  r.rows.splice(0,r.rows.length,
+   {sourceEntry:checkpoint,messages:[{role:'compactionSummary',summary:draft.summary}]},
+   {sourceEntry:{id:draft.firstKeptEntryId,type:'message'},messages:[{role:'assistant',provider:'test',model:'chat',stopReason:'stop',content:[{type:'text',text:keptChinese}]}]})
+  r.ctx.sessionManager.getBranch=()=>[
+   {id:'sys-0',type:'message',message:{role:'system',content:'中文系统规则与工具定义'.repeat(3000)}},
+   {id:'u-0',type:'message',message:{role:'user',content:'初始请求'}},
+   {id:'a-0',type:'message',message:{role:'assistant',provider:'test',model:'chat',stopReason:'stop',usage:{input:29830,output:60,cacheRead:0,cacheWrite:0}}},
+   {id:'prev-comp',type:'compaction',firstKeptEntryId:'a-0',summary:'old'},
+   {id:'post-prev',type:'message',message:{role:'assistant',provider:'test',model:'chat',stopReason:'stop',usage:{input:50000,output:400,cacheRead:29824,cacheWrite:0}}},
+   {id:draft.firstKeptEntryId,type:'message',message:{role:'assistant',provider:'test',model:'chat',stopReason:'toolUse',usage:{input:2823,output:385,cacheRead:339712,cacheWrite:0}}},
+   {id:'tail-end',type:'message',message:{role:'assistant',provider:'test',model:'chat',stopReason:'toolUse',usage:{input:5059,output:473,cacheRead:392448,cacheWrite:0}}},
+   checkpoint,
+  ]
+  r.handlers.get('session_compact')({},r.ctx)
+  assert.deepEqual(notices,['上下文已压缩（401K-88K）'],'uses receipt differential (~88K) rather than inflated character estimate (~180K)')
+ }finally{r.handlers.get('session_shutdown')()}
+})

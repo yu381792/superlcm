@@ -70,12 +70,17 @@ export function registerPiCompaction(pi, options, {
   const notice = (ctx, text) => ctx.ui?.notify?.(text, 'warning')
   const info = (ctx, text) => {try{ctx.ui?.notify?.(text,'info')}catch{}}
   // Only a completed response to the current model can prove actual usage.
-  const measuredUsage=(message,ctx)=>{
+  const paidInputTokens=(message,ctx)=>{
     const u=message?.usage,parts=['input','output','cacheRead','cacheWrite'].map(k=>u?.[k]??0)
     if(message?.role!=='assistant'||message.provider!==ctx.model?.provider||message.model!==ctx.model?.id||
        ['aborted','error'].includes(message.stopReason)||parts.some(n=>!Number.isSafeInteger(n)||n<0)||parts[0]+parts[2]+parts[3]<=0)return null
+    return parts[0]+parts[2]+parts[3]
+  }
+  const measuredUsage=(message,ctx)=>{
+    const paid=paidInputTokens(message,ctx)
+    if(paid===null)return null
     const current=ctx.getContextUsage?.()?.tokens
-    return Number.isFinite(current)&&current>=parts.reduce((a,b)=>a+b,0)?current:null
+    return Number.isFinite(current)&&current>=paid+(message.usage?.output??0)?current:null
   }
   const afterCheckpoint=(ctx,checkpoint)=>{
     const branch=ctx.sessionManager.getBranch?.()
@@ -84,6 +89,42 @@ export function registerPiCompaction(pi, options, {
     if(index<0)return null
     const last=branch.slice(index+1).findLast(e=>e.type==='message'&&e.message?.role==='assistant'&&!['aborted','error'].includes(e.message.stopReason))
     return last?measuredUsage(last.message,ctx):null
+  }
+  // At session_compact time, the next assistant turn has not run yet, so
+  // character-based estimates would inflate Chinese/JSON contexts by ~50%.
+  // Calibrate post-compaction size from exact pre-compaction provider receipts.
+  const calibratedAfter=(ctx,checkpoint,before)=>{
+    if(!Number.isFinite(before)||before<=0)return null
+    const branch=ctx.sessionManager.getBranch?.()
+    if(!Array.isArray(branch))return null
+    const compIdx=branch.findIndex(e=>e?.id===checkpoint.id&&e?.type==='compaction')
+    if(compIdx<=0)return null
+    const pre=branch.slice(0,compIdx),cutIdx=pre.findIndex(e=>e?.id===checkpoint.firstKeptEntryId)
+    if(cutIdx<=0||pre.slice(cutIdx).some(e=>['compaction','context_edit'].includes(e?.type)))return null
+    const cutAsstIdx=pre.findIndex((e,i)=>i>=cutIdx&&e?.type==='message'&&paidInputTokens(e.message,ctx)!==null)
+    if(cutAsstIdx<0)return null
+    const gap=pre.slice(cutIdx,cutAsstIdx).filter(e=>e?.type==='message'&&e.message?.role&&e.message.role!=='system').map(e=>e.message)
+    const prefixPlusFixed=paidInputTokens(pre[cutAsstIdx].message,ctx)-(gap.length?estimatePiRequest(gap,{history:gap,model:ctx.model}):0)
+    if(!Number.isFinite(prefixPlusFixed)||prefixPlusFixed<=0||prefixPlusFixed>before)return null
+    const firstBoundary=pre.findIndex(e=>['compaction','context_edit'].includes(e?.type))
+    const initEnd=firstBoundary>=0?firstBoundary:pre.length
+    const firstAsstIdx=pre.slice(0,initEnd).findIndex(e=>e?.type==='message'&&paidInputTokens(e.message,ctx)!==null)
+    let fixed=null
+    if(firstAsstIdx>=0){
+      const initMsgs=pre.slice(0,firstAsstIdx).filter(e=>e?.type==='message'&&e.message?.role&&e.message.role!=='system').map(e=>e.message)
+      const fromInit=paidInputTokens(pre[firstAsstIdx].message,ctx)-(initMsgs.length?estimatePiRequest(initMsgs,{history:initMsgs,model:ctx.model}):0)
+      if(Number.isFinite(fromInit)&&fromInit>=0&&fromInit<=prefixPlusFixed)fixed=fromInit
+    }
+    for(let i=0;i<pre.length;i++){
+      if(pre[i]?.type!=='compaction')continue
+      const post=pre.slice(i+1).find(e=>['compaction','context_edit','message'].includes(e?.type)&&(e.type!=='message'||e.message?.role==='assistant'))
+      if(post?.type==='message'&&paidInputTokens(post.message,ctx)!==null){
+        const cached=post.message.usage?.cacheRead??0
+        if(Number.isSafeInteger(cached)&&cached>0&&cached<=prefixPlusFixed)fixed=Math.max(fixed??0,cached)
+      }
+    }
+    if(fixed===null)return null
+    return fixed+(before-prefixPlusFixed)+estimateSummaryTokens(checkpoint.summary||'')
   }
   const estimatedAfter = (ctx, current) => {
     const active = pi.getActiveTools?.(), tools = (pi.getAllTools?.() || []).filter(t => !active || active.includes(t.name))
@@ -98,7 +139,7 @@ export function registerPiCompaction(pi, options, {
       const current=entries(ctx),checkpoint=current.find(e=>e.sourceEntry.type==='compaction')?.sourceEntry
       if(!checkpoint||checkpoint.summary!==pendingReplacement.summary||checkpoint.firstKeptEntryId!==pendingReplacement.firstKeptEntryId)return
       const before=pendingReplacement.tokensBefore||checkpoint.details?.superlcmTokensBefore||checkpoint.tokensBefore
-      const after=pendingReplacement.confirmedAfterTokens??afterCheckpoint(ctx,checkpoint)??estimatedAfter(ctx,current)
+      const after=pendingReplacement.confirmedAfterTokens??afterCheckpoint(ctx,checkpoint)??calibratedAfter(ctx,checkpoint,before)??estimatedAfter(ctx,current)
       const prior=Number.isFinite(before)&&before>0?Math.round(before/1000):null
       const next=Math.max(1,Math.round(after/1000))
       const size=prior!==null?`（${prior}K-${next}K）`:`（${next}K）`
