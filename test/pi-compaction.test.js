@@ -1575,3 +1575,22 @@ test('Pi calibrates session_compact post-compaction notice from pre-compaction r
   assert.deepEqual(notices,['上下文已压缩（401K-88K）'],'uses receipt differential (~88K) rather than inflated character estimate (~180K)')
  }finally{r.handlers.get('session_shutdown')()}
 })
+
+test('Pi retries JSON SyntaxError tagged with SUPERLCM_PI_INVALID_SUMMARY using invalid_json correction instead of locking forever',async t=>{
+ const failures=[];let prepared
+ const r=runtime({readPolicy:mainForkPolicy,
+  responder:async(opts,snap)=>opts.command==='pi-stage'?{revision:'fixed'}:opts.command==='pi-prepare'?(prepared={compaction:{summary,firstKeptEntryId:snap.firstKeptEntryId}}):prepared||null,
+  fork:async(_ctx,_snap,_capture,{stage,previousFailure})=>{
+   await stage();failures.push(previousFailure)
+   if(failures.length===1)throw Object.assign(SyntaxError("Expected ',' or ']' after array element in JSON at position 962"),{code:'SUPERLCM_PI_INVALID_SUMMARY'})
+   return {blocks:[],tree:[]}
+  }})
+ try{
+  t.mock.timers.enable({apis:['setTimeout','Date']});captureRuntime(r)
+  await until(()=>r.api.getState()?.retryAt)
+  assert.ok(Number.isFinite(r.api.getState().retryAt),'tagged SyntaxError schedules retry rather than retryAfter=Infinity')
+  t.mock.timers.tick(60000)
+  await until(()=>r.api.getState()?.ready)
+  assert.deepEqual(failures,[null,'invalid_json'])
+ }finally{r.handlers.get('session_shutdown')();t.mock.timers.reset()}
+})

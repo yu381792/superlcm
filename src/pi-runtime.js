@@ -11,7 +11,7 @@ import { piProviderBoundary, isPiAuxiliaryRequest } from './pi-provider-boundary
 export { serializePiMessages } from './pi-snapshot.js'
 export { estimatePiRequest } from './pi-request.js'
 
-const terminalFailure = error => ['SUPERLCM_PI_UNSUPPORTED_REQUEST','SUPERLCM_PI_UNSHRINKABLE_PREFIX','SUPERLCM_PI_INVALID_BUDGET','SUPERLCM_PI_REPLAY_REFUSED','SUPERLCM_PI_INVALID_SUMMARY'].includes(error.code)
+const terminalFailure = error => !(error instanceof SyntaxError) && ['SUPERLCM_PI_UNSUPPORTED_REQUEST','SUPERLCM_PI_UNSHRINKABLE_PREFIX','SUPERLCM_PI_INVALID_BUDGET','SUPERLCM_PI_REPLAY_REFUSED','SUPERLCM_PI_INVALID_SUMMARY'].includes(error.code)
 
 export function piCompactRequest({ node, script, home, command = 'pi-prepare' }, input, signal) {
   return new Promise((resolve, reject) => {
@@ -511,6 +511,7 @@ export function registerPiCompaction(pi, options, {
       return { action: 'handled' }
     }
     try {
+    if (retryAfter === Infinity && !blockedPayload && unsafeInput()) clearRetries()
     prepare(ctx)
     if (takeoverEnabled(ctx) && unsafeInput()) {
       preserve() // Preserve the input before any cancellable capacity wait.

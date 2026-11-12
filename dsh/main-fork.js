@@ -59,7 +59,7 @@ async function runMainFork(engine,agent,prepared,signal,capture,policy,retry,pro
   const treeOptions={fanout:policy.condensedMinFanout||4,targetTokens:target,incremental:true}
   const language=dshSummaryLanguage(agent.session)
   const correction=['invalid_json','invalid_summary'].includes(retry.previousFailure)
-    ? '\nThe previous attempt failed output validation. Return only the required JSON object, include every planned leaf and parent exactly once in index order, start each summary with a heading in the requested language, and respect the single shared output budget. Do not call tools or continue the task.' : ''
+    ? '\nThe previous attempt failed output validation. Return only the required JSON object, escape every double quote (\\") and newline (\\n) inside summary strings, separate array elements with commas, include every planned leaf and parent exactly once in index order, start each summary with a heading in the requested language, and respect the single shared output budget. Do not call tools or continue the task.' : ''
   const buildPlan = () => {
     const builtParts = []; let from = 0, tokens = 0
     const addPart=(start,end,carried=null,snapshot=false)=>{

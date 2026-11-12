@@ -58,7 +58,7 @@ export function parseForkTree(text,leaves,language,{fanout=4,targetTokens=Infini
   const plan=forkTreePlan(leaves,fanout,{incremental}),value=text.trim(),fence=String.fromCharCode(96).repeat(3)
   let body
   if(plan.length===1&&value.startsWith('#'))body={blocks:[{index:0,summary:value}]}
-  else body=JSON.parse(value.startsWith(fence+'json\n')&&value.endsWith('\n'+fence)?value.slice(8,-4):value)
+  else body=JSON.parse(value.startsWith(fence)&&value.endsWith(fence)?value.replace(/^```(?:json)?\s*\n?/,'').replace(/\n?\s*```$/,''):value)
   if(body.error||!Array.isArray(body.blocks)||body.blocks.length>plan.length)throw Error('后台分支摘要分块或层级缺失')
   const supplied=new Map();let previous=-1
   for(const block of body.blocks){if(!Number.isInteger(block?.index)||block.index<=previous||!plan[block.index])throw Error('后台分支摘要分块顺序错误');supplied.set(block.index,block);previous=block.index}

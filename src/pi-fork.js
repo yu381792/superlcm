@@ -128,7 +128,7 @@ async function runPiFork(ctx, snapshot, capture, { signal, stage, timeoutMs, pro
   const nativeReserve=Math.min(piOutputReserve(null,model),override?piOutputReserve(null,model):piOutputReserve(capture.payload,model))
   const planningOptions={fanout:snapshot.summaryTuning?.fanout||4,incremental:true,targetTokens:Math.max(256,Math.min(target,12000,Math.floor(nativeReserve*.65)))}
   const correction=['invalid_json','invalid_summary'].includes(previousFailure)
-    ?'\nThe previous attempt failed output validation. Return only the required JSON object, include every planned leaf and parent exactly once in index order, start each summary with a heading in the requested language, and respect the single shared output budget. Do not call tools or continue the task.':''
+    ?'\nThe previous attempt failed output validation. Return only the required JSON object, escape every double quote (\\") and newline (\\n) inside summary strings, separate array elements with commas, include every planned leaf and parent exactly once in index order, start each summary with a heading in the requested language, and respect the single shared output budget. Do not call tools or continue the task.':''
   const directive = forkDirective(plan, planningOptions.targetTokens,undefined,planningOptions)+correction
   const limit = model.contextWindow - 1024 - Math.max(1024,model.contextWindow*.02)
   const originalEstimate=estimatePiRequest(capture.payload,{history:convertedMessages,model:capture.model})
