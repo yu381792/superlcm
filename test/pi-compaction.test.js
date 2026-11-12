@@ -10,7 +10,7 @@ import { registerPiCompaction, serializePiMessages, piCompactRequest } from '../
 import {capturePiContext} from '../src/pi-fork.js'
 import { estimateSummaryTokens } from '../src/summary-tokens.js'
 import { makePiSnapshot, snapshotMatches, piSignature } from '../src/pi-snapshot.js'
-import { forkHash } from '../src/fork-summary.js'
+import { forkHash, parseForkTree } from '../src/fork-summary.js'
 import { SUMMARY_POLICY_VERSION } from '../src/summary-policy.js'
 import { summarySettingsRevision } from '../src/summarize.js'
 
@@ -1593,4 +1593,47 @@ test('Pi retries JSON SyntaxError tagged with SUPERLCM_PI_INVALID_SUMMARY using 
   await until(()=>r.api.getState()?.ready)
   assert.deepEqual(failures,[null,'invalid_json'])
  }finally{r.handlers.get('session_shutdown')();t.mock.timers.reset()}
+})
+
+test('parseForkTree deterministically repairs unescaped quotes, embedded JSON snippets, and missing commas without model retry',()=>{
+ const broken=String.raw`{"blocks":[{"index":0,"summary":"# 排查记录
+检查了 "ACP" 补丁与回执 {"status": "PROFILE_COMPLETE"} 以及路径 C:\Users\demo"}{"index":1,"summary":"# 总体进展
+补丁已修复并继续执行。"},{"index":2,"summary":"# 当前续接
+保留 "ACP" 与 "PROFILE_COMPLETE" 原意。",}]}`
+ const tree=parseForkTree(broken,[{firstMessage:0,lastMessage:1},{firstMessage:2,lastMessage:3}],undefined,{fanout:2})
+ assert.equal(tree.length,3)
+ assert.match(tree[0].summary,/"ACP".*"PROFILE_COMPLETE".*C:\\Users\\demo/)
+ assert.match(tree[2].summary,/"ACP" 与 "PROFILE_COMPLETE"/)
+})
+
+test('Pi calibrates post-compaction notice via measured ratio after mid-session model switch',async()=>{
+ const r=runtime({tokens:280000}),notices=[]
+ r.ctx.model={contextWindow:400000,provider:'opencodex',id:'google-vertex/gemini-4-hydrogen'}
+ r.ctx.getSystemPrompt=()=>'中文系统规则与工具定义'.repeat(2500)
+ r.ctx.ui.notify=text=>notices.push(text)
+ const oldPrefix='历史中文分析与命令结果'.repeat(18000)
+ const keptTail='近期中文排查代码与输出'.repeat(4500)
+ r.rows.splice(0,r.rows.length,
+  {sourceEntry:{id:'old-1',type:'message'},messages:[{role:'user',content:oldPrefix}]},
+  {sourceEntry:{id:'old-2',type:'message'},messages:[{role:'assistant',provider:'opencodex',model:'gpt-6.1-terra',stopReason:'stop',content:[{type:'text',text:oldPrefix}]}]},
+  {sourceEntry:{id:'cut-old',type:'message'},messages:[{role:'assistant',provider:'opencodex',model:'gpt-6.1-terra',stopReason:'stop',content:[{type:'text',text:keptTail}]}]},
+  {sourceEntry:{id:'gem-last',type:'message'},messages:[{role:'assistant',provider:'opencodex',model:'google-vertex/gemini-4-hydrogen',stopReason:'toolUse',usage:{input:36283,output:1118,cacheRead:284760,cacheWrite:0},content:[{type:'text',text:'最新一轮'}]}]})
+ try{
+  await turn(r);await r.complete();r.ctx.tokens=330435
+  const draft=(await turn(r)).entries[0]
+  const checkpoint={...draft,id:'installed-gem',tokensBefore:330126,details:{...draft.details,superlcmTokensBefore:330435}}
+  const cutAt=r.rows.findIndex(e=>e.sourceEntry.id===draft.firstKeptEntryId)
+  r.rows.splice(0,cutAt,{sourceEntry:checkpoint,messages:[{role:'compactionSummary',summary:draft.summary}]})
+  r.ctx.sessionManager.getBranch=()=>[
+   {id:'old-1',type:'message',message:{role:'user',content:oldPrefix}},
+   {id:draft.firstKeptEntryId,type:'message',message:{role:'assistant',provider:'opencodex',model:'gpt-6.1-terra',stopReason:'stop',usage:{input:4808,output:269,cacheRead:259456,cacheWrite:0}}},
+   {id:'gem-last',type:'message',message:{role:'assistant',provider:'opencodex',model:'google-vertex/gemini-4-hydrogen',stopReason:'toolUse',usage:{input:36283,output:1118,cacheRead:284760,cacheWrite:0}}},
+   checkpoint,
+  ]
+  const uncalibrated=Math.round((estimateSummaryTokens(r.ctx.getSystemPrompt())+estimateSummaryTokens(keptTail))/1000)
+  r.handlers.get('session_compact')({},r.ctx)
+  assert.equal(notices.length,1)
+  const reported=Number(notices[0].match(/330K-(\d+)K/)?.[1])
+  assert.ok(reported>0&&reported<uncalibrated-10,`expected ratio-calibrated notice (${reported}K) well below raw character estimate (${uncalibrated}K)`)
+ }finally{r.handlers.get('session_shutdown')()}
 })

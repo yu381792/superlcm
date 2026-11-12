@@ -93,19 +93,23 @@ export function registerPiCompaction(pi, options, {
   // At session_compact time, the next assistant turn has not run yet, so
   // character-based estimates would inflate Chinese/JSON contexts by ~50%.
   // Calibrate post-compaction size from exact pre-compaction provider receipts.
-  const calibratedAfter=(ctx,checkpoint,before)=>{
+  const calibratedAfter=(ctx,checkpoint,before,current,rawBefore)=>{
     if(!Number.isFinite(before)||before<=0)return null
     const branch=ctx.sessionManager.getBranch?.()
     if(!Array.isArray(branch))return null
     const compIdx=branch.findIndex(e=>e?.id===checkpoint.id&&e?.type==='compaction')
     if(compIdx<=0)return null
     const pre=branch.slice(0,compIdx),cutIdx=pre.findIndex(e=>e?.id===checkpoint.firstKeptEntryId)
-    if(cutIdx<=0||pre.slice(cutIdx).some(e=>['compaction','context_edit'].includes(e?.type)))return null
+    const ratioFallback=()=>{
+      if(!Number.isFinite(rawBefore)||rawBefore<=0||!pre.some(e=>e?.type==='message'&&paidInputTokens(e.message,ctx)!==null))return null
+      return Math.round(estimatedAfter(ctx,current)*Math.min(1,before/rawBefore))
+    }
+    if(cutIdx<=0||pre.slice(cutIdx).some(e=>['compaction','context_edit'].includes(e?.type)))return ratioFallback()
     const cutAsstIdx=pre.findIndex((e,i)=>i>=cutIdx&&e?.type==='message'&&paidInputTokens(e.message,ctx)!==null)
-    if(cutAsstIdx<0)return null
+    if(cutAsstIdx<0)return ratioFallback()
     const gap=pre.slice(cutIdx,cutAsstIdx).filter(e=>e?.type==='message'&&e.message?.role&&e.message.role!=='system').map(e=>e.message)
     const prefixPlusFixed=paidInputTokens(pre[cutAsstIdx].message,ctx)-(gap.length?estimatePiRequest(gap,{history:gap,model:ctx.model}):0)
-    if(!Number.isFinite(prefixPlusFixed)||prefixPlusFixed<=0||prefixPlusFixed>before)return null
+    if(!Number.isFinite(prefixPlusFixed)||prefixPlusFixed<=0||prefixPlusFixed>before)return ratioFallback()
     const firstBoundary=pre.findIndex(e=>['compaction','context_edit'].includes(e?.type))
     const initEnd=firstBoundary>=0?firstBoundary:pre.length
     const firstAsstIdx=pre.slice(0,initEnd).findIndex(e=>e?.type==='message'&&paidInputTokens(e.message,ctx)!==null)
@@ -123,7 +127,7 @@ export function registerPiCompaction(pi, options, {
         if(Number.isSafeInteger(cached)&&cached>0&&cached<=prefixPlusFixed)fixed=Math.max(fixed??0,cached)
       }
     }
-    if(fixed===null)return null
+    if(fixed===null)return ratioFallback()
     return fixed+(before-prefixPlusFixed)+estimateSummaryTokens(checkpoint.summary||'')
   }
   const estimatedAfter = (ctx, current) => {
@@ -139,7 +143,7 @@ export function registerPiCompaction(pi, options, {
       const current=entries(ctx),checkpoint=current.find(e=>e.sourceEntry.type==='compaction')?.sourceEntry
       if(!checkpoint||checkpoint.summary!==pendingReplacement.summary||checkpoint.firstKeptEntryId!==pendingReplacement.firstKeptEntryId)return
       const before=pendingReplacement.tokensBefore||checkpoint.details?.superlcmTokensBefore||checkpoint.tokensBefore
-      const after=pendingReplacement.confirmedAfterTokens??afterCheckpoint(ctx,checkpoint)??calibratedAfter(ctx,checkpoint,before)??estimatedAfter(ctx,current)
+      const after=pendingReplacement.confirmedAfterTokens??afterCheckpoint(ctx,checkpoint)??calibratedAfter(ctx,checkpoint,before,current,pendingReplacement.rawBefore)??estimatedAfter(ctx,current)
       const prior=Number.isFinite(before)&&before>0?Math.round(before/1000):null
       const next=Math.max(1,Math.round(after/1000))
       const size=prior!==null?`（${prior}K-${next}K）`:`（${next}K）`
@@ -452,15 +456,16 @@ export function registerPiCompaction(pi, options, {
       }
       if (epoch !== selectedEpoch) return { cancel: true }
       if (compaction) {
-        const before=event.preparation.tokensBefore
-        pendingReplacement={...compaction,tokensBefore:before}
+        const before=event.preparation.tokensBefore,preEntries=entries(ctx)
+        pendingReplacement={...compaction,tokensBefore:before,rawBefore:estimatedAfter(ctx,preEntries)}
         return {compaction:{...compaction,tokensBefore:before,details:{...compaction.details,superlcmTokensBefore:before}}}
       }
       return { cancel: true }
     } catch (error) { if(epoch===selectedEpoch)notice(ctx, error.message);return { cancel: true } }
   })
   const boundaryDraft=(event,ctx,compaction,usedInRequest=false)=>{
-    pendingReplacement={...compaction,confirmedAfterTokens:usedInRequest?measuredUsage(event.message,ctx):null}
+    const preEntries=event.context?.contextEntries||entries(ctx)
+    pendingReplacement={...compaction,rawBefore:estimatedAfter(ctx,preEntries),confirmedAfterTokens:usedInRequest?measuredUsage(event.message,ctx):null}
     status(ctx,undefined)
     return {entries:[...(event.entries||[]),{type:'compaction',summary:compaction.summary,firstKeptEntryId:compaction.firstKeptEntryId,
       details:{...compaction.details,superlcmTokensBefore:compaction.tokensBefore},usage:compaction.usage}]}
