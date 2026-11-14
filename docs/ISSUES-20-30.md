@@ -45,4 +45,4 @@ Final verification:
 - `npm pack --dry-run`: passed.
 - `git diff --check`: passed.
 
-Operational scope: source changes only, saved locally on `fix/issues-20-30`; no release, installed-plugin update or production archive migration was performed. Older issues #1–#19 already have corresponding upstream fixes/tests and were not closed merely because their issue status remains open.
+Operational scope: source integration into the repository; no release, installed-plugin update or production archive migration was performed. Older issues #1–#19 already have corresponding upstream fixes/tests and were not closed merely because their issue status remains open.
