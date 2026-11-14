@@ -19,7 +19,7 @@ function fixture(t){
   t.after(()=>{store.close();rmSync(home,{recursive:true,force:true})})
   return {store,env,file:join(claude,'settings.json')}
 }
-test('Claude 50% replaces the old absolute window override and prepares at 40% of each native capacity',t=>{
+test('Claude 50% replaces the old absolute window override and prepares at 40% of the window Claude Code compacts in',t=>{
   const {store,env,file}=fixture(t)
   const original={autoCompactWindow:190000,env:{USER_SETTING:'preserved'}}
   writeFileSync(file,JSON.stringify(original))
@@ -31,8 +31,9 @@ test('Claude 50% replaces the old absolute window override and prepares at 40% o
   assert.equal(actual.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW,undefined)
   assert.equal(actual.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,'50')
   const runtime={takeover:()=>store.takeover(),metadata:()=>({harness:'claude-code'})}
-  assert.equal(forkPreparationThreshold(runtime,'s',200000),80000)
-  assert.equal(forkPreparationThreshold(runtime,'s',1000000),400000)
+  // Claude Code still caps the window at the kept autoCompactWindow (190K), so it compacts at 50% of 170K whatever the model.
+  assert.equal(forkPreparationThreshold(runtime,'s',200000,env),68000)
+  assert.equal(forkPreparationThreshold(runtime,'s',1000000,env),68000)
   applyTakeover(store,{enabled:false},env)
   assert.deepEqual(JSON.parse(readFileSync(file)),original)
 })

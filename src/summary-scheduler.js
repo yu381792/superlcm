@@ -67,12 +67,18 @@ export function drainSummaryQueue(store,{env=process.env,spawnProcess=spawn}={})
   }
   return {started}
 }
+// The live context has reached the point where one branch should summarize it.
+export function mainForkDue(store,session,{env=process.env,tokens=0,window=0}={}) {
+  if(env.SUPERLCM_CLI_WORKER==='1'||!['claude-code','codex'].includes(store.metadata(session).harness))return false
+  const usage=nativeContextUsage(store,session,{tokens,window})
+  return !!usage.window&&usage.tokens>=forkPreparationThreshold(store,session,usage.window,env)
+}
 // Only live, settled turns call this; imports and startup replay never do.
-export function scheduleSummary(store,session,mode,model,{env=process.env,spawnProcess=spawn,tokens=0,window=0}={}) {
+// handoff: the module's own fork could not run, so the separate `claude --resume` branch may.
+export function scheduleSummary(store,session,mode,model,{env=process.env,spawnProcess=spawn,tokens=0,window=0,handoff=false}={}) {
   if(mode==='main-fork'){
-    if(env.SUPERLCM_CLI_WORKER==='1'||!['claude-code','codex'].includes(store.metadata(session).harness))return false
-    const usage=nativeContextUsage(store,session,{tokens,window})
-    if(!usage.window||usage.tokens<forkPreparationThreshold(store,session,usage.window))return false
+    if(!mainForkDue(store,session,{env,tokens,window}))return false
+    if(!handoff&&store.hostForker?.(session))return false
   }
   if(!store.integrationEnabled(store.metadata(session).harness)||!['cli','api','main-fork'].includes(mode)||store.summarizing(session))return false
   if(mode==='cli'&&store.hostWriter(session))return false

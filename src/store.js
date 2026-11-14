@@ -26,6 +26,9 @@ const hash = value => createHash('sha256').update(value).digest('hex')
 export const maxFile = 4 * 1024 * 1024 * 1024 // read in 64 KiB pieces, so the size costs disk (the private copy), not memory
 export const maxRecord = 32 * 1024 * 1024 // Codex compacted records can contain an entire replacement history.
 // Preserve the existing index path; both Claude and Codex must point at the same home.
+const CLAUDE_RECERT_VERSION = 2
+// Summaries written before fork 0.6.6 never saw a prompt typed during a turn; such a piece is written again.
+const queuedPrompt = raw => {try{const r=JSON.parse(raw);return r.type==='attachment'&&r.attachment?.type==='queued_command'&&r.attachment.commandMode==='prompt'}catch{return false}}
 export const home = () => resolve(process.env.SUPERLCM_HOME || process.env.SUPERLCM_CLAUDE_HOME || join(homedir(), '.superlcm-claude'))
 const ensurePrivate=privateDirectory
 function inside(parent, child) { const rel = relative(parent, child); return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) }
@@ -66,6 +69,37 @@ function extract(raw, kind) {
   } catch { return '' }
 }
 function jsonRecord(raw) { try { return JSON.parse(raw.toString('utf8')) } catch { return null } }
+// Raised when the takeover copy rule changes, so archives indexed by the older rule are replayed once.
+const TAKEOVER_COPY_VERSION = 1
+// After a takeover Claude Code writes the packet and then the kept messages again (state.remaining counts them).
+// A packet prepared ahead of time (precompute) is swapped in with the messages written since appended after
+// its kept ones, so `keep` undercounts them (remaining -2): each of those repeats, in order, a message recorded
+// after the packet's `through` and before the compact boundary (state.low..state.high). Anything else is new,
+// even when its text repeats an older record word for word, as /compact and its output do at every compaction.
+// Returns the record's preview and the next state, or null when the state does not change.
+function takeoverCopy(state, record, preview, ordinal, { same, next }) {
+  const remaining = state?.remaining || 0, low = state?.low ?? -1, high = state?.high ?? -1
+  if (record?.type === 'system' && record.subtype === 'compact_boundary') return { preview, state: { remaining: -1, low: -1, high: ordinal } }
+  if (record?.type !== 'user' && record?.type !== 'assistant') return null
+  if (remaining === -1) {
+    // Only the first message after the boundary can be a packet, so the same text pasted into a prompt is
+    // indexed like any other message.
+    const packet = /^user: <superlcm-context [^>]*keep="(\d+)"/.exec(preview)
+    if (!packet) return { preview, state: { remaining: 0, low, high } }
+    const through = /^user: <superlcm-context [^>]*through="(\d+)"/.exec(preview)
+    return { preview: '', state: { remaining: Number(packet[1]) || -2, low: through ? Number(through[1]) : -1, high } }
+  }
+  if (remaining > 0) {
+    const original = preview ? same(low, high, preview) : null
+    return { preview: '', state: { remaining: remaining > 1 ? remaining - 1 : -2, low: original ?? low, high } }
+  }
+  if (remaining === -2 && preview) {
+    const expected = next(low, high)
+    if (expected && expected.preview === preview) return { preview: '', state: { remaining: -2, low: expected.ordinal, high } }
+    return { preview, state: { remaining: 0, low, high } }
+  }
+  return null
+}
 function derivedName(preview) { return typeof preview==='string' ? preview.replace(/^(user|assistant):\s*/,'').replace(/\s+/g,' ').trim().slice(0,90) : '' }
 export const shortCode = session => hash(String(session)).slice(0,5)
 function bounded(value, fallback, max) { return Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback }
@@ -112,7 +146,9 @@ export class ClaudeStore {
       CREATE TABLE IF NOT EXISTS compactions(session TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(session,ordinal));
       CREATE TABLE IF NOT EXISTS takeover_settings(id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, window INTEGER NOT NULL, previous TEXT);
       CREATE TABLE IF NOT EXISTS takeover_copies(session TEXT PRIMARY KEY, remaining INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS takeover_copy_repair(session TEXT PRIMARY KEY, version INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS host_writers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS host_forkers(session TEXT PRIMARY KEY, until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS host_summary_claims(session TEXT PRIMARY KEY,batch_id TEXT NOT NULL,revision TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS takeover_runs(session TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, before INTEGER NOT NULL, after INTEGER NOT NULL);
     `)
@@ -123,6 +159,7 @@ export class ClaudeStore {
     this.db.prepare("INSERT INTO integrations(harness,enabled,revision) VALUES('hermes',0,1) ON CONFLICT(harness) DO UPDATE SET enabled=0,revision=integrations.revision+1 WHERE integrations.enabled<>0").run()
     for(const [column,type] of [['claim_id',"TEXT NOT NULL DEFAULT ''"],['leaf_only','INTEGER NOT NULL DEFAULT 0'],['deadline_ms','INTEGER NOT NULL DEFAULT 0'],['run_id','TEXT']])if(!hostColumns.has(column))this.db.exec(`ALTER TABLE host_summary_claims ADD COLUMN ${column} ${type}`)
     const deliveryColumns=new Set(this.db.prepare('PRAGMA table_info(deliveries)').all().map(c=>c.name))
+    {const names=new Set(this.db.prepare('PRAGMA table_info(takeover_copies)').all().map(c=>c.name));for(const column of ['low','high'])if(!names.has(column))this.db.exec(`ALTER TABLE takeover_copies ADD COLUMN ${column} INTEGER NOT NULL DEFAULT -1`)}
     if(!new Set(this.db.prepare('PRAGMA table_info(leases)').all().map(c=>c.name)).has('owner'))this.db.exec("ALTER TABLE leases ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
     if(!new Set(this.db.prepare('PRAGMA table_info(takeover_settings)').all().map(c=>c.name)).has('keep_tokens'))this.db.exec('ALTER TABLE takeover_settings ADD COLUMN keep_tokens INTEGER NOT NULL DEFAULT 40000')
     if(!new Set(this.db.prepare('PRAGMA table_info(takeover_settings)').all().map(c=>c.name)).has('compression_ratio'))this.db.exec('ALTER TABLE takeover_settings ADD COLUMN compression_ratio REAL')
@@ -139,6 +176,7 @@ export class ClaudeStore {
     this.db.exec('CREATE INDEX IF NOT EXISTS sources_recent ON sources(updated_ms IS NULL,updated_ms DESC,session)')
     for(const table of ['global_summary_settings','harness_summary_settings']){const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name));for(const column of ['api_provider','api_url'])if(!names.has(column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)}
     if(!new Set(this.db.prepare('PRAGMA table_info(harness_summary_settings)').all().map(c=>c.name)).has('api_ref'))this.db.exec('ALTER TABLE harness_summary_settings ADD COLUMN api_ref TEXT')
+    if(!new Set(this.db.prepare('PRAGMA table_info(harness_summary_settings)').all().map(c=>c.name)).has('api_fallbacks'))this.db.exec('ALTER TABLE harness_summary_settings ADD COLUMN api_fallbacks TEXT')
     // Custom API models are added once in Settings and picked per tool; each keeps its own key ('model:<id>').
     if(!this.db.prepare('PRAGMA table_info(summary_tuning)').all().some(c=>c.name==='target_tokens'))this.db.exec('ALTER TABLE summary_tuning ADD COLUMN target_tokens INTEGER')
     const hadModels=!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_models'").get()
@@ -259,6 +297,10 @@ export class ClaudeStore {
   // summaries, the Stop hook does not start a separate `claude -p` for it.
   hostWriter(session) { return Boolean(this.db.prepare('SELECT 1 FROM host_writers WHERE session=? AND until_ms>?').get(session,Date.now())) }
   setHostWriter(session,on,duration=6*3600000) { if(on)this.db.prepare('INSERT INTO host_writers(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms').run(session,Date.now()+duration); else this.db.prepare('DELETE FROM host_writers WHERE session=?').run(session) }
+  // The same module on a Claude Code with $.model.fork writes main-fork summaries from the session's own cached
+  // request. Each turn renews the mark, so a session without the module falls back to `claude --resume` soon.
+  hostForker(session) { return Boolean(this.db.prepare('SELECT 1 FROM host_forkers WHERE session=? AND until_ms>?').get(session,Date.now())) }
+  setHostForker(session,on,duration=900000) { if(on)this.db.prepare('INSERT INTO host_forkers(session,until_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET until_ms=excluded.until_ms').run(session,Date.now()+duration); else this.db.prepare('DELETE FROM host_forkers WHERE session=?').run(session) }
   takeover() { const r=this.db.prepare('SELECT enabled,window,previous,keep_tokens,compression_ratio FROM takeover_settings WHERE id=1').get(); return r?{enabled:Boolean(r.enabled),window:r.window,keep:r.keep_tokens,previous:r.previous,...(r.compression_ratio!=null?{ratio:r.compression_ratio}:{})}:{...takeoverDefaults,previous:null} }
   setTakeover({enabled,ratio=this.takeover().ratio??null,window=this.takeover().window,keep=this.takeover().keep,previous=this.takeover().previous}) {
     if (typeof enabled!=='boolean' || !Number.isSafeInteger(window) || window<takeoverLimits.window[0] || window>takeoverLimits.window[1] || !Number.isSafeInteger(keep) || keep<takeoverLimits.keep[0] || keep>takeoverLimits.keep[1]) throw new Error('Unsupported compaction takeover setting')
@@ -271,12 +313,12 @@ export class ClaudeStore {
   noteCompaction(session,{status,code,reason,through=-1,records=0,before=0,trigger='unknown',stage='first',pendingSegments=null,pending=pendingSegments,after=null,catchupMs=null,catchup_ms=catchupMs,coverage_lag=null}) {
     this.db.exec('CREATE TABLE IF NOT EXISTS compaction_diagnostics(session TEXT PRIMARY KEY,status TEXT NOT NULL,code TEXT NOT NULL,reason TEXT NOT NULL,at_ms INTEGER NOT NULL,through_record INTEGER NOT NULL,records INTEGER NOT NULL,before_tokens INTEGER NOT NULL,trigger TEXT NOT NULL)')
     this.db.exec('CREATE TABLE IF NOT EXISTS compaction_history(session TEXT NOT NULL,at_ms INTEGER NOT NULL,status TEXT NOT NULL,code TEXT NOT NULL,reason TEXT NOT NULL,stage TEXT NOT NULL,through_record INTEGER NOT NULL,records INTEGER NOT NULL,coverage_lag INTEGER NOT NULL,pending_segments INTEGER,before_tokens INTEGER NOT NULL,after_tokens INTEGER,catchup_ms INTEGER,trigger TEXT NOT NULL); CREATE INDEX IF NOT EXISTS compaction_history_session_at ON compaction_history(session,at_ms)')
-    const at=Date.now(),safeTrigger=['auto','manual','precompute'].includes(trigger)?trigger:'unknown'
+    const at=Date.now(),safeTrigger=['auto','manual','precompute','cold','turn-end'].includes(trigger)?trigger:'unknown'
     const number=n=>Number.isFinite(n)&&n>=0?Math.round(n):null
     this.db.exec('SAVEPOINT compaction_note')
     try {
       this.db.prepare('INSERT INTO compaction_diagnostics VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET status=excluded.status,code=excluded.code,reason=excluded.reason,at_ms=excluded.at_ms,through_record=excluded.through_record,records=excluded.records,before_tokens=excluded.before_tokens,trigger=excluded.trigger').run(session,status,code,reason,at,through,records,number(before)||0,safeTrigger)
-      this.db.prepare('INSERT INTO compaction_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(session,at,status,code,reason,['first','inline','catchup'].includes(stage)?stage:'first',through,records,number(coverage_lag)??Math.max(0,records-1-through),number(pending),number(before)||0,number(after),number(catchup_ms),safeTrigger)
+      this.db.prepare('INSERT INTO compaction_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(session,at,status,code,reason,['first','inline','catchup','parent'].includes(stage)?stage:'first',through,records,number(coverage_lag)??Math.max(0,records-1-through),number(pending),number(before)||0,number(after),number(catchup_ms),safeTrigger)
       this.db.prepare('DELETE FROM compaction_history WHERE session=? AND rowid NOT IN (SELECT rowid FROM compaction_history WHERE session=? ORDER BY at_ms DESC,rowid DESC LIMIT 50)').run(session,session)
       this.db.exec('RELEASE compaction_note')
     } catch(error){this.db.exec('ROLLBACK TO compaction_note');this.db.exec('RELEASE compaction_note');throw error}
@@ -294,18 +336,25 @@ export class ClaudeStore {
     return {total,takeover,native,rate:total?takeover/total:null,recent}
   }
   reducedSummaryCount(session) { return this.db.prepare("SELECT count(*) AS n FROM nodes WHERE session=? AND instr(summary,'[SuperLcm reduced navigation]')>0").get(session).n }
+  // 缓存过期压缩 (src/summary-background.js): the last request outside the transcript that may have read the
+  // main cache (a fork, another mod's keep-warm ping), and the main response a skipped compaction followed.
+  #cacheTouches() { this.db.exec('CREATE TABLE IF NOT EXISTS cache_touches(session TEXT PRIMARY KEY,at_ms INTEGER NOT NULL DEFAULT 0,tried_ms INTEGER)') }
+  noteCacheTouch(session,at) { if(!Number.isSafeInteger(at)||at<=0)return;this.#cacheTouches();this.db.prepare('INSERT INTO cache_touches(session,at_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET at_ms=MAX(at_ms,excluded.at_ms)').run(session,at) }
+  noteColdTried(session,responseAt) { if(!Number.isSafeInteger(responseAt))return;this.#cacheTouches();this.db.prepare('INSERT INTO cache_touches(session,tried_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET tried_ms=excluded.tried_ms').run(session,responseAt) }
+  cacheTouch(session) { this.#cacheTouches();const r=this.db.prepare('SELECT at_ms,tried_ms FROM cache_touches WHERE session=?').get(session);return r?{at:r.at_ms,tried:r.tried_ms}:null }
   noteTakeover(session,before,after) { this.db.prepare('INSERT INTO takeover_runs(session,at_ms,before,after) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET at_ms=excluded.at_ms,before=excluded.before,after=excluded.after').run(session,Date.now(),Math.round(before)||0,Math.round(after)||0) }
   takeTakeover(session,maxAge=3600000) { const r=this.db.prepare('SELECT at_ms,before,after FROM takeover_runs WHERE session=?').get(session); this.db.prepare('DELETE FROM takeover_runs WHERE session=?').run(session); return r&&Date.now()-r.at_ms<=maxAge?{before:r.before,after:r.after}:null }
   markCompaction(session,ordinal=this.stats(session).records) { if(this.source(session))this.db.prepare('INSERT OR IGNORE INTO compactions(session,ordinal) VALUES(?,?)').run(session,ordinal) }
   lastCompaction(session) { return this.db.prepare('SELECT MAX(ordinal) AS o FROM compactions WHERE session=?').get(session)?.o ?? 0 }
   globalSetting() { return this.db.prepare('SELECT mode,model,api_provider,api_url FROM global_summary_settings WHERE id=1').get() || null }
   // A tool on an added API model reads that model's current endpoint, so editing it in Settings applies everywhere.
-  static SETTING="SELECT h.harness,h.mode,CASE WHEN m.id IS NULL THEN h.model ELSE m.model END AS model,COALESCE(m.provider,h.api_provider) AS api_provider,COALESCE(m.url,h.api_url) AS api_url,h.api_ref,m.effort AS api_effort FROM harness_summary_settings h LEFT JOIN api_models m ON m.id=h.api_ref"
+  static SETTING="SELECT h.harness,h.mode,CASE WHEN m.id IS NULL THEN h.model ELSE m.model END AS model,COALESCE(m.provider,h.api_provider) AS api_provider,COALESCE(m.url,h.api_url) AS api_url,h.api_ref,h.api_fallbacks,m.effort AS api_effort FROM harness_summary_settings h LEFT JOIN api_models m ON m.id=h.api_ref"
   harnessSetting(harness) {
     if(typeof harness!=='string'||!/^[a-z][a-z0-9-]{0,39}$/.test(harness))throw new Error('Invalid harness')
     const x=this.db.prepare(ClaudeStore.SETTING+' WHERE h.harness=?').get(harness);if(!x)return null
-    const {harness:_,...rest}=x;return rest
+    const {harness:_,...rest}=this.normalizeHarnessSetting(x);return rest
   }
+  normalizeHarnessSetting(row) {let ids;try{ids=JSON.parse(row.api_fallbacks)}catch{};return {...row,api_fallbacks:Array.isArray(ids)?[...new Set(ids.filter(id=>typeof id==='string'&&id!==row.api_ref&&this.apiModel(id)))]:[]}}
   apiModels() {return this.db.prepare('SELECT id,label,provider,url,model,effort FROM api_models ORDER BY created_ms,id').all()}
   apiModel(id) {return typeof id==='string'?this.db.prepare('SELECT id,label,provider,url,model,effort FROM api_models WHERE id=?').get(id)||null:null}
   // Checks a model entry without saving it; returns the normalized fields.
@@ -336,6 +385,7 @@ export class ClaudeStore {
       const users=this.db.prepare("SELECT harness FROM harness_summary_settings WHERE api_ref=? AND harness<>'hermes'").all(id).map(x=>x.harness)
       if(users.length)throw new Error('Still used by '+users.join(', ')+'; pick another method for it first')
       this.db.prepare("UPDATE harness_summary_settings SET api_ref=NULL WHERE harness='hermes' AND api_ref=?").run(id)
+      for(const row of this.db.prepare('SELECT harness,api_fallbacks FROM harness_summary_settings').all()){let ids;try{ids=JSON.parse(row.api_fallbacks)}catch{};if(Array.isArray(ids)&&ids.includes(id)){ids=ids.filter(x=>x!==id);this.db.prepare('UPDATE harness_summary_settings SET api_fallbacks=? WHERE harness=?').run(ids.length?JSON.stringify(ids):null,row.harness)}}
       bindApiKey(this.db,scope,null)
       this.db.exec('CREATE TABLE IF NOT EXISTS credential_retired_scopes(scope TEXT PRIMARY KEY)')
       this.db.prepare('INSERT OR IGNORE INTO credential_retired_scopes VALUES(?)').run(scope)
@@ -361,16 +411,26 @@ export class ClaudeStore {
     this.db.prepare('INSERT INTO harness_summary_settings(harness,mode,model,api_provider,api_url,api_ref) VALUES(?,?,?,?,?,?) ON CONFLICT(harness) DO UPDATE SET mode=excluded.mode,model=excluded.model,api_provider=excluded.api_provider,api_url=excluded.api_url,api_ref=excluded.api_ref').run(harness,mode,model,api.api_provider,api.api_url,apiRef)
     return this.harnessSetting(harness)
   }
+  setHarnessFallbacks(harness,ids) {
+    const setting=this.harnessSetting(harness)
+    if(!setting||setting.mode!=='api')throw new Error('Fallback models need a custom API model first')
+    if(!Array.isArray(ids)||ids.length>5||ids.some(id=>typeof id!=='string'))throw new Error('Fallback models must be an array of up to 5 model IDs')
+    if(ids.some(id=>!this.apiModel(id)))throw new Error('Unknown API model')
+    ids=[...new Set(ids)].filter(id=>id!==setting.api_ref)
+    this.db.prepare('UPDATE harness_summary_settings SET api_fallbacks=? WHERE harness=?').run(ids.length?JSON.stringify(ids):null,harness)
+    return this.harnessSetting(harness)
+  }
   // Where a tool's API key lives: its added model's, else (older settings) its own.
   harnessKeyScope(harness,setting=this.harnessSetting(harness)) {return setting?.api_ref?'model:'+setting.api_ref:'harness:'+harness}
   clearHarnessSetting(harness) {this.harnessSetting(harness);this.db.prepare('DELETE FROM harness_summary_settings WHERE harness=?').run(harness);return null}
-  harnessSettings() {return this.db.prepare(ClaudeStore.SETTING+' ORDER BY h.harness').all()}
+  harnessSettings() {return this.db.prepare(ClaudeStore.SETTING+' ORDER BY h.harness').all().map(row=>this.normalizeHarnessSetting(row))}
   integrationEnabled(harness) { return harness!=='hermes' && this.db.prepare('SELECT enabled FROM integrations WHERE harness=?').get(harness)?.enabled !== 0 }
   setIntegrationEnabled(harness, enabled) {
     if(harness==='hermes'&&enabled)throw Error('Unsupported harness')
     this.db.prepare('INSERT INTO integrations VALUES(?,?,1) ON CONFLICT(harness) DO UPDATE SET enabled=excluded.enabled,revision=integrations.revision+1').run(harness,enabled?1:0)
     if(!enabled) {
       this.db.prepare('UPDATE host_writers SET until_ms=0 WHERE session IN (SELECT session FROM session_origins WHERE harness=?)').run(harness)
+      this.db.prepare('UPDATE host_forkers SET until_ms=0 WHERE session IN (SELECT session FROM session_origins WHERE harness=?)').run(harness)
       this.db.prepare("UPDATE leases SET until_ms=0 WHERE owner='host' AND session IN (SELECT session FROM session_origins WHERE harness=?)").run(harness)
     }
   }
@@ -396,6 +456,11 @@ export class ClaudeStore {
     const scope=chosen.scope==='harness'?this.harnessKeyScope(chosen.harness,chosen):'global'
     // '' = no key needed (a local gateway); null = not configured.
     return readApiKey(this.dir,scope,chosen.api_url||undefined) || (!chosen.api_url && !chosen.api_provider ? env.SUPERLCM_ANTHROPIC_API_KEY||null : null) || (loopbackEndpoint(chosen.api_url) ? '' : null)
+  }
+  apiFallbacks(session,env=process.env) {
+    const setting=this.effectiveSetting(session,env)
+    if(setting.mode!=='api'||setting.scope!=='harness')return []
+    return setting.api_fallbacks.flatMap(id=>{const m=this.apiModel(id);if(!m)return [];const key=readApiKey(this.dir,'model:'+id,m.url||undefined)||(loopbackEndpoint(m.url)?'':null);return key===null?[]:[{id,model:m.model,apiProvider:m.provider||'anthropic',apiURL:m.url,effort:m.effort||null,apiKey:key}]})
   }
   // A saved custom API (this conversation's tool first, then global) usable for a one-off catch-up in any mode.
   apiConfig(session,env=process.env) {
@@ -809,7 +874,7 @@ export class ClaudeStore {
         // Lifecycle ownership has no summary or original text. Keep it so an
         // interrupted native commit can still close safely after deletion.
       }
-      for (const table of ['event_fts', 'events', 'session_event_counts', 'node_fts', 'nodes', 'summary_node_quality', 'claude_node_coverage_v2', 'claude_node_coverage_v3', 'claude_node_coverage_v4', 'leases', 'summary_retries', 'summary_flush', 'compactions', 'takeover_copies', 'host_writers', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+      for (const table of ['event_fts', 'events', 'session_event_counts', 'node_fts', 'nodes', 'summary_node_quality', 'claude_node_coverage_v2', 'claude_node_coverage_v3', 'claude_node_coverage_v4', 'leases', 'summary_retries', 'summary_flush', 'compactions', 'takeover_copies', 'takeover_copy_repair', 'host_writers', 'summary_policies', 'summary_preferences', 'session_origins', 'sources']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
       this.db.prepare('INSERT INTO deleted_sessions(session,deleted_ms) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET deleted_ms=excluded.deleted_ms').run(session, Date.now())
       const queue=this.db.prepare('INSERT OR IGNORE INTO deleted_session_files(session,path) VALUES(?,?)')
       queue.run(session,this.archivePath(session))
@@ -881,28 +946,78 @@ export class ClaudeStore {
     try {
       // A SuperLcm compaction packet, and the kept messages Claude Code writes again right after it, are
       // already recorded: their bytes stay in the archive, but they are not indexed or summarized twice.
-      // Only the first message after Claude Code's compact_boundary can be a packet (remaining -1 marks
-      // that point), so the same text pasted into a prompt is indexed like any other message.
       const record = kind === 'jsonl' ? jsonRecord(raw) : null
-      const copies = this.db.prepare('SELECT remaining FROM takeover_copies WHERE session=?').get(session)?.remaining || 0
-      const setCopies = n => this.db.prepare('INSERT INTO takeover_copies(session,remaining) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET remaining=excluded.remaining').run(session, n)
-      const message = record?.type === 'user' || record?.type === 'assistant'
-      const packet = copies === -1 && message && /^user: <superlcm-context [^>]*keep="(\d+)"/.exec(preview)
-      if (record?.type === 'system' && record.subtype === 'compact_boundary') setCopies(-1)
-      else if (packet) { preview=''; setCopies(Number(packet[1]) || -2) }
-      else if (copies === -1 && message) setCopies(0)
-      else if (copies > 0 && message) { preview=''; setCopies(copies > 1 ? copies - 1 : -2) }
-      // A packet prepared ahead of time (precompute) is swapped in with the messages written since appended
-      // after its kept ones, so `keep` undercounts them: what still repeats a recent recorded message is a copy too.
-      else if (copies === -2 && message) {
-        if (preview && this.db.prepare('SELECT 1 FROM events WHERE session=? AND ordinal>=? AND preview=? LIMIT 1').get(session, ordinal - 20000, preview)) preview=''
-        else if (preview) setCopies(0)
-      }
+      const state = this.db.prepare('SELECT remaining,low,high FROM takeover_copies WHERE session=?').get(session)
+      const next = takeoverCopy(state, record, preview, ordinal, this.#takeoverLookups(session))
+      if (next) { preview = next.preview; this.#saveTakeoverCopies(session, next.state) }
       this.db.prepare('INSERT INTO events VALUES(?,?,?,?,?,?)').run(session, ordinal, start, end, hash(raw), preview)
       this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
       this.db.prepare("UPDATE sources SET offset=?,status=CASE WHEN status='summary_error' THEN status ELSE 'ok' END,updated_ms=? WHERE session=?").run(end, Date.now(), session)
       this.db.exec('RELEASE archive_event')
     } catch (e) { this.db.exec('ROLLBACK TO archive_event'); this.db.exec('RELEASE archive_event'); throw e }
+  }
+  #takeoverLookups(session) {
+    // The caveat Claude Code writes before a local command is never sent to the model, so it is not copied.
+    const visible = "(preview GLOB 'user: *' OR preview GLOB 'assistant: *') AND preview NOT GLOB 'user: <local-command-caveat>*'"
+    return {
+      same: (low, high, preview) => this.db.prepare('SELECT ordinal FROM events WHERE session=? AND ordinal>? AND ordinal<? AND preview=? ORDER BY ordinal LIMIT 1').get(session, low, high, preview)?.ordinal ?? null,
+      next: (low, high) => this.db.prepare(`SELECT ordinal,preview FROM events WHERE session=? AND ordinal>? AND ordinal<? AND ${visible} ORDER BY ordinal LIMIT 1`).get(session, low, high) || null,
+    }
+  }
+  #saveTakeoverCopies(session, { remaining, low, high }) {
+    this.db.prepare('INSERT INTO takeover_copies(session,remaining,low,high) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET remaining=excluded.remaining,low=excluded.low,high=excluded.high').run(session, remaining, low, high)
+  }
+  // Before fork 0.6.10 every message after a takeover's kept copies that repeated any earlier preview was
+  // taken for a copy, so the /compact command, its caveat and its output (word for word the same at every
+  // compaction) lost their previews and the next takeover could not find them in context. Replay the
+  // current rule over the session once and give those records their previews back.
+  repairTakeoverCopies(session) {
+    if (this.source(session)?.kind !== 'jsonl') return 0
+    if (this.db.prepare('SELECT version FROM takeover_copy_repair WHERE session=?').get(session)?.version >= TAKEOVER_COPY_VERSION) return 0
+    const mark = () => this.db.prepare('INSERT INTO takeover_copy_repair(session,version) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET version=excluded.version').run(session, TAKEOVER_COPY_VERSION)
+    if (!this.db.prepare('SELECT 1 FROM takeover_copies WHERE session=?').get(session)) { mark(); return 0 }
+    const rows = this.db.prepare('SELECT ordinal,start,end,digest,preview FROM events WHERE session=? ORDER BY ordinal').all(session)
+    const restored = []
+    let state = null, ok = true
+    const copies = this.#originals(session)
+    const fds = copies.map(path => { try { return openSync(path, 'r') } catch { return null } }).filter(fd => fd !== null)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const lookups = this.#takeoverLookups(session)
+      for (const row of rows) {
+        // An indexed message needs no bytes: its preview names its role. Only blank records are read.
+        let raw = null, record = null
+        const role = /^(user|assistant): /.exec(row.preview)?.[1]
+        if (role) record = { type: role }
+        else if (!row.preview) {
+          for (const fd of fds) { const got = this.#readRange(fd, row.start, row.end, fstatSync(fd).size); if (got?.digest === row.digest) { raw = got.raw; break } }
+          if (!raw) { ok = false; break }
+          record = jsonRecord(raw)
+        }
+        const preview = row.preview || (raw ? extract(raw, 'jsonl') : '')
+        const next = takeoverCopy(state, record, preview, row.ordinal, lookups)
+        if (next) state = next.state
+        const indexed = next ? next.preview : preview
+        if (!row.preview && indexed) {
+          this.db.prepare('UPDATE events SET preview=? WHERE session=? AND ordinal=?').run(indexed, session, row.ordinal)
+          restored.push([row.ordinal, indexed])
+        }
+      }
+      if (ok && restored.length) {
+        const fts = new Map(this.db.prepare('SELECT rowid,ordinal FROM event_fts WHERE session=?').all(session).map(r => [Number(r.ordinal), r.rowid]))
+        for (const [ordinal, preview] of restored) {
+          if (fts.has(ordinal)) this.db.prepare('DELETE FROM event_fts WHERE rowid=?').run(fts.get(ordinal))
+          this.db.prepare('INSERT INTO event_fts(session,ordinal,preview) VALUES(?,?,?)').run(session, ordinal, preview)
+        }
+      }
+      if (ok) {
+        if (state) this.#saveTakeoverCopies(session, state)
+        mark()
+        this.db.exec('COMMIT')
+      } else this.db.exec('ROLLBACK')
+    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+    finally { for (const fd of fds) closeSync(fd) }
+    return ok ? restored.length : 0
   }
   #readRange(fd, start, end, size) {
     if (end > size || end < start) return null
@@ -971,6 +1086,45 @@ export class ClaudeStore {
     return done(true)
   }
   node(session, id) { return this.db.prepare('SELECT * FROM nodes WHERE session=? AND id=?').get(session, id) }
+  // Fork: summaries written before source-quality tracking (fork 0.6.3 and earlier), or marked incomplete by a
+  // rule that did not know current Claude Code bookkeeping records, are checked once per session against the
+  // archive with today's rule, the same checks addNode makes, so usable summaries authorize takeover again
+  // without being bought twice. A summary that fails (mechanically shortened, non-contiguous source, content
+  // the text projection does not carry, children that do not cover it) stays navigation-only.
+  recertifyClaudeNodes(session) {
+    if(this.db.prepare('SELECT harness FROM session_origins WHERE session=?').get(session)?.harness!=='claude-code')return 0
+    this.db.exec('CREATE TABLE IF NOT EXISTS claude_node_recert(session TEXT PRIMARY KEY,version INTEGER NOT NULL,at_ms INTEGER NOT NULL)')
+    if(this.db.prepare('SELECT version FROM claude_node_recert WHERE session=?').get(session)?.version>=CLAUDE_RECERT_VERSION)return 0
+    const own=!this.db.isTransaction
+    if(own)this.db.exec('BEGIN IMMEDIATE')
+    let certified=0
+    try{
+      const kind=this.source(session)?.kind
+      const rows=this.db.prepare("SELECT n.* FROM nodes n LEFT JOIN summary_node_quality q ON q.session=n.session AND q.id=n.id WHERE n.session=? AND n.id NOT LIKE 'dsh-native-%' AND n.id NOT LIKE 'claude-rescue-%' AND (q.complete IS NULL OR q.complete<>1) ORDER BY n.level,n.first").all(session)
+      for(const node of rows){
+        if(isReducedSummary(node.summary)||!Number.isSafeInteger(node.first)||!Number.isSafeInteger(node.last)||node.first<0||node.last<node.first)continue
+        let ids;try{ids=JSON.parse(node.children)}catch{continue}
+        if(node.level===0){
+          if(ids.length)continue
+          const events=this.db.prepare('SELECT ordinal FROM events WHERE session=? AND ordinal BETWEEN ? AND ? ORDER BY ordinal').all(session,node.first,node.last)
+          if(events.length!==node.last-node.first+1)continue
+          let ok=true
+          for(const e of events){let raw;try{raw=this.exact(session,e.ordinal)}catch{ok=false;break};if(hasUnrepresentedContent(raw,kind,{strictRecords:true})||queuedPrompt(raw)){ok=false;break}}
+          if(!ok)continue
+        }else{
+          const children=ids.map(id=>this.node(session,id))
+          if(!children.length||children.some(child=>!child||this.nodeSourceIncomplete(session,child))||!coversSummaryRange(children,node.first,node.last))continue
+        }
+        this.db.prepare('INSERT INTO summary_node_quality VALUES(?,?,1) ON CONFLICT(session,id) DO UPDATE SET complete=1').run(session,node.id)
+        this.db.prepare('INSERT OR IGNORE INTO claude_node_coverage_v3 VALUES(?,?)').run(session,node.id)
+        this.db.prepare('INSERT OR IGNORE INTO claude_node_coverage_v4 VALUES(?,?)').run(session,node.id)
+        certified++
+      }
+      this.db.prepare('INSERT INTO claude_node_recert VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET version=excluded.version,at_ms=excluded.at_ms').run(session,CLAUDE_RECERT_VERSION,Date.now())
+      if(own)this.db.exec('COMMIT')
+    }catch(error){if(own&&this.db.isTransaction)this.db.exec('ROLLBACK');throw error}
+    return certified
+  }
   addNode(node, { leaseOwner,validate } = {}) {
     this.db.exec('BEGIN IMMEDIATE')
     try {

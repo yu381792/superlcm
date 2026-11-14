@@ -108,6 +108,35 @@ test('a SuperLcm packet and the kept messages Claude Code writes again are not i
   store.close()
 })
 
+test('after a takeover, /compact and its output repeating an earlier compaction word for word are new messages', () => {
+  const { dir, project } = claudeHome(), file = join(project, 's5.jsonl')
+  const cmd = '<command-name>/compact</command-name>', out = '<local-command-stdout>Compacted</local-command-stdout>'
+  writeFileSync(file, line('user', cmd) + line('user', out) + line('user', 'work') + line('assistant', [{ type: 'text', text: 'done' }]) +
+    JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' + line('user', '<superlcm-context conversation="#x" keep="1" through="2">s</superlcm-context>') +
+    line('assistant', [{ type: 'text', text: 'done' }]) + line('user', cmd) + line('user', out))
+  const store = new ClaudeStore(join(dir, 'home'))
+  store.ingest('s5', file)
+  const indexed = () => store.eventRows('s5').slice(6).map(e => e.preview)
+  assert.deepEqual(indexed(), ['', `user: ${cmd}`, `user: ${out}`])
+  // An archive indexed by the older rule, which took both for copies, gets them back once.
+  store.db.prepare("UPDATE events SET preview='' WHERE session='s5' AND ordinal>6").run()
+  store.db.prepare("UPDATE takeover_copies SET remaining=0,low=-1,high=-1 WHERE session='s5'").run()
+  store.db.prepare("DELETE FROM takeover_copy_repair WHERE session='s5'").run()
+  store.repairTakeoverCopies('s5')
+  assert.deepEqual(indexed(), ['', `user: ${cmd}`, `user: ${out}`])
+  store.close()
+})
+
+test('the caveat Claude Code writes before /compact is not looked for in context', () => {
+  const events = [ev(0, 'user: start'), ev(1, 'assistant: working'), { ...ev(2, 'user: <local-command-caveat>x</local-command-caveat>'), transcriptOnly: true },
+    ev(3, 'user: <command-name>/compact</command-name>'), ev(4, 'user: <local-command-stdout>Compacted</local-command-stdout>'), ev(5, 'assistant: next step')]
+  const context = [msg('assistant', 'working'), msg('user', '<command-name>/compact</command-name>'), msg('user', '<local-command-stdout>Compacted</local-command-stdout>'), msg('assistant', 'next step')]
+  assert.equal(cutIndex(context, events, 3), 2)
+  // Summaries that end before the oldest message in context lag behind: catch-up can close that, unlike a lost boundary.
+  const lag = planCompaction({ meta, events, nodes: [node('a', 0, 0, 0)], messages: context.slice(1), tokens: 1000 })
+  assert.equal(lag.use, false); assert.match(lag.reason, /summaries lag behind/)
+})
+
 test('turning the takeover on makes Claude Code compact at the chosen size, and off restores its settings', () => {
   const { dir, claude } = claudeHome(), env = { ...process.env, CLAUDE_CONFIG_DIR: claude }, file = join(claude, 'settings.json')
   const read = () => JSON.parse(readFileSync(file, 'utf8'))

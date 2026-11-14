@@ -1,6 +1,9 @@
 // DTO helpers shared by the sandboxed hook and the archive process. No system imports.
 export const ids=items=>(items||[]).map(x=>typeof x==='string'?x:x.tool_use_id||x.id||x.call_id).filter(Boolean).sort()
 export const canonical=x=>Array.isArray(x)?x.map(canonical):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canonical(x[k])])):x
+const resultText=v=>Array.isArray(v)&&v.every(b=>b&&typeof b==='object'&&typeof b.type==='string')
+  ? v.every(b=>b.type==='text') ? v.map(b=>String(b.text??'')).join('\n') : v
+  : v
 export function bodies(message) {
   if(message.toolBodies)return canonical(message.toolBodies)
   const out=[]
@@ -11,7 +14,10 @@ export function bodies(message) {
     if(id&&(name!==undefined||value!==undefined))out.push({id,kind:'use',...(name!==undefined?{name}:{}),...(value!==undefined?{value:canonical(value)}:{})})
   }
   for(const t of Array.isArray(message.toolResults)?message.toolResults:[])if(typeof t==='object'){
-    const id=t.tool_use_id||t.id||t.call_id,value=t.content??t.output??t.result??t.text,error=t.is_error??t.isError
+    // Claude Code's live result carries the model-visible text and, in `result`, the tool's raw toolUseResult
+    // (stdout/stderr objects, an edited file's original); the transcript block carries only the content.
+    // Compare what the model reads: content or text, with a list of text blocks read as its text.
+    const id=t.tool_use_id||t.id||t.call_id,value=resultText(t.content??t.output??t.text??t.result),error=t.is_error??t.isError
     if(id&&(value!==undefined||error!==undefined))out.push({id,kind:'result',...(value!==undefined?{value:canonical(value)}:{}),...(error!==undefined?{error}: {})})
   }
   return out

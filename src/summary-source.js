@@ -37,6 +37,11 @@ export function summarySource(raw, kind = 'jsonl') {
     const text=[role==='tool-result'?`[tool result ${message.name||message.toolName||''}; id=${message.callId||message.toolCallId||''}; ${message.isError||data.error?'ERROR / failed':'outcome must be read from result'}]`:'',content,requested].filter(Boolean).join('\n')
     return text.trim()?`${role} [source time: ${textOf(event.time)}]:\n${text}`:''
   }
+  // Claude Code delivers a prompt typed during a turn as a queued_command attachment, not a user message.
+  if (record.type === 'attachment' && record.attachment?.type === 'queued_command' && record.attachment.commandMode === 'prompt') {
+    const text=blocks(record.attachment.prompt ?? '')
+    return text.trim() ? `user${record.timestamp === undefined ? '' : ` [source time: ${textOf(record.timestamp)}]`} (typed during the turn):\n${text}` : ''
+  }
   let item=record, role=record.role ?? record.type
   if (record.type === 'response_item') {
     item=record.payload

@@ -44,7 +44,7 @@ export async function runSummaryWorker(store,session,{runId=null,backend=null,en
         }
         return result
       }
-      if(setting.mode==='api')return await buildHierarchy(store,session,{...options,model:setting.model||env.SUPERLCM_CLAUDE_MODEL,apiKey:api?api.apiKey:store.apiCredential(session,env),apiProvider:setting.api_provider||'anthropic',apiURL:setting.api_url||env.SUPERLCM_CLAUDE_API_URL,effort:setting.effort||setting.api_effort||null})
+      if(setting.mode==='api')return await buildHierarchy(store,session,{...options,model:setting.model||env.SUPERLCM_CLAUDE_MODEL,apiKey:api?api.apiKey:store.apiCredential(session,env),apiProvider:setting.api_provider||'anthropic',apiURL:setting.api_url||env.SUPERLCM_CLAUDE_API_URL,effort:setting.effort||setting.api_effort||null,fallbacks:api?[]:store.apiFallbacks(session,env)})
       const tool=writerTool(store.metadata(session).harness,env)
       if(!tool)throw Object.assign(Error('No configured summary executable'),{summaryKind:'spawn'})
       const chosen=setting.model||(tool==='claude-code'?env.SUPERLCM_CLAUDE_CLI_MODEL:tool==='codex'?env.SUPERLCM_CODEX_CLI_MODEL:'')||''

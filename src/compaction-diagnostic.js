@@ -18,6 +18,10 @@ export function compactionDiagnostic(plan, { nodes = [], records = 0, before = 0
     [/could not place/, 'unplaced_boundary', '已覆盖记录与当前上下文之间没有可验证的边界。'],
     [/mechanically shortened/, 'reduced_navigation', '存在机械缩短的导航摘要，保留原生压缩以免遗漏约束。'],
     [/nothing recent/, 'no_recent_turn', '没有可以完整保留的近期用户轮次。'],
+    [/not fully verified in the archive/, 'unverified_live', 'The live conversation does not match the archive record for record; native compaction keeps it.'],
+    [/do not completely cover the source prefix/, 'coverage_gap', 'Summaries leave a gap at the start of the archive; native compaction keeps it.'],
+    [/incomplete-source summaries/, 'incomplete_source', 'Only navigation-only summaries exist; native compaction keeps the context.'],
+    [/capacity unavailable/, 'capacity_unknown', 'The model capacity was not reported; native compaction keeps the context.'],
   ]
   const match = reasons.find(([pattern]) => pattern.test(plan.reason || ''))
   return { ...common, status: 'native', code: match?.[1] || 'planner_declined', reason: match?.[2] || '未满足安全接管条件，交给 Claude Code 原生压缩。' }

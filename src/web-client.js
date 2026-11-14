@@ -278,7 +278,7 @@ function renderDetail() {
   if(d.last_compaction&&c.harness==='claude-code'){
     const x=d.last_compaction
     const title=x.status==='takeover'?'最近接管判断：SuperLcm 已提供摘要':x.status==='error'?'最近接管判断：发生错误，交回 Claude Code':'最近接管判断：使用 Claude Code 原生压缩'
-    html+='<div class="notice"><span><b>'+t(title)+(x.trigger==='precompute'?' '+t('（预计算）'):'')+'</b><br>'+esc(t(x.reason))+' · '+esc(ago(x.at_ms))+'<br>'+t('已覆盖 {n} / {total} 条原文',{n:esc(Math.max(0,x.through_record+1)),total:esc(x.records)})+'</span></div>'
+    html+='<div class="notice"><span><b>'+t(title)+(x.trigger==='precompute'?' '+t('（预计算）'):x.trigger==='cold'?' '+t('（缓存已过期）'):x.trigger==='turn-end'?' '+t('（回合结束时）'):'')+'</b><br>'+esc(t(x.reason))+' · '+esc(ago(x.at_ms))+'<br>'+t('已覆盖 {n} / {total} 条原文',{n:esc(Math.max(0,x.through_record+1)),total:esc(x.records)})+'</span></div>'
   }
   if(d.reduced_summary_count)html+='<div class="notice bad"><span>'+t('部分摘要已机械缩短，仅供查询导航；关键约束请查回原文。')+' ('+esc(d.reduced_summary_count)+')</span></div>'
   if(d.summary_health){

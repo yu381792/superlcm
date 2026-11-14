@@ -45,6 +45,20 @@ export function claudePctFor(window, reserve = OUTPUT_RESERVE) {
   while (Math.floor(e * pct / 100) < window) pct = Math.round(pct * 1e4 + 1) / 1e4
   return pct
 }
+// The context size at which Claude Code starts compacting, which every size SuperLcm plans against must use. In
+// ratio mode the module reports the model's whole capacity (1M), while Claude Code also applies the window kept in
+// env or autoCompactWindow: with 300K at 80% it compacts at 224K, not 800K, so a packet sized for 800K left the
+// context at the threshold and Claude Code compacted again a few seconds later.
+export function claudeCompactAt(takeover, modelWindow = 0, env = process.env) {
+  const model = Number.isFinite(modelWindow) && modelWindow > 0 ? modelWindow : 0
+  if (takeover.ratio == null) return Math.min(model || takeover.window, takeover.window)
+  let settings = {}
+  try { settings = readSettings(settingsFile(env)) } catch {}
+  const set = [env[ENV_KEY], settings.env?.[ENV_KEY], settings.autoCompactWindow].map(Number).find(n => Number.isFinite(n) && n > 0)
+  const window = Math.min(set ? clamp(set, [100000, 1000000]) : model || 1000000, model || Infinity)
+  const e = window - outputReserve(settings, env)
+  return Math.max(0, Math.min(e * takeover.ratio, e - 13000))
+}
 // What to restore later: Claude Code's own values of the keys this version sets. A key missing from a record
 // written by an older version was not touched by it, so it is left as it is.
 function remembered(previous) {

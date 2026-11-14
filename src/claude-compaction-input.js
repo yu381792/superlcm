@@ -22,6 +22,11 @@ export function verifiedCompactionInput(store, session, messages) {
   const events=all.map(original=>{
     const event={...original}
     if(!event.preview.startsWith('user: ') && !(packetCandidate&&!event.preview))return event
+    // Claude Code writes this caveat before a local command (/compact among them) and never sends it to the model.
+    if(event.preview.startsWith('user: <local-command-caveat>')){
+      let record;try{record=JSON.parse(store.exact(session,event.ordinal))}catch{return event}
+      return record?.type==='user'&&record.isMeta===true?{...event,transcriptOnly:true}:event
+    }
     if(event.preview.startsWith('user: ')&&!livePrompts.has(matchKey(event.preview)))return event
     let record;try{record=JSON.parse(store.exact(session,event.ordinal))}catch{return {...event,humanPrompt:false}}
     if(isRequestCopy(record))return {...event,humanPrompt:false}

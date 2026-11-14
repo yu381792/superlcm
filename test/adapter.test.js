@@ -670,7 +670,7 @@ test('bulk delete removes only conversations older than the cutoff and refuses a
   } finally { await web.close() }
 }))
 
-test('segments are sized by characters: whole records up to the target, one oversized record alone with head and tail', async () => {
+test('Claude segments retain full oversized records instead of certifying omitted source', async () => {
   const { summaryWork } = await import('../src/summarize.js')
   const dir = mkdtempSync(join(tmpdir(), 'superlcm-seg-')), store = new ClaudeStore(join(dir, 'index'))
   try {
@@ -685,8 +685,8 @@ test('segments are sized by characters: whole records up to the target, one over
     for (const r of store.eventRows('seg').slice(0, 5)) store.addNode({ session: 'seg', id: 'n' + r.ordinal, level: 0, first: r.ordinal, last: r.ordinal, children: [], summary: 's', digest: 'd', model: 'm' })
     const big = summaryWork(store, 'seg', { fanout: 99 })
     assert.equal(big.first, big.last, 'an oversized record forms its own segment')
-    assert.match(big.content, /^\[event \d+\] assistant:\nH+ …\[\d+ characters omitted; lcm_read event \d+ for the full text\]… T+$/)
-    assert.ok(big.content.length < 2100)
+    assert.ok(big.content.includes('H'.repeat(5000) + 'T'.repeat(4000)))
+    assert.equal(big.reducedSources, false)
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 

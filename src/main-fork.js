@@ -8,7 +8,8 @@ import {estimateSummaryTokens} from './summary-tokens.js'
 import {summarySettingsRevision} from './summarize.js'
 import {forkHash,forkAnchors,forkTreePlan,forkDirective,parseForkTree} from './fork-summary.js'
 import {summarizeNativeFork} from './native-fork.js'
-import {bindSummaryRun,finishSummaryRun,progressSummaryRun,summaryRunOwns} from './summary-runs.js'
+import {claudeCompactAt} from './takeover.js'
+import {bindSummaryRun,finishSummaryRun,progressSummaryRun,summaryRunOwns,enqueueSummaryRun,reserveSummaryRun,recoverSummaryRuns,summaryConcurrency} from './summary-runs.js'
 import {summaryAttempt} from './summary-attempt.js'
 import {classifySummaryError,summaryErrorDetail} from './summary-errors.js'
 import {hasUnrepresentedContent} from './source-completeness.js'
@@ -27,9 +28,10 @@ export function nativeContextUsage(store,session,provided={}){
   }
   return {tokens:0,window:0}
 }
-export function forkPreparationThreshold(store,session,window){
+export function forkPreparationThreshold(store,session,window,env=process.env){
   const policy=store.takeover()
-  if(store.metadata(session).harness==='claude-code'&&policy.ratio!=null)return window*Math.round((policy.ratio-.1)*1e12)/1e12
+  // Ten points before where Claude Code compacts (its window may be capped below the model's).
+  if(store.metadata(session).harness==='claude-code'&&policy.ratio!=null)return claudeCompactAt({...policy,ratio:Math.round((policy.ratio-.1)*1e12)/1e12},window,env)
   return store.metadata(session).harness==='claude-code'&&policy.enabled?Math.min(window*.7,policy.window*.7/.8):window*.7
 }
 function anchor(raw){
@@ -252,4 +254,66 @@ export async function generateMainFork(store,session,{runId,signal,shouldContinu
     }
   }catch(error){if(!combined.aborted&&store.ownsLease(session,owner)){store.failSummaryBatch(session,plan.digest,plan.revision);store.setStatus(session,'summary_failed')}if(runId)finishSummaryRun(store,runId,{owner,state:combined.aborted?'stopped':'failed',error});throw error}
   finally{clearInterval(timer);store.release(session,owner)}
+}
+// 主模型分支 inside Claude Code (hooks/compact-mod.js): the module answers the plan with $.model.fork, which
+// resends the main thread's own last request, so the history is read from its prompt cache. The claim holds
+// the 'host' lease for longer than the module waits on the fork; only the matching claim saves or releases it.
+const HOST_FORK_LEASE_MS=900000
+function hostForkPlan(store,session,input){
+  if(typeof input?.run_id!=='string'||typeof input.claim_id!=='string'||!store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='fork_summary_plans'").get())return null
+  const row=store.db.prepare('SELECT f.plan FROM fork_summary_plans f JOIN summary_runs r ON r.id=f.run_id WHERE f.run_id=? AND r.session=?').get(input.run_id,session)
+  const plan=row&&JSON.parse(row.plan)
+  return plan?.claim===input.claim_id?plan:null
+}
+export function claimHostFork(store,session,{env=process.env}={}){
+  recoverSummaryRuns(store,{env})
+  if(store.summarizing(session))return {none:'busy'}
+  const plan=planMainFork(store,session,{env})
+  if(!plan)return {none:'no-closed-source'}
+  if(store.summaryRetry(session,plan.digest,plan.revision))return {none:'retry-backoff'}
+  const queued=enqueueSummaryRun(store,session,{route:'host',origin:'host',revision:plan.revision,planned:plan.tree.length})
+  if(!queued.added)return {none:'busy'}
+  if(!reserveSummaryRun(store,{id:queued.run.id,limit:summaryConcurrency(env)})){finishSummaryRun(store,queued.run.id,{state:'stopped',reason:'capacity'});return {none:'capacity'}}
+  const claim=randomUUID(),owner='host:'+claim
+  if(!store.lease(session,HOST_FORK_LEASE_MS,'host')){finishSummaryRun(store,queued.run.id,{state:'stopped',reason:'busy'});return {none:'busy'}}
+  store.db.prepare('INSERT INTO host_summary_claims(session,batch_id,revision,claim_id,leaf_only,deadline_ms,run_id) VALUES(?,?,?,?,0,0,?) ON CONFLICT(session) DO UPDATE SET batch_id=excluded.batch_id,revision=excluded.revision,claim_id=excluded.claim_id,leaf_only=0,deadline_ms=0,run_id=excluded.run_id').run(session,plan.digest,plan.revision,claim,queued.run.id)
+  store.db.exec('CREATE TABLE IF NOT EXISTS fork_summary_plans(run_id TEXT PRIMARY KEY,plan TEXT NOT NULL)')
+  store.db.prepare('INSERT OR REPLACE INTO fork_summary_plans VALUES(?,?)').run(queued.run.id,JSON.stringify({...plan,claim}))
+  if(!bindSummaryRun(store,queued.run.id,{owner})){store.releaseHostClaim(session,claim);store.db.prepare('DELETE FROM fork_summary_plans WHERE run_id=?').run(queued.run.id);return {none:'run-replaced'}}
+  progressSummaryRun(store,queued.run.id,owner,{first:plan.leaves[0].firstMessage,last:plan.leaves.at(-1).lastMessage})
+  return {run_id:queued.run.id,claim_id:claim,directive:forkDirective(plan.leaves,plan.targetTokens,plan.language.name,{fanout:plan.fanout})}
+}
+// Settles a claim: saves the tree when the fork answered, otherwise stops (or fails) the run.
+// Returns handoff when the separate `claude --resume` branch should try instead.
+export function settleHostFork(store,session,input,{env=process.env}={}){
+  const plan=hostForkPlan(store,session,input)
+  if(!plan)return {saved:false,reason:'unknown claim'}
+  const runId=input.run_id,owner='host:'+plan.claim,ours=summaryRunOwns(store,runId,owner)
+  const valid=()=>store.integrationEnabled('claude-code')&&store.effectiveSetting(session,env).mode==='main-fork'&&summarySettingsRevision(store,session,env)===plan.revision&&summaryRunOwns(store,runId,owner)&&store.ownsLease(session,'host')
+  try{
+    if(typeof input.text!=='string'){
+      // nothing-to-fork: this Claude Code process has no main-thread request yet; unsupported: it has no
+      // $.model.fork, so later turns go to `claude --resume` as well. A failed fork waits for backoff.
+      const failed=['api-error','empty-reply','timeout','error'].includes(input.reason)
+      if(failed)store.failSummaryBatch(session,plan.digest,plan.revision)
+      if(input.reason==='unsupported')store.setHostForker(session,false)
+      finishSummaryRun(store,runId,{owner,state:failed?'failed':'stopped',reason:'host-fork-'+String(input.reason||'unanswered').slice(0,40),...(failed?{error:Error('Main-thread fork returned no summary; originals retained')}:{})})
+      return {saved:false,handoff:['nothing-to-fork','unsupported'].includes(input.reason)}
+    }
+    if(!valid())throw Object.assign(Error('后台分支配置已变化'),{summaryKind:'cancelled'})
+    verifyClaudeForkSource(store,session)
+    const tree=parseForkTree(input.text,plan.leaves,plan.language,{fanout:plan.fanout})
+    const ids=saveForkTree(store,session,plan,tree,{model:'claude-code-fork:'+String(input.model||'session-model').slice(0,80),usage:input.usage&&typeof input.usage==='object'?input.usage:{},owner:'host',validate:valid})
+    store.completeSummaryBatch(session,plan.digest,plan.revision);store.setStatus(session,'ok')
+    progressSummaryRun(store,runId,owner,{created:ids.length});finishSummaryRun(store,runId,{owner,state:'done'})
+    return {saved:true,created:ids.length}
+  }catch(error){
+    const cancelled=error.summaryKind==='cancelled'
+    if(!cancelled){store.failSummaryBatch(session,plan.digest,plan.revision);store.setStatus(session,'summary_failed')}
+    finishSummaryRun(store,runId,{owner,state:cancelled?'stopped':'failed',error})
+    return {saved:false}
+  }finally{
+    if(ours)store.releaseHostClaim(session,plan.claim)
+    store.db.prepare('DELETE FROM fork_summary_plans WHERE run_id=?').run(runId)
+  }
 }

@@ -92,9 +92,22 @@ function frontierWithin(nodes,through,maxChars,maxUnits) {
 // that is still in context. Each candidate is checked against its predecessors, and against the first
 // uncovered record after it, so a repeated short message ("继续") or a repeated run of messages cannot be
 // mistaken for an earlier copy and drop what came between.
+// Records that can be found in context: messages, not title records (written every turn by the desktop app)
+// or the caveat before a local command, which Claude Code never sends to the model.
+const placeable = events => events.filter(e => !e.nativeSummary && !e.transcriptOnly && /^(user|assistant): /.test(e.preview))
+// After a takeover Claude Code keeps only the packet and the newest messages, so as the conversation goes on the
+// summaries can end before the oldest message still in context: neither the last covered record nor the first
+// one after it is there, while later records are. That is the summaries lagging (catch-up writes the missing
+// pieces), not a boundary that cannot be placed.
+function summariesEndBeforeContext(messages, events, through) {
+  const visible = placeable(events)
+  const covered = visible.filter(e => e.ordinal <= through), later = visible.filter(e => e.ordinal > through)
+  const keys = new Set(messages.filter(m => m.text.trim() && !isSynthetic(m)).map(m => key(`${m.role}: ${m.text.trim()}`)))
+  return later.length > 0 && !keys.has(key(later[0].preview)) && (!covered.length || !keys.has(key(covered.at(-1).preview))) &&
+    later.some(e => keys.has(key(e.preview)))
+}
 function cutCandidates(messages, events, through) {
-  // Only messages can be found in context; title records (written every turn by the desktop app) cannot.
-  const visible = events.filter(e => !e.nativeSummary && /^(user|assistant): /.test(e.preview))
+  const visible = placeable(events)
   const covered = visible.filter(e => e.ordinal <= through).map(e => key(e.preview))
   const later = visible.filter(e => e.ordinal > through).map(e => key(e.preview))
   const keys = messages.map(m => m.text.trim() ? key(`${m.role}: ${m.text.trim()}`) : null)
@@ -192,11 +205,13 @@ function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0
   const candidates = recent ? [messages.length] : cutCandidates(messages, events, through)
   if (candidates.length > 1) return { use: false, ambiguous: true, reason: 'summary boundary matches more than one place; use native compaction' }
   const cut = candidates.length === 1 ? candidates[0] : null
-  if (cut === null) return { use: false, reason: 'could not place the summaries in the live conversation' }
+  if (cut === null) return summariesEndBeforeContext(messages, events, through)
+    ? { use: false, reason: 'summaries lag behind the live conversation: they end before the oldest message in context' }
+    : { use: false, reason: 'could not place the summaries in the live conversation' }
   // Each message's share of Claude Code's own token count, by its size in characters.
   const size = m => m.size ?? (m.text.length + 200)
   const total = messages.reduce((s, m) => s + size(m), 0) || 1
-  const target=trigger==='manual'?Math.min(window*TARGET_AFTER,tokens*.5):window*TARGET_AFTER
+  const target=['manual','cold','turn-end'].includes(trigger)?Math.min(window*TARGET_AFTER,tokens*.5):window*TARGET_AFTER
   // The newest keepTokens (at most half of the context) also stay word for word, from the start of a turn,
   // even where summaries already cover them, so the work in hand continues with its full detail.
   const widen=start=>{
@@ -229,7 +244,7 @@ function planWith({ meta, events, nodes, messages, instructions = '', tokens = 0
       }
     }
     if(!packet)return {use:false,reason:'complete request and packet exceed safe size; use native compaction'}
-    if(after>window*MAX_AFTER)return {use:false,reason:`the compacted context is too large: about ${after} tokens would remain`}
+    if(after>window*MAX_AFTER)return {use:false,reason:`the compacted context is too large: about ${after} tokens would remain`,after}
     return {use:true,packet,start:at,keep,through:recent?recent.last:through,after,...(recent?{recent:true}:{}),...(request?{inTurn:true}:{})}
   }
   // A later cut than the covered boundary would drop unsummarized messages.

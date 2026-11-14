@@ -2,7 +2,7 @@
 // deletes) on every plugin update. Codex and Pi are connected to one fixed file in the SuperLcm folder
 // instead, which starts the current plugin copy and, if that copy is gone, the newest one Claude has installed.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join, sep } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { home } from './store.js'
@@ -25,11 +25,19 @@ if (!existsSync(cli)) {
 }
 await import(pathToFileURL(cli).href)
 `
+const parts = v => v.split('.').map(Number)
+const newer = (a, b) => { const x = parts(a), y = parts(b); if (x.some(Number.isNaN) || y.some(Number.isNaN)) return false; for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false }
+// A session opened before an update keeps running its own (older) copy's hooks; it must not point the entry, and
+// with it the console and other tools, back at that older copy while the newer one is installed.
+const pointsNewer = current => {
+  try { const at = JSON.parse(current.match(/^let cli = (".*")$/m)[1]), dir = dirname(dirname(at)); return dirname(dir) === dirname(root) && existsSync(at) && newer(basename(dir), basename(root)) } catch { return false }
+}
 export function refreshPluginEntry() {
   if (!fromPluginCache()) return null
   const file = pluginEntry(), text = source()
   try {
-    if (existsSync(file) && readFileSync(file, 'utf8') === text) return file
+    const current = existsSync(file) ? readFileSync(file, 'utf8') : null
+    if (current === text || (current && pointsNewer(current))) return file
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
     const temp = file + '.' + randomBytes(4).toString('hex')
     writeFileSync(temp, text, { mode: 0o600 }); renameSync(temp, file)

@@ -9,6 +9,10 @@ import { SUMMARY_SYSTEM, buildSummaryPrompt, checkedSummary } from './summary-po
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 180000
 export { SUMMARY_SYSTEM }
+// Each run sends one unique piece and exits, so nothing it writes to the prompt cache is ever read back;
+// `-p` runs would otherwise write it at the main conversation's TTL (one hour, 2x input on a subscription).
+// The user's CLAUDE.md is not summary policy either (Pi's writer drops context files the same way).
+export const cliWriterEnv = env => ({ ...workerEnv(env), DISABLE_PROMPT_CACHING: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' })
 
 export function summarizeWithClaudeCli(text, { model = '', bin = process.env.SUPERLCM_CLAUDE_CLI_BIN || 'claude', env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, cwd = join(home(), 'claude-cli-cwd'), spawnProcess = spawn, summaryTask, signal } = {}) {
   if (typeof text !== 'string' || !text.trim() || text.length > MAX_SUMMARY_INPUT) throw new Error(`Claude CLI summary input must be nonempty and at most ${MAX_SUMMARY_INPUT} characters`)
@@ -20,7 +24,7 @@ export function summarizeWithClaudeCli(text, { model = '', bin = process.env.SUP
   const args = ['--print', '--output-format', 'json', ...(model ? ['--model', model] : []), '--no-session-persistence', '--settings', '{"disableAllHooks":true}', '--disable-slash-commands', '--tools', '', '--strict-mcp-config', '--system-prompt', SUMMARY_SYSTEM]
   const prompt = buildSummaryPrompt(text, summaryTask)
   return new Promise((resolve, reject) => {
-    const child = spawnProcess(bin, args, { cwd, env: workerEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    const child = spawnProcess(bin, args, { cwd, env: cliWriterEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     let out = '', settled = false, overflow = false, timedOut = false
     const finish = (error, value) => {
       if (settled) return

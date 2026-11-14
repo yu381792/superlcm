@@ -14,10 +14,13 @@ export {liveMessage} from './claude-live-messages.js'
 
 // Whitespace can carry meaning (for example in a code block). An archive
 // that differs only at a text boundary is still not proof of the live input.
-const messageKey=m=>rescueHash([m.role,m.text,ids(m.toolUses),ids(m.toolResultIds)])
-function archivedMessages(store,session) {
-  return store.eventRows(session).flatMap(e=>{
+export const messageKey=m=>rescueHash([m.role,m.text,ids(m.toolUses),ids(m.toolResultIds)])
+export function archivedMessages(store,session) {
+  const segments=[]
+  const list=store.eventRows(session).flatMap(e=>{
     const raw=store.exact(session,e.ordinal),record=JSON.parse(raw),role=record.message?.role||record.role||record.type
+    const kept=record.type==='system'&&record.subtype==='compact_boundary'&&record.compactMetadata?.preservedSegment
+    if(kept&&kept.headUuid&&kept.tailUuid&&kept.anchorUuid)segments.push({head:kept.headUuid,tail:kept.tailUuid,anchor:kept.anchorUuid})
     if(isRequestCopy(record))return []
     if(!['user','assistant'].includes(role))return []
     const content=record.message?.content??record.content
@@ -25,11 +28,58 @@ function archivedMessages(store,session) {
     const pairing=summaryToolPairing(raw)
     const blocks=Array.isArray(content)?content:[],toolBodies=bodies({toolUses:blocks.filter(b=>b.type==='tool_use'),toolResults:blocks.filter(b=>b.type==='tool_result')})
     const message={role,text,toolUses:pairing.opened,toolResultIds:pairing.closed}
-    return [{ordinal:e.ordinal,digest:e.digest,key:messageKey(message),native:record.isCompactSummary===true,nonText:hasUnrepresentedContent(raw,'jsonl',{strictRecords:true}),
+    // The caveat Claude Code writes before a slash command is transcript-only; the context does not hold it.
+    const transcriptOnly=role==='user'&&record.isMeta===true&&text.trimStart().startsWith('<local-command-caveat>')
+    return [{ordinal:e.ordinal,uuid:record.uuid??null,transcriptOnly,digest:e.digest,key:messageKey(message),shape:message,native:record.isCompactSummary===true,nonText:hasUnrepresentedContent(raw,'jsonl',{strictRecords:true}),
       endsTurn:pairing.endsTurn===true,
       toolBodies:toolBodies.map(body=>Object.fromEntries(Object.entries(body).map(([name,value])=>[name,rescueHash(canonical(value))])))}]
   })
+  list.segments=segments
+  return list
 }
+// After a native compaction that keeps recent messages, Claude Code's context is the summary followed by that
+// preserved segment, which the transcript holds before the summary. The boundary record names it
+// (compactMetadata.preservedSegment: headUuid..tailUuid, shown after anchorUuid, the summary). Build the archive
+// in that order; a segment that cannot be found whole is left where it is.
+export function inContextOrder(list){
+  let out=[...list]
+  for(const seg of list.segments||[]){
+    const head=out.findIndex(m=>m.uuid===seg.head),tail=out.findIndex(m=>m.uuid===seg.tail)
+    if(head<0||tail<head)continue
+    const part=out.slice(head,tail+1),rest=[...out.slice(0,head),...out.slice(tail+1)]
+    const anchor=rest.findIndex(m=>m.uuid===seg.anchor)
+    if(anchor<0)continue
+    out=[...rest.slice(0,anchor+1),...part,...rest.slice(anchor+1)]
+  }
+  return out
+}
+// Compare the actual active sequence, including tool payloads, with one exact
+// archived sequence. An id without its body is not proof of the live content.
+// Parallel tool calls from one response reach the transcript and Claude Code's context in different orders
+// (call A, result A, call B, result B in one; calls first, then results in the other), and which one varies.
+// Both sides are compared in one canonical order: within each run of text-less tool calls and result-only
+// messages, the calls in order, then the results in order. Every message still matches exactly one record.
+const toolCallOnly=m=>m.role==='assistant'&&!m.text.trim()&&m.toolUses.length>0&&!m.toolResultIds.length
+const resultOnly=m=>m.role==='user'&&!m.text.trim()&&m.toolResultIds.length>0&&!m.toolUses.length
+export function canonicalOrder(list){
+  const order=[]
+  for(let i=0;i<list.length;){
+    if(!toolCallOnly(list[i])&&!resultOnly(list[i])){order.push(i++);continue}
+    let j=i;while(j<list.length&&(toolCallOnly(list[j])||resultOnly(list[j])))j++
+    for(let k=i;k<j;k++)if(toolCallOnly(list[k]))order.push(k)
+    for(let k=i;k<j;k++)if(resultOnly(list[k]))order.push(k)
+    i=j
+  }
+  return order
+}
+const bodiesMatch=(live,stored)=>live.toolBodies.every(body=>{
+  const original=stored.toolBodies.find(b=>b.id===rescueHash(body.id)&&b.kind===rescueHash(body.kind))
+  if(body.kind==='result'&&(original?.error??rescueHash(false))!==rescueHash(body.error??false))return false
+  return !!original&&Object.entries(body).every(([name,value])=>{
+    const storedHash=original[name]??(name==='error'?rescueHash(false):undefined)
+    return storedHash!==undefined&&storedHash===rescueHash(canonical(value))
+  })
+})
 // Compare the actual active sequence, including tool payloads, with one exact
 // archived sequence. An id without its body is not proof of the live content.
 export function verifiedActiveMessages(store,session,input,{requireLatest=true}={}) {
@@ -37,21 +87,41 @@ export function verifiedActiveMessages(store,session,input,{requireLatest=true}=
   const complete=messages.every(m=>m.toolUses.every(id=>m.toolBodies.some(b=>b.id===id&&b.kind==='use'&&'name' in b&&'value' in b))&&
     m.toolResultIds.every(id=>m.toolBodies.some(b=>b.id===id&&b.kind==='result'&&'value' in b)))
   if(!complete)return null
-  const archived=archivedMessages(store,session),keys=messages.map(messageKey),candidates=[]
-  for(let at=0;at+keys.length<=archived.length;at++)if(keys.every((key,i)=>{
-    const stored=archived[at+i]
-    return stored.key===key&&messages[i].toolBodies.every(body=>{
-      const original=stored.toolBodies.find(b=>b.id===rescueHash(body.id)&&b.kind===rescueHash(body.kind))
-      if(body.kind==='result'&&(original?.error??rescueHash(false))!==rescueHash(body.error??false))return false
-      return !!original&&Object.entries(body).every(([name,value])=>{
-        const storedHash=original[name]??(name==='error'?rescueHash(false):undefined)
-        return storedHash!==undefined&&storedHash===rescueHash(canonical(value))
-      })
-    })
-  }))candidates.push(at)
+  const all=archivedMessages(store,session),archived=inContextOrder(all).filter(m=>!m.transcriptOnly)
+  const liveOrder=canonicalOrder(messages),live=liveOrder.map(i=>messages[i]),keys=live.map(messageKey),candidates=[]
+  const first=messageKey(messages[0])
+  // Each candidate window is put in canonical order on its own, so a run cut by the window's edge still lines up.
+  for(let at=0;at+keys.length<=archived.length;at++){
+    if(archived[at].key!==first)continue
+    const slice=archived.slice(at,at+keys.length),canon=canonicalOrder(slice.map(m=>m.shape)).map(i=>slice[i])
+    if(keys.every((key,i)=>canon[i].key===key&&bodiesMatch(live[i],canon[i])))candidates.push(canon)
+  }
   if(candidates.length!==1)return null
-  const active=archived.slice(candidates[0],candidates[0]+messages.length)
-  return active.length&&(!requireLatest||active.at(-1).ordinal===archived.at(-1).ordinal)?active:null
+  // Back in live order: active[i] is the record that live message i matched.
+  const active=new Array(messages.length)
+  liveOrder.forEach((orig,pos)=>{active[orig]=candidates[0][pos]})
+  const latest=Math.max(...all.map(a=>a.ordinal))
+  return active.length&&(!requireLatest||Math.max(...active.map(a=>a.ordinal))===latest)?active:null
+}
+export function explainActiveMismatch(store,session,input) {
+  const messages=(l=>canonicalOrder(l).map(i=>l[i]))(input.map(liveMessage))
+  const incomplete=messages.findIndex(m=>!(m.toolUses.every(id=>m.toolBodies.some(b=>b.id===id&&b.kind==='use'&&'name' in b&&'value' in b))&&
+    m.toolResultIds.every(id=>m.toolBodies.some(b=>b.id===id&&b.kind==='result'&&'value' in b))))
+  const describe=(i,why)=>({index:i,why,role:messages[i]?.role,text:String(messages[i]?.text||'').slice(0,160),toolUses:messages[i]?.toolUses.length||0,toolResults:messages[i]?.toolResultIds.length||0})
+  if(incomplete>=0)return {live:messages.length,first:describe(incomplete,'tool bodies missing from the live message')}
+  const raw=inContextOrder(archivedMessages(store,session)).filter(m=>!m.transcriptOnly),archived=canonicalOrder(raw.map(a=>a.shape)).map(i=>raw[i])
+  const keys=messages.map(messageKey),byKey=new Map()
+  archived.forEach((m,i)=>{const list=byKey.get(m.key)||[];list.push(i);byKey.set(m.key,list)})
+  const unmatched=keys.map((k,i)=>byKey.has(k)?null:i).filter(i=>i!==null)
+  // Best alignment: the archived start that matches the longest run of live keys.
+  let best={at:-1,run:0}
+  for(const at of new Set((byKey.get(keys[0])||[]).concat(byKey.get(keys.at(-1))?.map(i=>i-keys.length+1)||[]))){
+    let run=0;while(run<keys.length&&archived[at+run]?.key===keys[run])run++
+    if(run>best.run)best={at,run}
+  }
+  return {live:messages.length,archived:archived.length,unmatchedCount:unmatched.length,unmatchedRoles:[...new Set(unmatched.map(i=>messages[i].role))],
+    alignedFrom:best.at,alignedRun:best.run,...(best.run<keys.length?{first:describe(best.run,unmatched.includes(best.run)?'no archived record has this text and tool ids':'text matches but tool bodies or order differ')}:{}),
+    unmatchedSample:unmatched.slice(0,5).map(i=>describe(i,'no archived match'))}
 }
 export function verifiedCompactionCut(active,plan) {
   return !!active?.length&&Number.isSafeInteger(plan.start)&&plan.start>0&&plan.start<active.length&&

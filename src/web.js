@@ -205,6 +205,12 @@ export async function startWeb({ store = new ClaudeStore(), port = 0, host = '12
     // 接管压缩 on/off and its size; turning it on also sets Claude Code's autoCompactWindow (see src/takeover.js).
     'POST /api/takeover': async req => { const x = await body(req); const r = applyTakeover(store, { enabled: x.enabled === true, ratio: x.ratio, window: x.window === undefined ? undefined : Number(x.window), keep: x.keep === undefined ? undefined : Number(x.keep) }, env); return { ...r, previous: undefined, plugin: claudePluginEnabled(env) } },
     'POST /api/api-models/delete': async req => { const x = await body(req),deleted=store.deleteApiModel(x.id); return { deleted, credential_cleanup_pending:apiCredentialCleanupPending(store.db,'model:'+x.id) } },
+    'POST /api/fallbacks': async req => {
+      const x = await body(req)
+      if (x.harness === 'hermes') throw new Error('Unsupported tool')
+      if (!definitions.some(d => d.id === x.harness) && !store.harnessSetting(x.harness)) throw new Error('Unknown tool')
+      return store.setHarnessFallbacks(x.harness, x.ids)
+    },
     'POST /api/settings': async req => {
       const x = await body(req)
       if (x.scope !== 'global' && x.scope !== 'harness') throw new Error('Invalid settings scope')

@@ -102,7 +102,7 @@ test('manual Claude recovery reports when a complete group cannot fit',t=>{
 })
 
 test('unknown top-level payload is not certified as complete source',t=>{
- const hidden={type:'attachment',attachment:{type:'future_text_context',content:'SYNTHETIC_HIDDEN_CONSTRAINT'}}
+ const hidden={type:'future_text_context',content:'SYNTHETIC_HIDDEN_CONSTRAINT'} // fork: attachments are harness-injected; an unknown record with content still blocks
  assert.equal(hasUnrepresentedContent(JSON.stringify(hidden),'jsonl',{strictRecords:true}),true)
  const {s}=claudeFixture(t,[{type:'user',message:{content:'Synthetic request'}},hidden,{type:'assistant',message:{content:'Synthetic answer'}}]);s.markCompaction('s')
  const plan=planMainFork(s,'s',{keepTokens:0,force:true,env:{}});assert.ok(plan);assert.equal(plan.originals.at(-1).ordinal,0)

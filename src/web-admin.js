@@ -86,6 +86,15 @@ function renderTools() {
     if (select.value === '__add') return addApiModel()
     act(async () => { await api('/api/settings', { scope: 'harness', harness: select.dataset.apimodel, mode: 'api', api_ref: select.value }); await loadSettings(); toast(t('已保存')) }, select)
   }
+  for (const select of $('#tools').querySelectorAll('select[data-fallback-add]')) select.onchange = () => {
+    const harness = select.dataset.fallbackAdd, ids = [...(admin.settings.settings.find(x => x.harness === harness)?.api_fallbacks || []), select.value]
+    if (select.value) act(async () => { await api('/api/fallbacks', { harness, ids }); await loadSettings(); toast(t('已保存')) }, select)
+  }
+  for (const b of $('#tools').querySelectorAll('[data-fallback-up], [data-fallback-remove]')) b.onclick = () => {
+    const up = b.dataset.fallbackUp != null, [harness, index] = (up ? b.dataset.fallbackUp : b.dataset.fallbackRemove).split(':'), ids = [...(admin.settings.settings.find(x => x.harness === harness)?.api_fallbacks || [])], i = Number(index)
+    if (up) [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]]; else ids.splice(i, 1)
+    act(async () => { await api('/api/fallbacks', { harness, ids }); await loadSettings(); toast(t('已保存')) }, b)
+  }
   for (const b of $('#tools').querySelectorAll('[data-add-model]')) b.onclick = addApiModel
   for (const select of $('#tools').querySelectorAll('select[data-model]')) {
     const harness = select.dataset.model, x = admin.settings.settings.find(y => y.harness === harness)
@@ -321,6 +330,13 @@ function writerRows(h) {
     rows.push([t('模型'), s.api_models.length ? '<select aria-label="' + t('模型') + '" data-apimodel="' + esc(h.harness) + '">' + (current ? '' : '<option value="" selected disabled>' + t('选择一个模型') + '</option>') +
       s.api_models.map(m => '<option value="' + esc(m.id) + '"' + (m.id === current?.id ? ' selected' : '') + '>' + esc(modelName(m)) + ' · ' + esc(hostOf(m.url)) + '</option>').join('') + '<option value="__add">' + t('+ 添加模型…') + '</option></select>'
       : '<button type="button" class="link" data-add-model>' + t('先去设置里添加模型') + '</button>'])
+    if (current && s.api_models.some(m => m.id !== current.id)) {
+      const ids = x?.api_fallbacks || [], available = s.api_models.filter(m => m.id !== current.id && !ids.includes(m.id))
+      rows.push([t('备用模型'), ids.map((id, i) => {
+        const m = s.api_models.find(m => m.id === id)
+        return m ? '<div>' + (i + 1) + '. ' + esc(modelName(m)) + ' · ' + esc(hostOf(m.url)) + ' ' + (i ? '<button type="button" class="btn small" title="' + t('上移') + '" data-fallback-up="' + esc(h.harness) + ':' + i + '">↑</button> ' : '') + '<button type="button" class="btn small" title="' + t('移除') + '" data-fallback-remove="' + esc(h.harness) + ':' + i + '">×</button></div>' : ''
+      }).join('') + '<select aria-label="' + t('备用模型') + '" data-fallback-add="' + esc(h.harness) + '"' + (!available.length || ids.length >= 5 ? ' disabled' : '') + '><option value="">' + t('+ 添加备用模型…') + '</option>' + available.map(m => '<option value="' + esc(m.id) + '">' + esc(modelName(m)) + ' · ' + esc(hostOf(m.url)) + '</option>').join('') + '</select><div class="muted">' + t('主模型被限流、过载、超时或出错时，依次改用这些模型写同一段摘要。') + '</div>'])
+    }
   }
   return rows
 }
